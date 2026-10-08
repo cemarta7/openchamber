@@ -84,7 +84,7 @@ export const registerProjectContextRoutes = (app, dependencies) => {
       return res.status(400).json({ error: 'text must be a string' });
     }
     try {
-      return res.status(201).json(await projectContextRuntime.createTodo(req.params.projectId, { text: req.body.text }));
+      return res.status(201).json(await projectContextRuntime.createTodoWithResult(req.params.projectId, { text: req.body.text }));
     } catch (error) {
       return respondWithError(res, error, 'Failed to create todo');
     }

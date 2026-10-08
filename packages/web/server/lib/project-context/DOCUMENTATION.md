@@ -96,7 +96,7 @@ collision gets a numeric suffix. Sharing is refused only when the checkout canno
 |---|---|---|
 | GET | `/api/project-context/:projectId` | full context; missing file is `200` empty |
 | PUT | `/api/project-context/:projectId/todos` | takes `{todos, expectedTodos?}`; replaces the whole list; returns committed context; stale expected list returns `409` |
-| POST | `/api/project-context/:projectId/todos` | takes `{text}`; server creates the id; `201` with committed context |
+| POST | `/api/project-context/:projectId/todos` | takes `{text}`; server creates the id; `201` with `{todo, context}` from the same commit |
 | PATCH | `/api/project-context/:projectId/todos/:todoId` | takes `{text?, completed?}`; returns committed context; `404` when unknown |
 | DELETE | `/api/project-context/:projectId/todos/:todoId` | returns committed context; `404` when unknown |
 | POST | `/api/project-context/:projectId/notes` | `201`; takes `{body, source?, origin?}` |
@@ -131,6 +131,7 @@ Clients re-read authoritative context for the visible owner. This is a commit no
 ## Invariants
 
 - Todo item mutations read and write under the project lock. `createTodo(projectId, {text})`, `updateTodo(projectId, todoId, {text?, completed?})`, and `deleteTodo(projectId, todoId)` return the committed stored context. Missing items throw an error with `status: 404`. Patches preserve the id, creation time, and omitted fields. Creation refuses more than 500 items. Item text must contain 1 to 1000 characters after trimming.
+- `createTodoWithResult(projectId, {text})` is the atomic creation operation. It returns `{todo, context}` after the write commits, using the item constructed in that operation and its committed stored context. HTTP POST uses this result so clients can reconcile temporary ids even when peer items have identical text. `createTodo` delegates to this operation once and returns only `context` for existing runtime and control callers. No later read or list inference selects the created item.
 - Completing a todo moves it to the end of the stored list. Reopening or creating a todo inserts it before the first completed item, or at the end if none is completed. Text-only patches and repeated completion values keep the current order. Each mutation applies this rule to the current list under the lock.
 - `updateNote(projectId, noteId, patch, {expectedBody})` compares the exact stored body under the project lock before any write. Supply the body returned by the last read, without trimming or conversion. A mismatch throws `status: 409` without a write or change notification. The option must be a string when supplied. Missing notes retain the existing null result. Callers that omit the option retain replacement behavior. Matching bodies retain existing patch behavior, including timestamp updates and notifications for same-body writes and legacy pin-only patches.
 - `saveTodos(projectId, todos, {expectedTodos})` compares the complete expected list, including order and item fields, with the current stored list under the lock. A mismatch throws `status: 409` before any write or notification. Bulk clients supply their last confirmed list. Callers that omit the option retain legacy replacement behavior and sanitization.

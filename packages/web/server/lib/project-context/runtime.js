@@ -503,7 +503,7 @@ export const createProjectContextRuntime = (deps) => {
     });
   };
 
-  const createTodo = async (projectId, value) => {
+  const createTodoWithResult = async (projectId, value) => {
     const text = todoText(value?.text);
     return withWriteLock(projectId, async () => {
       const current = await readStoredContext(projectId);
@@ -513,9 +513,11 @@ export const createProjectContextRuntime = (deps) => {
       const todo = { id: idFactory(), text, completed: false, createdAt: Date.now() };
       const next = { ...current, todos: insertTodoBeforeCompleted(current.todos, todo) };
       await writeContext(projectId, next);
-      return next;
+      return { todo, context: next };
     });
   };
+
+  const createTodo = async (projectId, value) => (await createTodoWithResult(projectId, value)).context;
 
   const updateTodo = async (projectId, todoId, patch) => {
     const id = asNonEmptyString(todoId);
@@ -988,6 +990,7 @@ export const createProjectContextRuntime = (deps) => {
     readContext,
     saveTodos,
     createTodo,
+    createTodoWithResult,
     updateTodo,
     deleteTodo,
     createNote,

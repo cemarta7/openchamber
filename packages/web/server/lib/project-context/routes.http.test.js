@@ -77,6 +77,36 @@ const createApp = (overrides = {}) => {
 const BASE = '/api/project-context/path_dGVzdA';
 
 describe('persisted item routes and preconditions', () => {
+  it('returns each actual created todo with its snapshot during indistinguishable peer creates', async () => {
+    const projectsDirPath = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-context-create-http-'));
+    try {
+      let counter = 0;
+      const changes = [];
+      const runtime = createProjectContextRuntime({
+        fsPromises, path, projectsDirPath, createId: () => `item-${++counter}`,
+        onChanged: (id) => changes.push(id),
+      });
+      await runtime.saveTodos('path_dGVzdA', [{ id: 'done', text: 'same', completed: true, createdAt: 1 }]);
+      changes.length = 0;
+      const { app } = createApp(runtime);
+      const responses = await Promise.all(Array.from({ length: 3 }, () => request(app)
+        .post(`${BASE}/todos`).send({ text: 'same' }).expect(201)));
+      const snapshots = responses.map((response) => response.body).sort((a, b) => a.context.todos.length - b.context.todos.length);
+      expect(new Set(snapshots.map((result) => result.todo.id)).size).toBe(3);
+      for (const [index, result] of snapshots.entries()) {
+        expect(Object.keys(result).sort()).toEqual(['context', 'todo']);
+        expect(result.todo).toEqual({ id: `item-${index + 1}`, text: 'same', completed: false, createdAt: expect.any(Number) });
+        expect(result.context.todos).toHaveLength(index + 2);
+        expect(result.context.todos.find((todo) => todo.id === result.todo.id)).toEqual(result.todo);
+        expect(result.context.todos.at(-1).id).toBe('done');
+      }
+      expect((await request(app).get(BASE).expect(200)).body.todos).toEqual(snapshots[2].context.todos);
+      expect(changes).toHaveLength(3);
+    } finally {
+      await fsPromises.rm(projectsDirPath, { recursive: true, force: true });
+    }
+  });
+
   it('protects note revisions for both HTTP and runtime writer directions', async () => {
     const projectsDirPath = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-context-note-http-'));
     try {
@@ -129,9 +159,9 @@ describe('persisted item routes and preconditions', () => {
       const runtime = createProjectContextRuntime({ fsPromises, path, projectsDirPath, createId: () => `item-${++counter}` });
       const { app } = createApp(runtime);
       const first = await request(app).post(`${BASE}/todos`).send({ text: 'A' }).expect(201);
-      const a = first.body.todos[0].id;
+      const a = first.body.todo.id;
       const second = await request(app).post(`${BASE}/todos`).send({ text: 'B' }).expect(201);
-      const b = second.body.todos[1].id;
+      const b = second.body.todo.id;
       await request(app).patch(`${BASE}/todos/${a}`).send({ completed: true }).expect(200);
       await runtime.createTodo('path_dGVzdA', { text: 'peer' });
       const completed = await request(app).patch(`${BASE}/todos/${b}`).send({ completed: true }).expect(200);
@@ -153,9 +183,9 @@ describe('persisted item routes and preconditions', () => {
       const runtime = createProjectContextRuntime({ fsPromises, path, projectsDirPath, createId: () => `item-${++counter}` });
       const { app } = createApp(runtime);
       const created = await request(app).post(`${BASE}/todos`).send({ text: 'first' }).expect(201);
-      const id = created.body.todos[0].id;
+      const id = created.body.todo.id;
       await request(app).patch(`${BASE}/todos/${id}`).send({ completed: true }).expect(200);
-      await request(app).put(`${BASE}/todos`).send({ todos: [], expectedTodos: created.body.todos }).expect(409);
+      await request(app).put(`${BASE}/todos`).send({ todos: [], expectedTodos: created.body.context.todos }).expect(409);
       const latest = await request(app).get(BASE).expect(200);
       expect(latest.body.todos[0].completed).toBe(true);
       await request(app).put(`${BASE}/todos`).send({ todos: latest.body.todos, expectedTodos: latest.body.todos }).expect(200);

@@ -25,6 +25,47 @@ const writeJson = async (filePath, value) => {
 const readJson = async (filePath) => JSON.parse(await fsPromises.readFile(filePath, 'utf8'));
 
 describe('atomic todo mutations', () => {
+  test('returns actual created items and matching snapshots for concurrent identical text', async () => {
+    const changes = [];
+    const announcing = createProjectContextRuntime({
+      fsPromises, path, projectsDirPath, createId: () => `todo-${++idCounter}`,
+      onChanged: (id) => changes.push(id),
+    });
+    await announcing.saveTodos(PROJECT_ID, [{ id: 'completed', text: 'same', completed: true, createdAt: 1 }]);
+    changes.length = 0;
+    const [first, legacy, third] = await Promise.all([
+      announcing.createTodoWithResult(PROJECT_ID, { text: ' same ' }),
+      announcing.createTodo(PROJECT_ID, { text: 'same' }),
+      announcing.createTodoWithResult(PROJECT_ID, { text: 'same' }),
+    ]);
+    expect(first.todo.id).toBe('todo-1');
+    expect(third.todo.id).toBe('todo-3');
+    expect(first.todo).toEqual({ id: 'todo-1', text: 'same', completed: false, createdAt: expect.any(Number) });
+    expect(first.context.todos).toEqual([first.todo, { id: 'completed', text: 'same', completed: true, createdAt: 1 }]);
+    expect(legacy.todos.map((todo) => todo.id)).toEqual(['todo-1', 'todo-2', 'completed']);
+    expect(legacy.todo).toBeUndefined();
+    expect(legacy.context).toBeUndefined();
+    expect(third.context.todos.map((todo) => todo.id)).toEqual(['todo-1', 'todo-2', 'todo-3', 'completed']);
+    expect(third.context.todos.find((todo) => todo.id === third.todo.id)).toEqual(third.todo);
+    expect((await announcing.readContext(PROJECT_ID)).todos).toEqual(third.context.todos);
+    expect(changes).toEqual([PROJECT_ID, PROJECT_ID, PROJECT_ID]);
+  });
+
+  test('both create result contracts reject failed writes without returning or notifying', async () => {
+    const changes = [];
+    const guarded = createProjectContextRuntime({
+      fsPromises: { ...fsPromises, rename: async () => { throw new Error('commit failed'); } },
+      path, projectsDirPath, createId: () => `todo-${++idCounter}`, onChanged: (id) => changes.push(id),
+    });
+    await expect(guarded.createTodoWithResult(PROJECT_ID, { text: 'new' })).rejects.toThrow('commit failed');
+    await expect(guarded.createTodo(PROJECT_ID, { text: 'legacy' })).rejects.toThrow('commit failed');
+    expect((await guarded.readContext(PROJECT_ID)).todos).toEqual([]);
+    expect(changes).toEqual([]);
+    await expect(guarded.createTodoWithResult(PROJECT_ID, { text: '' })).rejects.toMatchObject({ status: 400 });
+    await runtime.saveTodos(PROJECT_ID, Array.from({ length: 500 }, (_, index) => ({ id: `t${index}`, text: 'todo', createdAt: 1 })));
+    await expect(guarded.createTodoWithResult(PROJECT_ID, { text: 'overflow' })).rejects.toMatchObject({ status: 400 });
+  });
+
   test('stores original completion, reopening and creation order while preserving peers', async () => {
     const initial = await runtime.saveTodos(PROJECT_ID, [
       { id: 'a', text: 'A', completed: false, createdAt: 1 },
