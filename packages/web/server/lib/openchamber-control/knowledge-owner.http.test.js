@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -24,7 +25,7 @@ const git = (directory, args) => run('git', ['-C', directory, ...args]);
 
 describe('knowledge owner authenticated callback integration', () => {
   it('stores generated notes under the panel owner for HOME, nested projects, worktrees and Chats', async () => {
-    const root = await fs.mkdtemp('/tmp/opencode/knowledge-owner-');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'knowledge-owner-'));
     const home = path.join(root, 'home');
     const nested = path.join(home, 'workspaces', 'independent');
     const primary = path.join(home, 'primary');
