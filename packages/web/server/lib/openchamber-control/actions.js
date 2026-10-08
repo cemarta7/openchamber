@@ -13,7 +13,7 @@ export const OPENCHAMBER_CONTROL_ACTION_DEFINITIONS = Object.freeze([
   { action: 'notes.list', title: 'List project notes', description: 'List project notes; scope with projectId or directory, default current session' },
   { action: 'notes.read', title: 'Read a project note', description: 'Read noteId from notes.list' },
   { action: 'notes.create', title: 'Create a project note', description: 'Create a project note; requires body, at most 3000 characters; records the calling session as origin' },
-  { action: 'notes.update', title: 'Update a project note', description: 'Replace noteId body; requires body, at most 3000 characters; keeps its id and origin' },
+  { action: 'notes.update', title: 'Update a project note', description: 'Replace noteId body, at most 3000 characters; keeps its id and origin; read first and pass its body as expectedBody to reject stale writes' },
   { action: 'notes.delete', title: 'Delete a project note', description: 'Delete noteId' },
   { action: 'todos.list', title: 'List project todos', description: 'List project todos with stable ids and completed state; scope with projectId or directory, default current session' },
   { action: 'todos.create', title: 'Create a project todo', description: 'Create a project todo; requires text, at most 1000 characters; starts incomplete' },

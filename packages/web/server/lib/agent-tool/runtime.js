@@ -130,6 +130,7 @@ Object.assign(CONTROL_PARAMETER_PROPERTIES, {
   todoId: { type: 'string' },
   planId: { type: 'string', description: 'ID from plans.list or plans.create; shared plan IDs are accepted' },
   body: { type: 'string', description: 'Note body, at most 3000 characters, or the body for plans.create, at most 200000 characters' },
+  expectedBody: { type: 'string', description: 'Last body returned by notes.read; notes.update fails if it changed' },
   text: { type: 'string', description: 'Todo text, at most 1000 characters' },
   completed: { type: 'boolean', description: 'Todo completion state; false reopens a todo' },
   raw: { type: 'string', description: 'Whole markdown document for plans.update, at most 200000 characters' },

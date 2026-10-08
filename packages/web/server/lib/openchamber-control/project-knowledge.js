@@ -64,7 +64,8 @@ export const createProjectKnowledgeActions = ({ projectContextRuntime: runtime, 
       case 'notes.update': {
         const id = requiredString(input, 'noteId').trim();
         const body = requiredString(input, 'body', 3000);
-        return { projectId, ...found(await runtime.updateNote(projectId, id, { body }), 'Note', id) };
+        const options = input.expectedBody === undefined ? {} : { expectedBody: requiredString(input, 'expectedBody', undefined, true) };
+        return { projectId, ...found(await runtime.updateNote(projectId, id, { body }, options), 'Note', id) };
       }
       case 'notes.delete': {
         const id = requiredString(input, 'noteId').trim();

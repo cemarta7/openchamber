@@ -187,8 +187,9 @@ Each generated tool sends its own name with every callback. Models routinely
 drop the namespace their tool's name appears to supply — `openchamber_memory`
 asked for `memory.read` gets called as `read` — and resolving the bare name
 inside the calling tool's action set accepts it when only one action matches.
-Knowledge CRUD shares bare names inside `openchamber`, so callers must use
-the full action name, such as `notes.delete` or `schedule.delete`.
+Knowledge CRUD shares bare `delete` and `update` names inside `openchamber`,
+so these aliases are ambiguous. Callers must use the full action name, such
+as `notes.delete`, `schedule.delete`, `notes.update`, or `schedule.update`.
 
 Resolution never reaches outside the tool that asked: `open` from the memory
 tool fails rather than driving the browser. An unresolvable action answers with

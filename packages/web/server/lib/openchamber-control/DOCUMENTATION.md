@@ -49,6 +49,11 @@ Notes support list/read/create/update/delete with `noteId` and `body`.
 Create records `source: 'agent'` and the callback's calling session as
 `origin.sessionId`. Update changes only the body and keeps the original
 provenance. Model inputs cannot change provenance or attachment state.
+Read before updating and pass the returned `body` as `expectedBody`.
+`updateNote(projectId, noteId, { body }, { expectedBody })` checks that exact
+last-read text under the storage lock. A mismatch fails with 409 without a
+write or change event. Omitting `expectedBody` retains existing replacement
+behavior.
 Todos support list/create/update/delete with `todoId`, `text`, and
 `completed`. Item mutations return the committed context and preserve other
 todos. New IDs come from storage. Plans support list/read/create/update/delete
@@ -65,6 +70,11 @@ fail with 400 before mutation. Operational errors remain failures through
 the existing control error adapter. These actions do not pin or share items.
 
 ## Session and viewer invariants
+
+Bare `delete` and `update` are ambiguous in the `openchamber` tool because
+knowledge and schedule actions share these names. Use full names such as
+`notes.delete` or `schedule.update`. Unique bare names keep their existing
+resolution within the calling tool.
 
 - Session status and messages come from official directory-scoped OpenCode
   APIs. Message output includes only ordered `text` parts.

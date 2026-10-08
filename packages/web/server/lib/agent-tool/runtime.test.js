@@ -136,17 +136,26 @@ describe('managed agent tool runtime', () => {
       const created = await call('notes.create', { body: 'Agent note', source: 'manual', origin: { sessionId: 'spoof' } });
       expect(created).toMatchObject({ ok: true, schemaVersion: 1, data: { projectId: owner, note: { body: 'Agent note', source: 'agent', origin: { sessionId: 'ses_caller' } } } });
       const noteId = created.data.note.id;
-      expect((await call('notes.read', { noteId })).data.note.id).toBe(noteId);
-      await call('notes.update', { noteId, body: 'Edited note' });
+      const note = (await call('notes.read', { noteId })).data.note;
+      expect(note.id).toBe(noteId);
+      expect((await call('notes.update', { noteId, body: 'Edited note', expectedBody: note.body })).ok).toBe(true);
       expect((await call('notes.list')).data.notes[0]).toMatchObject({ id: noteId, body: 'Edited note', source: 'agent' });
+      const beforeNoteConflict = onChanged.mock.calls.length;
+      const beforeNoteWrite = await fs.readFile(projectContextRuntime.contextPathFor(owner), 'utf8');
+      expect(await call('notes.update', { noteId, body: 'Stale note', expectedBody: note.body })).toMatchObject({
+        schemaVersion: 1, ok: false, action: 'notes.update', error: { kind: 'usage', message: expect.stringContaining('reload before saving') },
+      });
+      expect(onChanged).toHaveBeenCalledTimes(beforeNoteConflict);
+      expect(await fs.readFile(projectContextRuntime.contextPathFor(owner), 'utf8')).toBe(beforeNoteWrite);
+      expect((await call('notes.read', { noteId })).data.note).toMatchObject({ id: noteId, body: 'Edited note', source: 'agent', origin: { sessionId: 'ses_caller' } });
       const first = await call('todos.create', { text: 'First' });
       const todoId = first.data.context.todos[0].id;
       await projectContextRuntime.createTodo(owner, { text: 'UI item' });
       expect((await call('todos.update', { todoId, completed: true })).data.context.todos).toHaveLength(2);
-      expect((await call('todos.list')).data.todos[0]).toMatchObject({ id: todoId, completed: true });
+      expect((await call('todos.list')).data.todos.find((todo) => todo.id === todoId)).toMatchObject({ id: todoId, completed: true });
       await expect(projectContextRuntime.saveTodos(owner, first.data.context.todos, { expectedTodos: first.data.context.todos })).rejects.toMatchObject({ status: 409 });
       await call('todos.update', { todoId, completed: false });
-      expect((await call('todos.list')).data.todos[0].completed).toBe(false);
+      expect((await call('todos.list')).data.todos.find((todo) => todo.id === todoId).completed).toBe(false);
       const planCreated = await call('plans.create', { title: 'Agent plan', body: 'Original' });
       const planId = planCreated.data.plan.id;
       const plan = (await call('plans.read', { planId })).data.plan;
@@ -196,15 +205,19 @@ describe('managed agent tool runtime', () => {
       expect(actions).toContain(action);
     }
     const parameters = tools.openchamber.input.properties.parameters.properties;
-    for (const field of ['noteId', 'todoId', 'planId', 'body', 'text', 'raw', 'expectedRaw']) {
+    for (const field of ['noteId', 'todoId', 'planId', 'body', 'expectedBody', 'text', 'raw', 'expectedRaw']) {
       expect(parameters[field].type).toBe('string');
     }
     expect(parameters.completed.type).toBe('boolean');
+    expect(parameters.expectedBody.description).toContain('Last body returned by notes.read');
+    expect(tools.openchamber.input.properties.action.oneOf.find((entry) => entry.const === 'notes.update').description).toContain('pass its body as expectedBody');
     expect(parameters).not.toHaveProperty('origin');
     expect(parameters).not.toHaveProperty('source');
     expect(parameters).not.toHaveProperty('pinned');
     expect(tools.openchamber_web.input.properties.parameters.properties).not.toHaveProperty('todoId');
+    expect(tools.openchamber_web.input.properties.parameters.properties).not.toHaveProperty('expectedBody');
     expect(tools.openchamber_memory.input.properties.parameters.properties).not.toHaveProperty('expectedRaw');
+    expect(tools.openchamber_memory.input.properties.parameters.properties).not.toHaveProperty('expectedBody');
     await runtime.materializePlugin({ includeControl: false });
     expect(await loadTools(dataDir, 'knowledge-disabled')).not.toHaveProperty('openchamber');
   });

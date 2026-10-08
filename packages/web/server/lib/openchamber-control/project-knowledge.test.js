@@ -81,7 +81,7 @@ describe('project knowledge control actions', () => {
     await call('notes.create', { body: 'New', source: 'manual', origin: { sessionId: 'spoof' }, sessionId: 'spoof', pinned: true });
     expect(runtime.createNote).toHaveBeenCalledWith(owner, { body: 'New', source: 'agent', origin: { sessionId: 'ses_caller' } });
     await call('notes.update', { noteId: 'note-1', body: 'Edit', pinned: true, origin: { sessionId: 'spoof' } });
-    expect(runtime.updateNote).toHaveBeenCalledWith(owner, 'note-1', { body: 'Edit' });
+    expect(runtime.updateNote).toHaveBeenCalledWith(owner, 'note-1', { body: 'Edit' }, {});
     await call('notes.delete', { noteId: 'note-1' });
     expect(runtime.deleteNote).toHaveBeenCalledWith(owner, 'note-1');
     await call('todos.create', { text: 'New', id: 'spoof', completed: true });
@@ -105,6 +105,7 @@ describe('project knowledge control actions', () => {
   it.each([
     ['notes.read', {}], ['notes.create', { body: '' }], ['notes.create', { body: 'a'.repeat(3001) }],
     ['notes.update', { noteId: 'note-1' }], ['notes.delete', {}],
+    ['notes.update', { noteId: 'note-1', body: 'New', expectedBody: false }],
     ['todos.create', { text: 'a'.repeat(1001) }], ['todos.update', { todoId: 'todo-1' }],
     ['todos.update', { todoId: 'todo-1', completed: 'false' }], ['todos.delete', {}],
     ['plans.read', {}], ['plans.create', { title: 'a'.repeat(161), body: '' }],
@@ -112,6 +113,12 @@ describe('project knowledge control actions', () => {
     ['plans.update', { planId: 'plan-1', raw: '', expectedRaw: false }], ['plans.delete', {}],
   ])('returns validation errors for %s', async (action, input) => {
     await expect(setup().service.execute(action, input, '/repo', { contextSessionId: 'ses_1' })).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it.each(['Note', '', '  Note\r\n'])('forwards the exact optional last-read note body', async (expectedBody) => {
+    const { service, runtime } = setup();
+    await service.execute('notes.update', { noteId: 'note-1', body: 'New', expectedBody, source: 'manual', origin: { sessionId: 'spoof' } }, '/repo');
+    expect(runtime.updateNote).toHaveBeenCalledWith(createProjectIdFromPath('/repo'), 'note-1', { body: 'New' }, { expectedBody });
   });
 
   it('requires callback provenance to create notes', async () => {
@@ -136,6 +143,8 @@ describe('project knowledge control actions', () => {
     ]) await expect(service.execute(action, input, '/repo')).rejects.toMatchObject({ statusCode: 404 });
     runtime.updatePlan.mockRejectedValue(new OpenChamberControlError('Plan changed', 409));
     await expect(service.execute('plans.update', { planId: 'plan-1', raw: '', expectedRaw: '' }, '/repo')).rejects.toMatchObject({ statusCode: 409 });
+    runtime.updateNote.mockRejectedValue(Object.assign(new Error('Note changed'), { status: 409 }));
+    await expect(service.execute('notes.update', { noteId: 'note-1', body: 'New', expectedBody: 'Note' }, '/repo')).rejects.toMatchObject({ statusCode: 409 });
     runtime.readContext.mockRejectedValue(new Error('Stored project context is malformed'));
     await expect(service.execute('notes.list', {}, '/repo')).rejects.toMatchObject({ statusCode: 500, message: 'Stored project context is malformed' });
   });
