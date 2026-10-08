@@ -210,6 +210,10 @@ failed read keeps what was known and records `loadError` instead of reading as
 `messageQueueStore.ts` has two owners, decided by `isServerOwnedMessageQueue()`.
 On web, desktop, and mobile the server delivers the queue independently of the
 UI. The store projects authoritative snapshots and revisioned session updates.
+Scheduled queue items also retain their `scheduledTask` provenance. An inherited
+scheduled item has no pinned send config; ordinary items keep their captured
+provider and model. Both appear in the same queue. Scheduled items allow reorder
+and removal, but not editing or manual send. Bulk take leaves them queued.
 `sync/message-queue-sync.ts` receives queue events through the shared control SSE
 stream at `/api/openchamber/events`, including while OpenCode uses SSE fallback.
 It adds no poller or per-session connection. Either stream reconnecting requests

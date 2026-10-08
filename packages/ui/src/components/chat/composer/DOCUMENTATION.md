@@ -89,6 +89,12 @@ creation state, and pending draft, hides the other three. Composer content
 also hides suggestion; new-session drafts hide form, queue and suggestion.
 Hiding the queue does not pause its delivery.
 
+`selectComposerQueue` in the submission builder excludes server-scheduled items
+before the composer counts manual content or reads captured send configuration.
+Mixed queues use only ordinary items for manual send; a scheduled-only queue
+cannot trigger an empty composer send. Scheduled items stay visible in the
+queue chips with reorder and remove, but no edit or send action.
+
 `BackgroundShellsStrip` shares that top-row slot, above the "looks done" hint
 and the suggestion: the commands that went to the background (not the ones
 a turn is waiting for, see `background` in `sync/background-shells.ts`) of
