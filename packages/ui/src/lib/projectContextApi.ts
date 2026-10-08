@@ -189,10 +189,12 @@ const mutateProjectTodo = async (
   value?: { text?: string; completed?: boolean },
 ): Promise<ProjectContextData> => {
   const suffix = `/${encodeURIComponent(todoId)}`;
-  const response = await runtimeFetch(`${basePath(requireProjectId(project))}/todos${suffix}`, {
-    method,
-    ...(value ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) } : {}),
-  });
+  const options: RequestInit = { method };
+  if (value) {
+    options.headers = { 'Content-Type': 'application/json' };
+    options.body = JSON.stringify(value);
+  }
+  const response = await runtimeFetch(`${basePath(requireProjectId(project))}/todos${suffix}`, options);
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Failed to save project todo'));
   }

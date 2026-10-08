@@ -6,8 +6,18 @@ export interface RetainedPlanBuffer extends SavedPlanBuffer {
   saveError: string | null;
 }
 
+interface SavedPlanDrafts {
+  queue: ReturnType<typeof createPlanSaveQueue>;
+  retire: () => void;
+  edit: (key: string, buffer: RetainedPlanBuffer, content: string) => void;
+  schedule: (key: string, revision: number, buffer: RetainedPlanBuffer, write: () => Promise<void>) => Promise<void>;
+  retain: (key: string, buffer: RetainedPlanBuffer) => void;
+  restore: (key: string) => RetainedPlanBuffer | undefined;
+  deleted: (key: string) => void;
+}
+
 /** Page-lifetime ownership of unsaved project plans. No persistence or eviction. */
-export const createSavedPlanDrafts = () => {
+export const createSavedPlanDrafts = (): SavedPlanDrafts => {
   const drafts = new Map<string, RetainedPlanBuffer>();
   const deletions = new Map<string, { revision: number; deleted: boolean }>();
   const queue = createPlanSaveQueue();

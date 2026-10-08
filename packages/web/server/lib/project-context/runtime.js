@@ -15,6 +15,10 @@
 import { asNonEmptyString, isRecord as isObjectRecord } from '../shared/guards.js';
 import { projectConfigFileStemOf } from '../projects/project-id.js';
 import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
+
+const optionalTextInput = z.string().optional();
+const completedInput = z.boolean();
 
 const PROJECT_CONTEXT_VERSION = 2;
 const PROJECT_NOTE_BODY_MAX_LENGTH = 3000;
@@ -199,7 +203,7 @@ const insertTodoBeforeCompleted = (items, item) => {
 };
 
 const todoText = (value) => {
-  const text = typeof value === 'string' ? value.trim() : '';
+  const text = asNonEmptyString(value);
   if (!text) throw mutationError('text is required', 400);
   if (text.length > PROJECT_TODO_TEXT_MAX_LENGTH) {
     throw mutationError(`text must be at most ${PROJECT_TODO_TEXT_MAX_LENGTH} characters`, 400);
@@ -526,18 +530,17 @@ export const createProjectContextRuntime = (deps) => {
     const hasCompleted = patch?.completed !== undefined;
     if (!hasText && !hasCompleted) throw mutationError('text or completed is required', 400);
     const text = hasText ? todoText(patch.text) : null;
-    if (hasCompleted && typeof patch.completed !== 'boolean') {
+    const completed = completedInput.safeParse(patch?.completed);
+    if (hasCompleted && !completed.success) {
       throw mutationError('completed must be a boolean', 400);
     }
     return withWriteLock(projectId, async () => {
       const current = await readStoredContext(projectId);
       const existing = current.todos.find((todo) => todo.id === id);
       if (!existing) throw mutationError('Todo not found', 404);
-      const updated = {
-        ...existing,
-        ...(hasText ? { text } : {}),
-        ...(hasCompleted ? { completed: patch.completed } : {}),
-      };
+      const updated = { ...existing };
+      if (hasText) updated.text = text;
+      if (hasCompleted) updated.completed = completed.data;
       let todos;
       if (updated.completed !== existing.completed) {
         const remaining = current.todos.filter((todo) => todo.id !== id);
@@ -618,7 +621,8 @@ export const createProjectContextRuntime = (deps) => {
     if (hasBody && !body) {
       throw new Error('body is required');
     }
-    if (options.expectedBody !== undefined && typeof options.expectedBody !== 'string') {
+    const expectedBody = optionalTextInput.safeParse(options.expectedBody);
+    if (!expectedBody.success) {
       throw mutationError('expectedBody must be a string', 400);
     }
 
@@ -629,7 +633,7 @@ export const createProjectContextRuntime = (deps) => {
       if (!existing) {
         return null;
       }
-      if (options.expectedBody !== undefined && options.expectedBody !== existing.body) {
+      if (expectedBody.data !== undefined && expectedBody.data !== existing.body) {
         throw mutationError('Project note changed; reload before saving', 409);
       }
 
@@ -722,13 +726,14 @@ export const createProjectContextRuntime = (deps) => {
     if (typeof value?.raw !== 'string') {
       throw new Error('raw is required');
     }
-    if (options.expectedRaw !== undefined && typeof options.expectedRaw !== 'string') {
+    const expectedRaw = optionalTextInput.safeParse(options.expectedRaw);
+    if (!expectedRaw.success) {
       throw mutationError('expectedRaw must be a string', 400);
     }
     const raw = clampLength(value.raw, PROJECT_PLAN_BODY_MAX_LENGTH);
     const checkExpectedRaw = async (filePath) => {
-      if (options.expectedRaw !== undefined
-        && await fsPromises.readFile(filePath, 'utf8') !== options.expectedRaw) {
+      if (expectedRaw.data !== undefined
+        && await fsPromises.readFile(filePath, 'utf8') !== expectedRaw.data) {
         throw mutationError('Plan changed; reload before saving', 409);
       }
     };

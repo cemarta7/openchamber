@@ -1155,45 +1155,49 @@ export const registerFsRoutes = (app, dependencies) => {
       res.setHeader('Referrer-Policy', 'no-referrer');
       res.setHeader('Accept-Ranges', 'bytes');
 
-      // A byte span is streamed from disk rather than read whole: the audio
-      // and video players ask for one on every seek, and a recording can be
-      // hundreds of megabytes.
+      // The file is streamed from disk, never read whole: the audio and video
+      // players ask for a span on every seek, and a recording or a PDF can be
+      // hundreds of megabytes the server would otherwise hold in memory.
       const range = resolveByteRange(req.headers?.range, stats.size);
       if (range.kind === 'unsatisfiable') {
         res.setHeader('Content-Range', `bytes */${stats.size}`);
         return res.status(416).end();
       }
-      if (range.kind === 'range') {
-        const handle = await fsPromises.open(canonicalPath, 'r');
-        res.status(206);
-        res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${stats.size}`);
-        res.setHeader('Content-Length', String(range.end - range.start + 1));
-        res.type(mimeType);
-        // pipe() leaves the source paused when a media player disconnects.
-        // Destroy it too so autoClose releases the FileHandle before GC.
-        try {
-          const stream = handle.createReadStream({ start: range.start, end: range.end });
-          const onResponseClose = () => stream.destroy();
-          res.once('close', onResponseClose);
-          stream.once('close', () => res.removeListener('close', onResponseClose));
-          stream.on('error', (error) => {
-            console.error('Failed to stream raw file range:', error);
-            res.destroy(error);
-          });
-          if (res.destroyed) {
-            stream.destroy();
-          } else {
-            stream.pipe(res);
-          }
-        } catch (error) {
-          await handle.close();
-          throw error;
-        }
-        return undefined;
+      res.type(mimeType);
+      // An empty file has no byte to read, and a read stream over `0..-1` would fail.
+      if (stats.size === 0) {
+        res.setHeader('Content-Length', '0');
+        return res.end();
       }
-
-      const content = await fsPromises.readFile(canonicalPath);
-      return res.type(mimeType).send(content);
+      // Opened before any span header is set, so a failed open answers a clean error.
+      const handle = await fsPromises.open(canonicalPath, 'r');
+      const span = range.kind === 'range' ? range : { start: 0, end: stats.size - 1 };
+      if (range.kind === 'range') {
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${span.start}-${span.end}/${stats.size}`);
+      }
+      res.setHeader('Content-Length', String(span.end - span.start + 1));
+      // pipe() leaves the source paused when a media player disconnects.
+      // Destroy it too so autoClose releases the FileHandle before GC.
+      try {
+        const stream = handle.createReadStream({ start: span.start, end: span.end });
+        const onResponseClose = () => stream.destroy();
+        res.once('close', onResponseClose);
+        stream.once('close', () => res.removeListener('close', onResponseClose));
+        stream.on('error', (error) => {
+          console.error('Failed to stream raw file:', error);
+          res.destroy(error);
+        });
+        if (res.destroyed) {
+          stream.destroy();
+        } else {
+          stream.pipe(res);
+        }
+      } catch (error) {
+        await handle.close();
+        throw error;
+      }
+      return undefined;
     } catch (error) {
       const err = error;
       if (err && typeof err === 'object' && err.code === 'ENOENT') {
@@ -1562,6 +1566,19 @@ export const registerFsRoutes = (app, dependencies) => {
 
       if (resolvedOld.base !== resolvedNew.base) {
         return res.status(400).json({ error: 'Source and destination must share the same workspace root' });
+      }
+
+      // fs.rename silently replaces an existing file. A destination that is the
+      // source itself is a case-only rename on a case-insensitive filesystem.
+      const [sourceStats, destinationStats] = await Promise.all([
+        fsPromises.lstat(resolvedOld.resolved),
+        fsPromises.lstat(resolvedNew.resolved).catch((error) => {
+          if (error?.code === 'ENOENT') return null;
+          throw error;
+        }),
+      ]);
+      if (destinationStats && (destinationStats.dev !== sourceStats.dev || destinationStats.ino !== sourceStats.ino)) {
+        return res.status(409).json({ error: 'Destination path already exists', reason: 'already-exists' });
       }
 
       await fsPromises.rename(resolvedOld.resolved, resolvedNew.resolved);

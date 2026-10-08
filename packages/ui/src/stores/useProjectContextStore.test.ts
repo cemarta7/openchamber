@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import type { ProjectRef } from '@/lib/projectContextApi';
 
 interface NotePayload {
   id: string;
@@ -83,18 +84,18 @@ mock.module('@/lib/projectContextApi', () => ({
     calls.fetch += 1;
     return handlers.fetch();
   },
-  saveProjectTodos: (_project: unknown, todos: ContextPayload['todos'], expectedTodos: ContextPayload['todos']) => {
+  saveProjectTodos: (_project: ProjectRef, todos: ContextPayload['todos'], expectedTodos: ContextPayload['todos']) => {
     calls.saveTodos += 1;
     return handlers.saveTodos(todos, expectedTodos);
   },
   createProjectTodo: () => handlers.createTodo(),
-  updateProjectTodo: (_project: unknown, id: string, patch: { completed?: boolean; text?: string }) => handlers.todo('PATCH', id, patch),
-  deleteProjectTodo: (_project: unknown, id: string) => handlers.todo('DELETE', id),
+  updateProjectTodo: (_project: ProjectRef, id: string, patch: { completed?: boolean; text?: string }) => handlers.todo('PATCH', id, patch),
+  deleteProjectTodo: (_project: ProjectRef, id: string) => handlers.todo('DELETE', id),
   createProjectNote: () => {
     calls.createNote += 1;
     return handlers.createNote();
   },
-  updateProjectNote: (_project: unknown, _id: string, patch: { body?: string }, options?: { expectedBody?: string }) => {
+  updateProjectNote: (_project: ProjectRef, _id: string, patch: { body?: string }, options?: { expectedBody?: string }) => {
     calls.updateNote += 1;
     return handlers.updateNote(patch.body, options?.expectedBody);
   },
