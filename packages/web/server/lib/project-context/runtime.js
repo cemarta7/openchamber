@@ -192,6 +192,12 @@ const SHARED_PLAN_ID_PREFIX = 'shared:';
 
 const mutationError = (message, status) => Object.assign(new Error(message), { status });
 
+const insertTodoBeforeCompleted = (items, item) => {
+  const firstCompletedIndex = items.findIndex((todo) => todo.completed);
+  if (firstCompletedIndex === -1) return [...items, item];
+  return [...items.slice(0, firstCompletedIndex), item, ...items.slice(firstCompletedIndex)];
+};
+
 const todoText = (value) => {
   const text = typeof value === 'string' ? value.trim() : '';
   if (!text) throw mutationError('text is required', 400);
@@ -505,7 +511,7 @@ export const createProjectContextRuntime = (deps) => {
         throw mutationError(`A project can hold at most ${PROJECT_TODO_MAX_ITEMS} todos`, 400);
       }
       const todo = { id: idFactory(), text, completed: false, createdAt: Date.now() };
-      const next = { ...current, todos: [...current.todos, todo] };
+      const next = { ...current, todos: insertTodoBeforeCompleted(current.todos, todo) };
       await writeContext(projectId, next);
       return next;
     });
@@ -523,15 +529,21 @@ export const createProjectContextRuntime = (deps) => {
     }
     return withWriteLock(projectId, async () => {
       const current = await readStoredContext(projectId);
-      if (!current.todos.some((todo) => todo.id === id)) throw mutationError('Todo not found', 404);
-      const next = {
-        ...current,
-        todos: current.todos.map((todo) => todo.id === id ? {
-          ...todo,
-          ...(hasText ? { text } : {}),
-          ...(hasCompleted ? { completed: patch.completed } : {}),
-        } : todo),
+      const existing = current.todos.find((todo) => todo.id === id);
+      if (!existing) throw mutationError('Todo not found', 404);
+      const updated = {
+        ...existing,
+        ...(hasText ? { text } : {}),
+        ...(hasCompleted ? { completed: patch.completed } : {}),
       };
+      let todos;
+      if (updated.completed !== existing.completed) {
+        const remaining = current.todos.filter((todo) => todo.id !== id);
+        todos = updated.completed ? [...remaining, updated] : insertTodoBeforeCompleted(remaining, updated);
+      } else {
+        todos = current.todos.map((todo) => todo.id === id ? updated : todo);
+      }
+      const next = { ...current, todos };
       await writeContext(projectId, next);
       return next;
     });
@@ -590,7 +602,7 @@ export const createProjectContextRuntime = (deps) => {
    * Patch one note. Omitted fields are left alone, so pinning a note cannot
    * roll back an edit that landed between the two requests.
    */
-  const updateNote = async (projectId, noteId, patch) => {
+  const updateNote = async (projectId, noteId, patch, options = {}) => {
     const id = asNonEmptyString(noteId);
     if (!id) {
       throw new Error('noteId is required');
@@ -604,6 +616,9 @@ export const createProjectContextRuntime = (deps) => {
     if (hasBody && !body) {
       throw new Error('body is required');
     }
+    if (options.expectedBody !== undefined && typeof options.expectedBody !== 'string') {
+      throw mutationError('expectedBody must be a string', 400);
+    }
 
     return withWriteLock(projectId, async () => {
       const now = Date.now();
@@ -611,6 +626,9 @@ export const createProjectContextRuntime = (deps) => {
       const existing = current.notes.find((note) => note.id === id);
       if (!existing) {
         return null;
+      }
+      if (options.expectedBody !== undefined && options.expectedBody !== existing.body) {
+        throw mutationError('Project note changed; reload before saving', 409);
       }
 
       const note = {

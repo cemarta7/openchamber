@@ -77,6 +77,75 @@ const createApp = (overrides = {}) => {
 const BASE = '/api/project-context/path_dGVzdA';
 
 describe('persisted item routes and preconditions', () => {
+  it('protects note revisions for both HTTP and runtime writer directions', async () => {
+    const projectsDirPath = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-context-note-http-'));
+    try {
+      let counter = 0;
+      const changes = [];
+      const runtime = createProjectContextRuntime({
+        fsPromises, path, projectsDirPath, createId: () => `item-${++counter}`,
+        onChanged: (id) => changes.push(id),
+      });
+      const { app } = createApp(runtime);
+      const created = await request(app).post(`${BASE}/notes`).send({ body: 'original' }).expect(201);
+      const notePath = `${BASE}/notes/${created.body.note.id}`;
+      await request(app).post(`${BASE}/notes`).send({ body: 'peer' }).expect(201);
+      await request(app).post(`${BASE}/todos`).send({ text: 'peer todo' }).expect(201);
+      changes.length = 0;
+      await runtime.updateNote('path_dGVzdA', created.body.note.id, { body: 'agent' }, { expectedBody: 'original' });
+      const file = path.join(projectsDirPath, 'path_dGVzdA', 'context.json');
+      const committed = await fsPromises.readFile(file, 'utf8');
+      await request(app).patch(notePath).send({ body: 'stale UI', expectedBody: 'original' }).expect(409);
+      expect(await fsPromises.readFile(file, 'utf8')).toBe(committed);
+      expect(changes).toEqual(['path_dGVzdA']);
+      const updated = await request(app).patch(notePath).send({ body: 'UI', expectedBody: 'agent' }).expect(200);
+      expect(updated.body.note.body).toBe('UI');
+      await expect(runtime.updateNote('path_dGVzdA', created.body.note.id, { body: 'stale agent' }, { expectedBody: 'agent' }))
+        .rejects.toMatchObject({ status: 409 });
+      expect(changes).toHaveLength(2);
+      await request(app).patch(notePath).send({ body: 'UI', expectedBody: 'UI' }).expect(200);
+      expect(changes).toHaveLength(3);
+      await request(app).patch(notePath).send({ body: 'new', expectedBody: ' UI ' }).expect(409);
+      for (const expectedBody of [null, 1, false, {}]) {
+        await request(app).patch(notePath).send({ body: 'new', expectedBody }).expect(400);
+      }
+      await request(app).patch(notePath).send({ expectedBody: 'UI' }).expect(400);
+      await request(app).patch(notePath).send({ body: ' ', expectedBody: 'UI' }).expect(400);
+      await request(app).patch(`${BASE}/notes/gone`).send({ body: 'new', expectedBody: 'UI' }).expect(404);
+      expect(changes).toHaveLength(3);
+      const latest = await request(app).get(BASE).expect(200);
+      expect(latest.body.notes.map((note) => note.body)).toEqual(['peer', 'UI']);
+      expect(latest.body.todos[0].text).toBe('peer todo');
+      await request(app).patch(notePath).send({ body: 'legacy' }).expect(200);
+    } finally {
+      await fsPromises.rm(projectsDirPath, { recursive: true, force: true });
+    }
+  });
+
+  it('stores completion and reopening order and inserts peer additions before completed items', async () => {
+    const projectsDirPath = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-context-order-http-'));
+    try {
+      let counter = 0;
+      const runtime = createProjectContextRuntime({ fsPromises, path, projectsDirPath, createId: () => `item-${++counter}` });
+      const { app } = createApp(runtime);
+      const first = await request(app).post(`${BASE}/todos`).send({ text: 'A' }).expect(201);
+      const a = first.body.todos[0].id;
+      const second = await request(app).post(`${BASE}/todos`).send({ text: 'B' }).expect(201);
+      const b = second.body.todos[1].id;
+      await request(app).patch(`${BASE}/todos/${a}`).send({ completed: true }).expect(200);
+      await runtime.createTodo('path_dGVzdA', { text: 'peer' });
+      const completed = await request(app).patch(`${BASE}/todos/${b}`).send({ completed: true }).expect(200);
+      expect(completed.body.todos.map((todo) => todo.text)).toEqual(['peer', 'A', 'B']);
+      const reopened = await request(app).patch(`${BASE}/todos/${b}`).send({ completed: false }).expect(200);
+      expect(reopened.body.todos.map((todo) => todo.text)).toEqual(['peer', 'B', 'A']);
+      const unchanged = await request(app).patch(`${BASE}/todos/${b}`).send({ text: 'edited', completed: false }).expect(200);
+      expect(unchanged.body.todos.map((todo) => todo.text)).toEqual(['peer', 'edited', 'A']);
+      expect((await request(app).get(BASE).expect(200)).body.todos).toEqual(unchanged.body.todos);
+    } finally {
+      await fsPromises.rm(projectsDirPath, { recursive: true, force: true });
+    }
+  });
+
   it('returns committed contexts and rejects stale bulk and plan writes', async () => {
     const projectsDirPath = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-context-http-'));
     try {

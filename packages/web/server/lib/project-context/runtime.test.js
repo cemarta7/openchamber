@@ -25,13 +25,39 @@ const writeJson = async (filePath, value) => {
 const readJson = async (filePath) => JSON.parse(await fsPromises.readFile(filePath, 'utf8'));
 
 describe('atomic todo mutations', () => {
+  test('stores original completion, reopening and creation order while preserving peers', async () => {
+    const initial = await runtime.saveTodos(PROJECT_ID, [
+      { id: 'a', text: 'A', completed: false, createdAt: 1 },
+      { id: 'b', text: 'B', completed: false, createdAt: 2 },
+      { id: 'c', text: 'C', completed: true, createdAt: 3 },
+      { id: 'd', text: 'D', completed: true, createdAt: 4 },
+    ]);
+    const completed = await runtime.updateTodo(PROJECT_ID, 'a', { completed: true });
+    expect(completed.todos.map((todo) => todo.id)).toEqual(['b', 'c', 'd', 'a']);
+    expect((await runtime.updateTodo(PROJECT_ID, 'c', { completed: true })).todos).toEqual(completed.todos);
+    const edited = await runtime.updateTodo(PROJECT_ID, 'c', { text: 'edited' });
+    expect(edited.todos.map((todo) => todo.id)).toEqual(['b', 'c', 'd', 'a']);
+    const reopened = await runtime.updateTodo(PROJECT_ID, 'a', { text: 'reopened', completed: false });
+    expect(reopened.todos.map((todo) => todo.id)).toEqual(['b', 'a', 'c', 'd']);
+    await Promise.all([
+      runtime.createTodo(PROJECT_ID, { text: 'peer' }),
+      runtime.updateTodo(PROJECT_ID, 'd', { completed: false }),
+    ]);
+    const current = (await runtime.readContext(PROJECT_ID)).todos;
+    expect(current.map((todo) => todo.text)).toEqual(['B', 'reopened', 'peer', 'D', 'edited']);
+    expect(current.find((todo) => todo.id === 'a')).toEqual({ ...initial.todos[0], text: 'reopened' });
+    await runtime.updateTodo(PROJECT_ID, 'c', { completed: false });
+    const allOpen = await runtime.updateTodo(PROJECT_ID, 'b', { completed: true });
+    expect(allOpen.todos.at(-1).id).toBe('b');
+    expect((await runtime.updateTodo(PROJECT_ID, 'b', { completed: false })).todos.at(-1).id).toBe('b');
+  });
   test('creates stable server ids, patches fields, reopens and deletes one item', async () => {
     const first = await runtime.createTodo(PROJECT_ID, { text: ' one ' });
     const item = first.todos[0];
     await runtime.createTodo(PROJECT_ID, { text: 'two' });
     await runtime.updateTodo(PROJECT_ID, item.id, { completed: true });
     const edited = await runtime.updateTodo(PROJECT_ID, item.id, { text: 'edited' });
-    expect(edited.todos[0]).toEqual({ ...item, text: 'edited', completed: true });
+    expect(edited.todos.at(-1)).toEqual({ ...item, text: 'edited', completed: true });
     await runtime.updateTodo(PROJECT_ID, item.id, { completed: false });
     const deleted = await runtime.deleteTodo(PROJECT_ID, item.id);
     expect(deleted.todos.map((todo) => todo.text)).toEqual(['two']);
@@ -52,7 +78,7 @@ describe('atomic todo mutations', () => {
     ]);
     const after = await runtime.readContext(PROJECT_ID);
     expect(after.todos).toHaveLength(19);
-    expect(after.todos[0]).toEqual({ ...before.todos[0], text: 'edited', completed: true });
+    expect(after.todos.at(-1)).toEqual({ ...before.todos[0], text: 'edited', completed: true });
     expect(after.notes).toEqual(before.notes);
   });
 
@@ -461,6 +487,90 @@ describe('committed changes', () => {
 });
 
 describe('notes', () => {
+  test('serializes conditional writers in both directions without stale writes or events', async () => {
+    const changes = [];
+    const announcing = createProjectContextRuntime({
+      fsPromises, path, projectsDirPath, createId: () => `note-${++idCounter}`,
+      onChanged: (id) => changes.push(id),
+    });
+    for (const [first, second] of [['agent', 'ui'], ['ui', 'agent']]) {
+      const { note } = await announcing.createNote(PROJECT_ID, { body: 'original' });
+      const peer = await announcing.createNote(PROJECT_ID, { body: 'peer' });
+      await announcing.createTodo(PROJECT_ID, { text: 'peer todo' });
+      changes.length = 0;
+      const results = await Promise.allSettled([
+        announcing.updateNote(PROJECT_ID, note.id, { body: first }, { expectedBody: note.body }),
+        announcing.updateNote(PROJECT_ID, note.id, { body: second }, { expectedBody: note.body }),
+      ]);
+      expect(results[0].status).toBe('fulfilled');
+      expect(results[1]).toMatchObject({ status: 'rejected', reason: { status: 409 } });
+      expect(changes).toEqual([PROJECT_ID]);
+      const committed = await fsPromises.readFile(contextPath(), 'utf8');
+      await expect(announcing.updateNote(PROJECT_ID, note.id, { pinned: true }, { expectedBody: 'original' }))
+        .rejects.toMatchObject({ status: 409 });
+      expect(await fsPromises.readFile(contextPath(), 'utf8')).toBe(committed);
+      expect(changes).toEqual([PROJECT_ID]);
+      const current = await announcing.readContext(PROJECT_ID);
+      expect(current.notes.find((entry) => entry.id === note.id).body).toBe(first);
+      expect(current.notes.find((entry) => entry.id === peer.note.id)).toEqual(peer.note);
+      expect(current.todos.some((todo) => todo.text === 'peer todo')).toBe(true);
+    }
+  });
+
+  test('checks exact bodies and preserves matching, legacy, missing and invalid patch behavior', async () => {
+    const { note } = await runtime.createNote(PROJECT_ID, { body: 'original' });
+    await expect(runtime.updateNote(PROJECT_ID, note.id, { body: 'new' }, { expectedBody: ' original ' }))
+      .rejects.toMatchObject({ status: 409 });
+    for (const expectedBody of [null, 1, false, {}]) {
+      await expect(runtime.updateNote(PROJECT_ID, note.id, { body: 'new' }, { expectedBody }))
+        .rejects.toMatchObject({ status: 400 });
+    }
+    await expect(runtime.updateNote(PROJECT_ID, '', { body: 'new' }, { expectedBody: note.body }))
+      .rejects.toThrow('noteId is required');
+    await expect(runtime.updateNote(PROJECT_ID, note.id, {}, { expectedBody: note.body }))
+      .rejects.toThrow('body or pinned is required');
+    await expect(runtime.updateNote(PROJECT_ID, note.id, { body: ' ' }, { expectedBody: note.body }))
+      .rejects.toThrow('body is required');
+    expect(await runtime.updateNote(PROJECT_ID, 'gone', { body: 'new' }, { expectedBody: note.body })).toBeNull();
+    const pinned = await runtime.updateNote(PROJECT_ID, note.id, { pinned: true }, { expectedBody: note.body });
+    expect(pinned.note.updatedAt).toBe(note.updatedAt);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const same = await runtime.updateNote(PROJECT_ID, note.id, { body: note.body }, { expectedBody: note.body });
+    expect(same.note.body).toBe(note.body);
+    expect(same.note.updatedAt).toBeGreaterThan(note.updatedAt);
+    expect(same.note.pinned).toBe(true);
+    const clamped = await runtime.updateNote(PROJECT_ID, note.id, { body: 'x'.repeat(4000) }, { expectedBody: note.body });
+    expect(clamped.note.body).toHaveLength(3000);
+    expect((await runtime.updateNote(PROJECT_ID, note.id, { body: 'legacy' })).note.body).toBe('legacy');
+  });
+
+  test('conditional same-body writes announce but missing, malformed and failed writes do not', async () => {
+    const changes = [];
+    let failRename = false;
+    const guarded = createProjectContextRuntime({
+      fsPromises: { ...fsPromises, rename: async (...args) => {
+        if (failRename) throw new Error('commit failed');
+        return fsPromises.rename(...args);
+      } },
+      path, projectsDirPath, createId: () => 'n1', onChanged: (id) => changes.push(id),
+    });
+    const { note } = await guarded.createNote(PROJECT_ID, { body: 'keep' });
+    changes.length = 0;
+    await guarded.updateNote(PROJECT_ID, note.id, { body: 'keep' }, { expectedBody: 'keep' });
+    expect(changes).toEqual([PROJECT_ID]);
+    changes.length = 0;
+    expect(await guarded.updateNote(PROJECT_ID, 'gone', { body: 'new' }, { expectedBody: 'keep' })).toBeNull();
+    const committed = await fsPromises.readFile(contextPath(), 'utf8');
+    failRename = true;
+    await expect(guarded.updateNote(PROJECT_ID, note.id, { body: 'new' }, { expectedBody: 'keep' }))
+      .rejects.toThrow('commit failed');
+    expect(await fsPromises.readFile(contextPath(), 'utf8')).toBe(committed);
+    await fsPromises.writeFile(contextPath(), '{ malformed', 'utf8');
+    await expect(guarded.updateNote(PROJECT_ID, note.id, { body: 'new' }, { expectedBody: 'keep' }))
+      .rejects.toThrow('malformed');
+    expect(changes).toEqual([]);
+  });
+
   test('create returns the stored note and prepends it', async () => {
     const first = await runtime.createNote(PROJECT_ID, { body: 'first' });
     const second = await runtime.createNote(PROJECT_ID, { body: 'second' });

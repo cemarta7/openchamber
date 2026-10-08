@@ -155,12 +155,15 @@ export const registerProjectContextRoutes = (app, dependencies) => {
     if (body.pinned !== undefined && typeof body.pinned !== 'boolean') {
       return res.status(400).json({ error: 'pinned must be a boolean' });
     }
+    if (body.expectedBody !== undefined && typeof body.expectedBody !== 'string') {
+      return res.status(400).json({ error: 'expectedBody must be a string' });
+    }
 
     try {
       const result = await projectContextRuntime.updateNote(req.params.projectId, req.params.noteId, {
         ...(body.body !== undefined ? { body: body.body } : {}),
         ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
-      });
+      }, { expectedBody: body.expectedBody });
       if (!result) {
         return res.status(404).json({ error: 'Note not found' });
       }
