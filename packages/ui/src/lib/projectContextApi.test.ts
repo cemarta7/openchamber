@@ -1,5 +1,5 @@
 import { afterAll, afterEach, expect, test } from 'bun:test';
-import { createProjectTodo, deleteProjectTodo, saveProjectTodos, updateProjectPlan, updateProjectTodo, type ProjectTodoItem } from './projectContextApi';
+import { createProjectTodo, deleteProjectTodo, saveProjectTodos, updateProjectNote, updateProjectPlan, updateProjectTodo, type ProjectTodoItem } from './projectContextApi';
 
 const originalFetch = globalThis.fetch;
 const project = { id: 'configured', path: '/fixture/project' };
@@ -9,7 +9,12 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
   const path = input instanceof Request ? input.url : String(input);
   requests.push({ path, method: init?.method ?? 'GET', body: init?.body ? String(init.body) : null });
   if (status !== 200) return Response.json({ error: 'Concurrent change' }, { status });
+  if (path.includes('/notes/')) return Response.json({ note: { id: 'n1', body: 'Draft', source: 'manual', pinned: false, createdAt: 1, updatedAt: 2 } });
   if (path.includes('/plans/')) return Response.json({ plan: { id: 'p1', file: 'plan.md', title: 'Plan', createdAt: 1, pinned: false }, raw: '# Draft' });
+  if (init?.method === 'POST') {
+    const todo = { id: 'created', text: 'New item', completed: false, createdAt: 1 };
+    return Response.json({ todo, context: { notes: [], todos: [todo], plans: [] } });
+  }
   return Response.json({ notes: [], todos: [], plans: [], sharedPlansDir: null });
 }, originalFetch);
 
@@ -47,4 +52,14 @@ test('conditional write conflicts remain failures', async () => {
   status = 409;
   await expect(saveProjectTodos(project, [], [])).rejects.toThrow('Concurrent change');
   await expect(updateProjectPlan(project, 'p1', '# Draft', { expectedRaw: '# Original' })).rejects.toThrow('Concurrent change');
+  await expect(updateProjectNote(project, 'n1', { body: 'Draft' }, { expectedBody: 'Original' })).rejects.toThrow('Concurrent change');
+});
+
+test('note text writes send the exact confirmed body and pin writes omit it', async () => {
+  await updateProjectNote(project, 'n1', { body: 'Draft' }, { expectedBody: ' Original\n' });
+  await updateProjectNote(project, 'n1', { pinned: true });
+  expect(requests.map(request => request.body)).toEqual([
+    JSON.stringify({ body: 'Draft', expectedBody: ' Original\n' }),
+    JSON.stringify({ pinned: true }),
+  ]);
 });

@@ -50,6 +50,9 @@ let readContext = async (): Promise<Response> => Response.json(serverContext);
 let reads = 0;
 let summaryFailed = false;
 let summaryNoteIds: string[] = [];
+let noteConflict = false;
+let writeNote: (() => Promise<Response>) | null = null;
+let writeTodo: (() => Promise<Response>) | null = null;
 const noteWrites: string[] = [];
 const todoWrites: Array<{ method: string; body: string }> = [];
 const originalFetch = globalThis.fetch;
@@ -63,6 +66,7 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
   if (url.pathname.startsWith('/api/project-context/')) {
     if (url.pathname.includes('/todos') && init?.method) {
       todoWrites.push({ method: init.method, body: String(init.body ?? '') });
+      if (writeTodo) return writeTodo();
       if (init.method === 'PATCH') {
         serverContext = { ...serverContext, todos: serverContext.todos.map(todo => todo.id === 'peer-todo' ? { ...todo, completed: true } : todo) };
       }
@@ -71,6 +75,8 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
     }
     if (init?.method === 'PATCH') {
       noteWrites.push(String(init.body));
+      if (writeNote) return writeNote();
+      if (noteConflict) return Response.json({ error: 'Note changed' }, { status: 409 });
       const saved = { ...peerNote, body: 'Local autosave draft', updatedAt: 2 };
       serverContext = { ...serverContext, notes: [saved] };
       return Response.json({ note: saved });
@@ -123,6 +129,9 @@ beforeEach(() => {
   reads = 0;
   summaryFailed = false;
   summaryNoteIds = [];
+  noteConflict = false;
+  writeNote = null;
+  writeTodo = null;
   noteWrites.length = 0;
   todoWrites.length = 0;
   Object.defineProperty(browser.document, 'visibilityState', { value: 'visible', configurable: true });
@@ -221,7 +230,120 @@ test('peer refreshes do not postpone the local note autosave', async () => {
     serverContext = { ...serverContext, todos: [{ id: 'peer-todo', text: `Peer edit ${index}`, completed: false, createdAt: 1 }] };
     await announce();
   }
-  expect(noteWrites).toEqual([JSON.stringify({ body: 'Local autosave draft' })]);
+  expect(noteWrites).toEqual([JSON.stringify({ body: 'Local autosave draft', expectedBody: 'Peer note' })]);
+});
+
+test('a note conflict retains the dirty editor and the committed peer body', async () => {
+  serverContext = { ...serverContext, notes: [peerNote] };
+  await mount();
+  const card = host.querySelector<HTMLElement>('li[role="button"]');
+  if (!card) throw new Error('Note card missing');
+  await act(async () => card.click());
+  const editor = Array.from(browser.document.querySelectorAll('textarea')).find(element => element.closest('li'));
+  const setter = Object.getOwnPropertyDescriptor(browser.HTMLTextAreaElement.prototype, 'value')?.set;
+  if (!editor || !setter) throw new Error('Note editor missing');
+  await act(async () => {
+    setter.call(editor, 'Dirty local draft');
+    editor.dispatchEvent(new browser.Event('input', { bubbles: true }));
+    editor.dispatchEvent(new browser.Event('change', { bubbles: true }));
+  });
+  serverContext = { ...serverContext, notes: [{ ...peerNote, body: 'Peer replacement', updatedAt: 2 }] };
+  noteConflict = true;
+  await announce();
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 450)); });
+  expect(noteWrites).toEqual([JSON.stringify({ body: 'Dirty local draft', expectedBody: 'Peer note' })]);
+  expect(editor.value).toBe('Dirty local draft');
+  expect(useProjectContextStore.getState().getEntry(project).notes[0].body).toBe('Peer replacement');
+  expect(useProjectContextStore.getState().getEntry(project).error).toBe('Note changed');
+  await announce();
+  expect(editor.value).toBe('Dirty local draft');
+});
+
+test('overlapping note edits advance expectedBody only after the earlier save succeeds', async () => {
+  serverContext = { ...serverContext, notes: [peerNote] };
+  await mount();
+  const card = host.querySelector<HTMLElement>('li[role="button"]');
+  if (!card) throw new Error('Note card missing');
+  await act(async () => card.click());
+  const editor = Array.from(browser.document.querySelectorAll('textarea')).find(element => element.closest('li'));
+  const setter = Object.getOwnPropertyDescriptor(browser.HTMLTextAreaElement.prototype, 'value')?.set;
+  if (!editor || !setter) throw new Error('Note editor missing');
+  const responses: Array<(response: Response) => void> = [];
+  writeNote = () => new Promise(resolve => { responses.push(resolve); });
+  for (const text of ['First edit', 'Later edit']) {
+    await act(async () => {
+      setter.call(editor, text);
+      editor.dispatchEvent(new browser.Event('input', { bubbles: true }));
+      editor.dispatchEvent(new browser.Event('change', { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, 450));
+    });
+  }
+  expect(noteWrites).toEqual([JSON.stringify({ body: 'First edit', expectedBody: 'Peer note' })]);
+  const saved = { ...peerNote, body: 'First edit', updatedAt: 2 };
+  serverContext = { ...serverContext, notes: [saved] };
+  await act(async () => responses[0](Response.json({ note: saved })));
+  expect(noteWrites).toEqual([
+    JSON.stringify({ body: 'First edit', expectedBody: 'Peer note' }),
+    JSON.stringify({ body: 'Later edit', expectedBody: 'First edit' }),
+  ]);
+  expect(editor.value).toBe('Later edit');
+  await act(async () => responses[1](Response.json({ error: 'Note changed' }, { status: 409 })));
+  expect(editor.value).toBe('Later edit');
+  expect(useProjectContextStore.getState().getEntry(project).notes[0].body).toBe('First edit');
+});
+
+test('todo completion and deletion appear before the deferred response and roll back on failure', async () => {
+  serverContext = { ...serverContext, todos: [
+    { id: 'peer-todo', text: 'First', completed: false, createdAt: 1 },
+    { id: 'second', text: 'Second', completed: false, createdAt: 2 },
+  ] };
+  useUIStore.setState({ projectContextTab: 'todos' });
+  await mount();
+  let respond: (response: Response) => void = () => { throw new Error('No pending request'); };
+  writeTodo = () => new Promise(resolve => { respond = resolve; });
+  const checkbox = host.querySelector<HTMLElement>('[role="checkbox"]');
+  if (!checkbox) throw new Error('Todo checkbox missing');
+  await act(async () => checkbox.click());
+  expect(Array.from(host.querySelectorAll('li')).map(row => row.textContent)).toEqual(['Second', 'First']);
+  expect(host.querySelectorAll('[role="checkbox"]')[1].getAttribute('aria-checked')).toBe('true');
+  await act(async () => respond(Response.json({ error: 'Write rejected' }, { status: 503 })));
+  expect(Array.from(host.querySelectorAll('li')).map(row => row.textContent)).toEqual(['First', 'Second']);
+  const remove = Array.from(host.querySelectorAll<HTMLButtonElement>('li button')).find(button => button.getAttribute('aria-label') === 'Delete "First"');
+  if (!remove) throw new Error('Delete todo control missing');
+  await act(async () => remove.click());
+  expect(host.textContent).not.toContain('First');
+  await act(async () => respond(Response.json({ error: 'Write rejected' }, { status: 503 })));
+  expect(host.textContent).toContain('First');
+});
+
+test('todo creation clears the input and shows each pending row before acknowledgement', async () => {
+  useUIStore.setState({ projectContextTab: 'todos' });
+  await mount();
+  const responses: Array<(response: Response) => void> = [];
+  writeTodo = () => new Promise(resolve => { responses.push(resolve); });
+  const editor = browser.document.querySelector('textarea');
+  const setter = Object.getOwnPropertyDescriptor(browser.HTMLTextAreaElement.prototype, 'value')?.set;
+  if (!editor || !setter) throw new Error('Todo input missing');
+  const add = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.getAttribute('aria-label') === 'Add todo');
+  if (!add) throw new Error('Add todo control missing');
+  for (const text of ['First draft', 'Second draft']) {
+    await act(async () => {
+      setter.call(editor, text);
+      editor.dispatchEvent(new browser.Event('input', { bubbles: true }));
+      editor.dispatchEvent(new browser.Event('change', { bubbles: true }));
+    });
+    await act(async () => add.click());
+    expect(editor.value).toBe('');
+    expect(host.textContent).toContain(text);
+  }
+  expect(responses).toHaveLength(1);
+  const first = { id: 'first-server', text: 'First draft', completed: false, createdAt: 50 };
+  serverContext = { ...serverContext, todos: [first] };
+  await act(async () => responses[0](Response.json({ todo: first, context: serverContext })));
+  expect(responses).toHaveLength(2);
+  expect(Array.from(host.querySelectorAll('li')).map(row => row.textContent)).toEqual(['First draft', 'Second draft']);
+  await act(async () => responses[1](Response.json({ error: 'Write rejected' }, { status: 503 })));
+  expect(Array.from(host.querySelectorAll('li')).map(row => row.textContent)).toEqual(['First draft']);
 });
 
 test('hidden panels stop refreshing and re-read when they become visible again', async () => {

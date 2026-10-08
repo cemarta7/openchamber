@@ -175,7 +175,10 @@ Notes, todos, and plans each have their own routes, so each section owns its
 writes end to end and no section has to persist a neighbour's state alongside
 its own. `NotesSection` and `PlansSection` call the store directly. Todos
 route through the container, which reports write failures. Add, toggle and delete
-use item routes and adopt the committed server list. The server assigns new IDs.
+use item routes and update the list immediately. The store keeps ordered pending
+operations over the confirmed list, reconciles temporary create IDs with the
+explicit created item in the response, and removes only a failed operation on
+rollback. Later local edits and peer items survive response adoption and failure.
 Clear completed and drag reorder send the last confirmed list as `expectedTodos`.
 A concurrent change rejects the bulk write with 409 and preserves the visible list.
 
@@ -224,6 +227,10 @@ matched the old project would silently hide everything in the new one.
   would put a request behind every character, and re-reading the store each
   render would fight the caret.
   The body-save callback stays stable across owner refreshes, so peer updates cannot restart the pending autosave timer.
+  Text saves send the row's last confirmed body as `expectedBody`. Only a successful
+  response advances that baseline. A conflict leaves dirty text in the row and
+  preserves the committed peer note in the store. Overlapping text saves wait for
+  the previous result before choosing their precondition.
 - **An external note change is adopted only while that row is untouched** since
   its last save. "Add to notes" from a chat selection must reach an open panel,
   but must never overwrite what the user is typing.
@@ -236,8 +243,9 @@ matched the old project would silently hide everything in the new one.
   Deleting is an explicit action.
 - **A load failure never blanks the panel.** The store keeps the last good
   snapshot; the panel toasts once, and only when nothing had loaded yet.
-- **Completed todos sink to the bottom for display only.** Stored order is what
-  the user dragged.
+- **Completing a todo moves it to the end of stored order.** New and reopened
+  items enter immediately before the first completed item. Text-only edits and
+  repeated completion values keep position. Display also groups completed items last.
 - **Plan creation is not optimistic.** The id and file name come from the
   server, and a row that cannot be opened is worse than a brief wait.
 

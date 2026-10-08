@@ -96,21 +96,15 @@ export const TodosSection: React.FC<{
 }) => {
   const { t } = useI18n();
   const [newTodoText, setNewTodoText] = React.useState('');
-  const addingRef = React.useRef(false);
   const [expandedTodoIds, setExpandedTodoIds] = React.useState<Set<string>>(() => new Set());
 
-  const handleAddTodo = React.useCallback(async () => {
+  const handleAddTodo = React.useCallback(() => {
     const trimmed = newTodoText.trim();
-    if (!trimmed || addingRef.current) {
+    if (!trimmed) {
       return;
     }
-    addingRef.current = true;
-    try {
-      const saved = await onCreateTodo(trimmed.slice(0, PROJECT_TODO_TEXT_MAX_LENGTH));
-      if (saved) setNewTodoText((current) => current === newTodoText ? '' : current);
-    } finally {
-      addingRef.current = false;
-    }
+    void onCreateTodo(trimmed.slice(0, PROJECT_TODO_TEXT_MAX_LENGTH));
+    setNewTodoText('');
   }, [newTodoText, onCreateTodo]);
 
   const handleToggleTodoExpanded = React.useCallback((id: string) => {

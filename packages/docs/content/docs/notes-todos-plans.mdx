@@ -11,6 +11,9 @@ Each project has its own scratch space for notes, a todo list, and saved plans. 
 
 A free-form notes box for anything you want to remember about the project. It saves on its own as you type.
 
+If another client changes a note before your edit saves, the save reports an
+error and keeps your draft. The other client's saved text stays unchanged.
+
 ## Todos
 
 A simple checklist. Add items, check them off, reorder them by dragging, and clear the finished ones.
@@ -28,6 +31,9 @@ A place to keep longer plans as saved files. You can:
 - import a plan from a Markdown or text file
 - open a plan to read it in the side panel
 - delete plans you no longer need
+
+You should land back in the Context tab with your note saved, your todo checked,
+or your plan listed.
 
 An open saved plan updates when an agent or another client changes it. Unsaved
 edits stay in the editor. If the saved document changes before your edit saves,
@@ -49,6 +55,10 @@ For a plan update, read the plan first and send its returned `raw` as
 `expectedRaw` with the new `raw`. If the plan has changed, the update fails with
 a conflict. Read it again before preparing another update. Without this optional
 precondition, a plan update replaces the saved document.
+
+For a note update, read the note first and send its returned `body` as
+`expectedBody` with the new `body`. A changed note rejects the update with a
+conflict. Without this optional precondition, an agent update replaces the body.
 
 Todo item changes preserve other items. Reordering or clearing completed items
 from the UI checks the last confirmed list. A concurrent change rejects that

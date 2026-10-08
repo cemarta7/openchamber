@@ -13,6 +13,7 @@
 
 import { createProjectIdFromPath } from './projectId';
 import { runtimeFetch } from './runtime-fetch';
+import { z } from 'zod';
 
 export interface ProjectTodoItem {
   id: string;
@@ -183,11 +184,11 @@ export const saveProjectTodos = async (
 
 const mutateProjectTodo = async (
   project: ProjectRef,
-  method: 'POST' | 'PATCH' | 'DELETE',
-  todoId: string | null,
+  method: 'PATCH' | 'DELETE',
+  todoId: string,
   value?: { text?: string; completed?: boolean },
 ): Promise<ProjectContextData> => {
-  const suffix = todoId === null ? '' : `/${encodeURIComponent(todoId)}`;
+  const suffix = `/${encodeURIComponent(todoId)}`;
   const response = await runtimeFetch(`${basePath(requireProjectId(project))}/todos${suffix}`, {
     method,
     ...(value ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) } : {}),
@@ -198,7 +199,24 @@ const mutateProjectTodo = async (
   return parseContext(await response.json());
 };
 
-export const createProjectTodo = (project: ProjectRef, text: string) => mutateProjectTodo(project, 'POST', null, { text });
+const todoCreateResponse = z.object({
+  todo: z.object({ id: z.string().min(1), text: z.string(), completed: z.boolean(), createdAt: z.number() }),
+  context: z.unknown(),
+});
+
+export const createProjectTodo = async (project: ProjectRef, text: string): Promise<{ todo: ProjectTodoItem; context: ProjectContextData }> => {
+  const response = await runtimeFetch(`${basePath(requireProjectId(project))}/todos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!response.ok) throw new Error(await readErrorMessage(response, 'Failed to save project todo'));
+  const parsed = todoCreateResponse.safeParse(await response.json());
+  if (!parsed.success) throw new Error('Malformed todo create response');
+  const context = parseContext(parsed.data.context);
+  if (!context.todos.some(todo => todo.id === parsed.data.todo.id)) throw new Error('Malformed todo create response');
+  return { todo: parsed.data.todo, context };
+};
 export const updateProjectTodo = (project: ProjectRef, todoId: string, patch: { text?: string; completed?: boolean }) => (
   mutateProjectTodo(project, 'PATCH', todoId, patch)
 );
@@ -237,13 +255,14 @@ export const updateProjectNote = async (
   project: ProjectRef,
   noteId: string,
   patch: { body?: string; pinned?: boolean },
+  options: { expectedBody?: string } = {},
 ): Promise<ProjectNote | null> => {
   const response = await runtimeFetch(
     `${basePath(requireProjectId(project))}/notes/${encodeURIComponent(noteId)}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
+      body: JSON.stringify({ ...patch, ...options }),
     },
   );
   if (response.status === 404) {

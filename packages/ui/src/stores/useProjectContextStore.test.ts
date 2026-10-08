@@ -44,12 +44,25 @@ const handlers = {
     void expectedTodos;
     return { notes: [], todos, plans: [] };
   },
-  todo: async (): Promise<ContextPayload> => emptyPayload(),
+  todo: async (method?: string, id?: string, patch?: { completed?: boolean; text?: string }): Promise<ContextPayload> => {
+    void method;
+    void id;
+    void patch;
+    return emptyPayload();
+  },
+  createTodo: async (): Promise<{ todo: ContextPayload['todos'][number]; context: ContextPayload }> => ({
+    todo: { id: 'created', text: 'created', completed: false, createdAt: 1 },
+    context: emptyPayload(),
+  }),
   createNote: async (): Promise<{ note: NotePayload; context: ContextPayload }> => ({
     note: note(),
     context: { notes: [note()], todos: [], plans: [] },
   }),
-  updateNote: async (): Promise<NotePayload | null> => note(),
+  updateNote: async (body?: string, expectedBody?: string): Promise<NotePayload | null> => {
+    void body;
+    void expectedBody;
+    return note();
+  },
   deleteNote: async (): Promise<ContextPayload> => emptyPayload(),
   create: async (): Promise<{ plan: ContextPayload['plans'][number]; context: ContextPayload }> => ({
     plan: planLink(),
@@ -74,16 +87,16 @@ mock.module('@/lib/projectContextApi', () => ({
     calls.saveTodos += 1;
     return handlers.saveTodos(todos, expectedTodos);
   },
-  createProjectTodo: () => handlers.todo(),
-  updateProjectTodo: () => handlers.todo(),
-  deleteProjectTodo: () => handlers.todo(),
+  createProjectTodo: () => handlers.createTodo(),
+  updateProjectTodo: (_project: unknown, id: string, patch: { completed?: boolean; text?: string }) => handlers.todo('PATCH', id, patch),
+  deleteProjectTodo: (_project: unknown, id: string) => handlers.todo('DELETE', id),
   createProjectNote: () => {
     calls.createNote += 1;
     return handlers.createNote();
   },
-  updateProjectNote: () => {
+  updateProjectNote: (_project: unknown, _id: string, patch: { body?: string }, options?: { expectedBody?: string }) => {
     calls.updateNote += 1;
-    return handlers.updateNote();
+    return handlers.updateNote(patch.body, options?.expectedBody);
   },
   deleteProjectNote: () => {
     calls.deleteNote += 1;
@@ -144,6 +157,7 @@ beforeEach(() => {
   handlers.fetch = async () => emptyPayload();
   handlers.saveTodos = async (todos) => ({ notes: [], todos, plans: [] });
   handlers.todo = async () => emptyPayload();
+  handlers.createTodo = async () => ({ todo: { id: 'created', text: 'created', completed: false, createdAt: 1 }, context: emptyPayload() });
   handlers.createNote = async () => ({ note: note(), context: { notes: [note()], todos: [], plans: [] } });
   handlers.updateNote = async () => note();
   handlers.deleteNote = async () => emptyPayload();
@@ -395,6 +409,58 @@ describe('saveTodos', () => {
 });
 
 describe('item todos', () => {
+  const item = (id: string, completed = false) => ({ id, text: id, completed, createdAt: 1 });
+
+  test('completion and reopen project the original ordering before responses', async () => {
+    handlers.fetch = async () => ({ ...emptyPayload(), todos: [item('a'), item('b'), item('c', true)] });
+    await store().load(PROJECT);
+    const completing = deferred<ContextPayload>();
+    const reopening = deferred<ContextPayload>();
+    handlers.todo = (_method, _id, patch) => patch?.completed ? completing.promise : reopening.promise;
+    const complete = store().updateTodo(PROJECT, 'a', { completed: true });
+    expect(entry().todos.map(todo => todo.id)).toEqual(['b', 'c', 'a']);
+    const reopen = store().updateTodo(PROJECT, 'a', { completed: false });
+    expect(entry().todos.map(todo => todo.id)).toEqual(['b', 'a', 'c']);
+    completing.resolve({ ...emptyPayload(), todos: [item('b'), item('peer'), item('c', true), item('a', true)] });
+    expect(await complete).toBe(true);
+    expect(entry().todos.map(todo => todo.id)).toEqual(['b', 'peer', 'a', 'c']);
+    reopening.resolve({ ...emptyPayload(), todos: [item('b'), item('peer'), item('a'), item('c', true)] });
+    expect(await reopen).toBe(true);
+  });
+
+  test('failed completion removes only its shadow and keeps a later deletion', async () => {
+    handlers.fetch = async () => ({ ...emptyPayload(), todos: [item('a'), item('b')] });
+    await store().load(PROJECT);
+    const completing = deferred<ContextPayload>();
+    const deleting = deferred<ContextPayload>();
+    handlers.todo = method => method === 'PATCH' ? completing.promise : deleting.promise;
+    const complete = store().updateTodo(PROJECT, 'a', { completed: true });
+    const remove = store().deleteTodo(PROJECT, 'b');
+    expect(entry().todos).toEqual([item('a', true)]);
+    completing.reject(new Error('Write rejected'));
+    expect(await complete).toBe(false);
+    expect(entry().todos).toEqual([item('a')]);
+    deleting.resolve({ ...emptyPayload(), todos: [item('a'), item('peer')] });
+    expect(await remove).toBe(true);
+    expect(entry().todos).toEqual([item('a'), item('peer')]);
+  });
+
+  test('failed deletion preserves a peer addition from the previous committed response', async () => {
+    handlers.fetch = async () => ({ ...emptyPayload(), todos: [item('a'), item('b')] });
+    await store().load(PROJECT);
+    const completing = deferred<ContextPayload>();
+    const deleting = deferred<ContextPayload>();
+    handlers.todo = method => method === 'PATCH' ? completing.promise : deleting.promise;
+    const complete = store().updateTodo(PROJECT, 'a', { completed: true });
+    const remove = store().deleteTodo(PROJECT, 'b');
+    completing.resolve({ ...emptyPayload(), todos: [item('b'), item('peer'), item('a', true)] });
+    expect(await complete).toBe(true);
+    expect(entry().todos.map(todo => todo.id)).toEqual(['peer', 'a']);
+    deleting.reject(new Error('Write rejected'));
+    expect(await remove).toBe(false);
+    expect(entry().todos.map(todo => todo.id)).toEqual(['b', 'peer', 'a']);
+  });
+
   test('adopts peer items in the committed response to an ordinary edit', async () => {
     handlers.todo = async () => ({ notes: [], plans: [], todos: [
       { id: 'local', text: 'local', completed: true, createdAt: 1 },
@@ -414,15 +480,118 @@ describe('item todos', () => {
   });
 
   test('reset rejects an old runtime item response', async () => {
-    const gate = deferred<ContextPayload>();
-    handlers.todo = () => gate.promise;
+    const gate = deferred<Awaited<ReturnType<typeof handlers.createTodo>>>();
+    handlers.createTodo = () => gate.promise;
     const pending = store().createTodo(PROJECT, 'old');
     await Promise.resolve();
     store().reset();
     await store().load(PROJECT);
-    gate.resolve({ ...emptyPayload(), todos: [{ id: 'old', text: 'old', completed: false, createdAt: 1 }] });
+    gate.resolve({ todo: item('old'), context: { ...emptyPayload(), todos: [item('old')] } });
     expect(await pending).toBe(false);
     expect(entry().todos).toEqual([]);
+  });
+
+  test('optimistic create reconciles queued edits and deletes by the explicit ID', async () => {
+    handlers.fetch = async () => ({ ...emptyPayload(), todos: [item('finished', true)] });
+    await store().load(PROJECT);
+    const creating = deferred<Awaited<ReturnType<typeof handlers.createTodo>>>();
+    const updating = deferred<ContextPayload>();
+    const deleting = deferred<ContextPayload>();
+    handlers.createTodo = () => creating.promise;
+    const targets: string[] = [];
+    handlers.todo = (method, id) => {
+      targets.push(`${method}:${id}`);
+      return method === 'PATCH' ? updating.promise : deleting.promise;
+    };
+    const create = store().createTodo(PROJECT, 'same text');
+    const temporaryId = entry().todos[0].id;
+    expect(temporaryId.startsWith('pending:')).toBe(true);
+    expect(entry().todos.map(todo => todo.text)).toEqual(['same text', 'finished']);
+    const update = store().updateTodo(PROJECT, temporaryId, { completed: true });
+    const remove = store().deleteTodo(PROJECT, temporaryId);
+    expect(entry().todos.map(todo => todo.id)).toEqual(['finished']);
+    const created = { ...item('local-id'), text: 'same text', createdAt: 50 };
+    const peer = { ...item('peer-id'), text: 'same text', createdAt: 50 };
+    creating.resolve({ todo: created, context: { ...emptyPayload(), todos: [peer, created, item('finished', true)] } });
+    expect(await create).toBe(true);
+    expect(entry().todos.map(todo => todo.id)).toEqual(['peer-id', 'finished']);
+    updating.resolve({ ...emptyPayload(), todos: [peer, item('finished', true), { ...created, completed: true }] });
+    expect(await update).toBe(true);
+    deleting.resolve({ ...emptyPayload(), todos: [peer, item('finished', true)] });
+    expect(await remove).toBe(true);
+    expect(targets).toEqual(['PATCH:local-id', 'DELETE:local-id']);
+  });
+
+  test('failed create drops its row and never sends queued temporary IDs', async () => {
+    handlers.fetch = async () => ({ ...emptyPayload(), todos: [item('peer')] });
+    await store().load(PROJECT);
+    const creating = deferred<Awaited<ReturnType<typeof handlers.createTodo>>>();
+    handlers.createTodo = () => creating.promise;
+    let requests = 0;
+    handlers.todo = async () => { requests += 1; return emptyPayload(); };
+    const create = store().createTodo(PROJECT, 'local');
+    const temporaryId = entry().todos[1].id;
+    const remove = store().deleteTodo(PROJECT, temporaryId);
+    creating.reject(new Error('Write rejected'));
+    expect(await create).toBe(false);
+    expect(await remove).toBe(false);
+    expect(entry().todos).toEqual([item('peer')]);
+    expect(requests).toBe(0);
+  });
+
+  test('an initial authoritative load survives a later failed optimistic creation', async () => {
+    const reading = deferred<ContextPayload>();
+    const creating = deferred<Awaited<ReturnType<typeof handlers.createTodo>>>();
+    handlers.fetch = () => reading.promise;
+    handlers.createTodo = () => creating.promise;
+    const load = store().load(PROJECT);
+    const create = store().createTodo(PROJECT, 'local');
+    await Promise.resolve();
+    reading.resolve({ ...emptyPayload(), todos: [item('peer')] });
+    await load;
+    expect(entry().todos.map(todo => todo.text)).toEqual(['peer', 'local']);
+    creating.reject(new Error('Write rejected'));
+    expect(await create).toBe(false);
+    expect(entry().todos).toEqual([item('peer')]);
+  });
+
+  test('a failed optimistic creation cannot establish a bulk-write baseline', async () => {
+    handlers.createTodo = failWith('Write rejected');
+    expect(await store().createTodo(PROJECT, 'local')).toBe(false);
+    expect(await store().saveTodos(PROJECT, [])).toBe(false);
+    expect(calls.saveTodos).toBe(0);
+  });
+
+  test('bulk queued behind creation sends reconciled confirmed IDs and timestamps', async () => {
+    await store().load(PROJECT);
+    const creating = deferred<Awaited<ReturnType<typeof handlers.createTodo>>>();
+    handlers.createTodo = () => creating.promise;
+    const create = store().createTodo(PROJECT, 'local');
+    const rendered = entry().todos;
+    let expected: ContextPayload['todos'] | undefined;
+    handlers.saveTodos = async (todos, expectedTodos) => { expected = expectedTodos; return { ...emptyPayload(), todos }; };
+    const bulk = store().saveTodos(PROJECT, rendered, rendered);
+    const created = { createdAt: 99, completed: false, text: 'local', id: 'authoritative' };
+    creating.resolve({ todo: created, context: { ...emptyPayload(), todos: [created] } });
+    expect(await create).toBe(true);
+    expect(await bulk).toBe(true);
+    expect(expected).toEqual([created]);
+    expect(entry().todos).toEqual([created]);
+  });
+
+  test('bulk queued behind an item rejects an unread peer without sending a replacement', async () => {
+    handlers.fetch = async () => ({ ...emptyPayload(), todos: [item('a')] });
+    await store().load(PROJECT);
+    const completing = deferred<ContextPayload>();
+    handlers.todo = () => completing.promise;
+    const complete = store().updateTodo(PROJECT, 'a', { completed: true });
+    const rendered = entry().todos;
+    const clear = store().saveTodos(PROJECT, [], rendered);
+    completing.resolve({ ...emptyPayload(), todos: [item('peer'), item('a', true)] });
+    expect(await complete).toBe(true);
+    expect(await clear).toBe(false);
+    expect(calls.saveTodos).toBe(0);
+    expect(entry().todos.map(todo => todo.id)).toEqual(['peer', 'a']);
   });
 });
 
@@ -451,7 +620,7 @@ describe('notes', () => {
     expect(entry().error).toBe('no space');
   });
 
-  test('saveNoteBody applies optimistically and commits the server copy', async () => {
+  test('saveNoteBody commits the server copy', async () => {
     await store().createNote(PROJECT, { body: 'before' });
     handlers.updateNote = async () => note({ body: 'after', updatedAt: 9 });
 
@@ -467,6 +636,31 @@ describe('notes', () => {
     expect(await store().saveNoteBody(PROJECT, 'n1', 'after')).toBe(false);
     expect(entry().notes[0].body).toBe('body');
     expect(entry().error).toBe('read only');
+  });
+
+  test('a conflict sends the editor baseline and keeps confirmed peer notes', async () => {
+    handlers.fetch = async () => ({ ...emptyPayload(), notes: [note({ body: 'Peer body' }), note({ id: 'peer' })] });
+    await store().load(PROJECT);
+    const requests: Array<{ body?: string; expectedBody?: string }> = [];
+    handlers.updateNote = async (body, expectedBody) => {
+      requests.push({ body, expectedBody });
+      throw new Error('Note changed');
+    };
+    expect(await store().saveNoteBody(PROJECT, 'n1', 'Dirty draft', 'Old body')).toBe(false);
+    expect(requests).toEqual([{ body: 'Dirty draft', expectedBody: 'Old body' }]);
+    expect(entry().notes.map(item => item.body)).toEqual(['Peer body', 'body']);
+  });
+
+  test('a failed queued text save cannot roll back an earlier success', async () => {
+    await store().createNote(PROJECT, { body: 'before' });
+    const gate = deferred<NotePayload | null>();
+    handlers.updateNote = body => body === 'first' ? gate.promise : Promise.reject(new Error('Note changed'));
+    const first = store().saveNoteBody(PROJECT, 'n1', 'first', 'body');
+    const later = store().saveNoteBody(PROJECT, 'n1', 'later', 'body');
+    gate.resolve(note({ body: 'first' }));
+    expect(await first).toBe(true);
+    expect(await later).toBe(false);
+    expect(entry().notes[0].body).toBe('first');
   });
 
   test('saveNoteBody drops a note the server reports as gone', async () => {

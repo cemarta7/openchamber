@@ -197,14 +197,29 @@ Examples:
 
 These stores coordinate persistent project/session metadata across multiple views.
 
-`useProjectContextStore.ts` caches server-owned project notes, todos, and plan links, keyed by the path-derived project id. Writes are serialized per project. Note edits and deletions and plan deletions are optimistic and roll back on failure. Creation waits for server IDs and timestamps. Todo writes adopt the committed list without an optimistic replacement. A load captures per-field mutation revisions and preserves fields changed by a newer write, even when that write finishes before the response arrives. A failed load sets `error` and preserves the cached snapshot. Notes, todos, and plans use separate routes and in-flight flags. Session knowledge owns note and plan attachments.
+`useProjectContextStore.ts` caches server-owned project notes, todos, and plan links, keyed by the path-derived project id. Writes are serialized per project. Note deletions and plan deletions are optimistic and roll back on failure. Note text stays in the row's draft until the conditional save succeeds. Note and plan creation waits for server IDs and timestamps. A load captures per-field mutation revisions and preserves fields changed by a newer write, even when that write finishes before the response arrives. A failed load sets `error` and preserves the cached snapshot. Notes, todos, and plans use separate routes and in-flight flags. Session knowledge owns note and plan attachments.
 
-Item todo creation, update and deletion use separate routes. Bulk clear and
-reorder require a previously loaded todo snapshot and send it as `expectedTodos`.
-They preserve cached data on failure. Reset clears this baseline and rejects
+Item todo creation, update and deletion use separate routes and change the visible
+list immediately. The store projects ordered pending operations over the last
+confirmed list. Each response replaces that baseline and reapplies later operations.
+A failure removes only its own pending operation, so peer rows and later local
+edits survive. Creation uses a temporary row. POST returns `{todo, context}` with
+the actual created item, so queued edits and deletions use its server ID even when
+a peer creates an identical row. Temporary IDs never reach item mutation routes.
+New and reopened items enter before the first completed item; completing an item
+moves it to the end. Same-value completion and text-only changes retain position.
+Bulk clear and reorder require a previously loaded todo snapshot and send it as
+`expectedTodos`. When queued behind an item write, they reconcile temporary IDs
+and require the rendered snapshot to match the confirmed result before sending.
+They preserve cached data on failure. Reset clears the baseline and pending operations and rejects
 queued or in-flight todo and plan saves captured from the previous runtime.
 Saved-plan editors send `expectedRaw` through `savePlan`; callers that omit it
 retain the existing replacement behavior.
+
+Note text saves send the exact last confirmed `expectedBody`. The editor passes
+its own baseline when a dirty draft has outlived a peer refresh. A 409 leaves the
+committed note list unchanged and the row retains its dirty text. The row advances
+its confirmed body only after success and serializes overlapping text saves.
 
 Ordinary loads still reuse a loaded entry. Visible-owner synchronization is owned by `lib/projectContextSync.ts`, as described in the panel's `DOCUMENTATION.md`. Forced loads wait for admitted local writes, so a notification sent before this client's save response cannot lose a peer change behind an in-flight flag. A write still pending when a forced read returns earns another read after it settles, including after rollback. Only a resolved write advances its field revision; a rejected attempt cannot hide authoritative peer data. Concurrent loads share one promise; refresh demand received during a read earns one trailing authoritative read. Runtime reset retires those promises and their generation, so an older success or failure cannot populate or alter a same-id entry on the new host.
 

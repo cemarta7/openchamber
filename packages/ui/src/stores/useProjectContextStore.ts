@@ -73,7 +73,7 @@ interface ProjectContextActions {
     project: ProjectRef,
     value: { body: string; source?: ProjectNoteSource; origin?: { sessionId: string; messageId?: string } },
   ) => Promise<ProjectNote | null>;
-  saveNoteBody: (project: ProjectRef, noteId: string, body: string) => Promise<boolean>;
+  saveNoteBody: (project: ProjectRef, noteId: string, body: string, expectedBody?: string) => Promise<boolean>;
   setNotePinned: (project: ProjectRef, noteId: string, pinned: boolean) => Promise<boolean>;
   deleteNote: (project: ProjectRef, noteId: string) => Promise<boolean>;
   createPlan: (project: ProjectRef, value: { title: string; body: string }) => Promise<ProjectPlanLink | null>;
@@ -86,6 +86,36 @@ interface ProjectContextActions {
 }
 
 type ProjectContextStore = ProjectContextState & ProjectContextActions;
+
+type TodoChange =
+  | { kind: 'create'; item: ProjectTodoItem }
+  | { kind: 'update'; id: string; patch: { text?: string; completed?: boolean } }
+  | { kind: 'delete'; id: string }
+  | { kind: 'bulk'; todos: ProjectTodoItem[]; expectedTodos: ProjectTodoItem[] };
+
+const insertOpenTodo = (todos: ProjectTodoItem[], item: ProjectTodoItem): ProjectTodoItem[] => {
+  const index = todos.findIndex((todo) => todo.completed);
+  return index < 0 ? [...todos, item] : [...todos.slice(0, index), item, ...todos.slice(index)];
+};
+
+const applyTodoChange = (todos: ProjectTodoItem[], change: TodoChange): ProjectTodoItem[] => {
+  if (change.kind === 'bulk') return todos;
+  if (change.kind === 'create') return insertOpenTodo(todos, change.item);
+  if (change.kind === 'delete') return todos.filter((todo) => todo.id !== change.id);
+  const item = todos.find((todo) => todo.id === change.id);
+  if (!item) return todos;
+  const updated = { ...item, ...change.patch };
+  if (item.completed === updated.completed) return todos.map((todo) => todo === item ? updated : todo);
+  const remaining = todos.filter((todo) => todo.id !== change.id);
+  return updated.completed ? [...remaining, updated] : insertOpenTodo(remaining, updated);
+};
+
+const sameTodos = (left: ProjectTodoItem[], right: ProjectTodoItem[] | undefined): boolean => (
+  right !== undefined && left.length === right.length && left.every((item, index) => {
+    const other = right[index];
+    return item.id === other.id && item.text === other.text && item.completed === other.completed && item.createdAt === other.createdAt;
+  })
+);
 
 export const EMPTY_PROJECT_CONTEXT_ENTRY: ProjectContextEntry = {
   notes: [],
@@ -137,6 +167,7 @@ const errorMessage = (error: unknown, fallback: string): string => (
 export const useProjectContextStore = create<ProjectContextStore>((set, get) => {
   let generation = 0;
   const confirmedTodos = new Map<string, ProjectTodoItem[]>();
+  const pendingTodos = new Map<string, TodoChange[]>();
   const loads = new Map<string, { promise: Promise<void>; refresh: () => void }>();
   const patchEntry = (projectId: string, patch: Partial<ProjectContextEntry>) => {
     set((state) => ({
@@ -151,14 +182,31 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
     get().entries[projectId] ?? EMPTY_PROJECT_CONTEXT_ENTRY
   );
 
+  const projectedTodos = (projectId: string): ProjectTodoItem[] => (
+    (pendingTodos.get(projectId) ?? []).reduce(applyTodoChange, confirmedTodos.get(projectId) ?? [])
+  );
+
   // Todo responses are committed snapshots. Item writes never send a cached
   // list, and bulk writes carry the snapshot the user actually saw.
-  const mutateTodos = async (project: ProjectRef, operation: () => Promise<{ todos: ProjectTodoItem[] }>): Promise<boolean> => {
+  const mutateTodos = async (
+    project: ProjectRef,
+    operation: () => Promise<{ todos: ProjectTodoItem[] }>,
+    change: TodoChange,
+  ): Promise<boolean> => {
     const projectId = resolveProjectContextId(project);
     if (!projectId) return false;
     const startedGeneration = generation;
     const runtimeKey = getRuntimeKey();
     const current = () => startedGeneration === generation && runtimeKey === getRuntimeKey();
+    const pending = pendingTodos.get(projectId) ?? [];
+    pendingTodos.set(projectId, pending);
+    pending.push(change);
+    if (change.kind !== 'bulk') patchEntry(projectId, { todos: projectedTodos(projectId), error: null });
+    const removePending = () => {
+      const index = pending.indexOf(change);
+      if (index >= 0) pending.splice(index, 1);
+      if (!pending.length) pendingTodos.delete(projectId);
+    };
     try {
       return await enqueueWrite(projectId, 'todos', async () => {
         if (!current()) return false;
@@ -168,14 +216,20 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
           const committed = await operation();
           if (!current()) return false;
           confirmedTodos.set(projectId, committed.todos);
-          patchEntry(projectId, { todos: committed.todos, error: null });
+          removePending();
+          patchEntry(projectId, { todos: projectedTodos(projectId), error: null });
           return true;
+        } catch (error) {
+          if (current()) {
+            removePending();
+            patchEntry(projectId, { todos: projectedTodos(projectId), error: errorMessage(error, 'Failed to save project todos') });
+          }
+          throw error;
         } finally {
           flags.todos = false;
         }
       });
-    } catch (error) {
-      if (current()) patchEntry(projectId, { error: errorMessage(error, 'Failed to save project todos') });
+    } catch {
       return false;
     }
   };
@@ -238,14 +292,14 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
               continue;
             }
             const committed = currentEntry(projectId);
-            if (!flags.todos && flags.revisions.todos === revisions.todos) {
+            if (flags.revisions.todos === revisions.todos) {
               confirmedTodos.set(projectId, data.todos);
             }
 
             // Completed writes still outrank a snapshot requested before them.
             patchEntry(projectId, {
               notes: flags.notes || flags.revisions.notes !== revisions.notes ? committed.notes : data.notes,
-              todos: flags.todos || flags.revisions.todos !== revisions.todos ? committed.todos : data.todos,
+              todos: flags.revisions.todos !== revisions.todos ? committed.todos : projectedTodos(projectId),
               plans: flags.plans || flags.revisions.plans !== revisions.plans ? committed.plans : data.plans,
               sharedPlansDir: data.sharedPlansDir,
               loaded: true,
@@ -277,12 +331,52 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
         patchEntry(projectId, { error: 'Project todos have not loaded' });
         return false;
       }
-      return mutateTodos(project, () => saveProjectTodos(project, todos, expectedTodos));
+      const change: TodoChange = { kind: 'bulk', todos, expectedTodos };
+      const hasPendingItems = (pendingTodos.get(projectId) ?? []).some(item => item.kind !== 'bulk');
+      return mutateTodos(project, () => {
+        const confirmed = confirmedTodos.get(projectId);
+        if (hasPendingItems && !sameTodos(change.expectedTodos, confirmed)) {
+          throw new Error('Failed to save project todos');
+        }
+        return saveProjectTodos(project, change.todos, change.expectedTodos);
+      }, change);
     },
 
-    createTodo: (project, text) => mutateTodos(project, () => createProjectTodo(project, text)),
-    updateTodo: (project, todoId, patch) => mutateTodos(project, () => updateProjectTodo(project, todoId, patch)),
-    deleteTodo: (project, todoId) => mutateTodos(project, () => deleteProjectTodo(project, todoId)),
+    createTodo: (project, text) => {
+      const projectId = resolveProjectContextId(project);
+      const change: TodoChange = { kind: 'create', item: {
+        id: `pending:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`}`,
+        text, completed: false, createdAt: Date.now(),
+      } };
+      return mutateTodos(project, async () => {
+        const { todo, context } = await createProjectTodo(project, text);
+        // Rebind queued actions by the explicit server identity, even when a
+        // peer added an indistinguishable item in the same committed snapshot.
+        for (const pending of pendingTodos.get(projectId) ?? []) {
+          if ((pending.kind === 'update' || pending.kind === 'delete') && pending.id === change.item.id) pending.id = todo.id;
+          if (pending.kind === 'bulk') {
+            const reconcile = (item: ProjectTodoItem) => item.id === change.item.id ? { ...item, id: todo.id, createdAt: todo.createdAt } : item;
+            pending.todos = pending.todos.map(reconcile);
+            pending.expectedTodos = pending.expectedTodos.map(reconcile);
+          }
+        }
+        return context;
+      }, change);
+    },
+    updateTodo: (project, todoId, patch) => {
+      const change: TodoChange = { kind: 'update', id: todoId, patch };
+      return mutateTodos(project, () => {
+        if (change.id.startsWith('pending:')) throw new Error('Failed to save project todos');
+        return updateProjectTodo(project, change.id, patch);
+      }, change);
+    },
+    deleteTodo: (project, todoId) => {
+      const change: TodoChange = { kind: 'delete', id: todoId };
+      return mutateTodos(project, () => {
+        if (change.id.startsWith('pending:')) throw new Error('Failed to save project todos');
+        return deleteProjectTodo(project, change.id);
+      }, change);
+    },
 
     /**
      * Create a note. Not optimistic: the id and timestamps come from the
@@ -317,35 +411,40 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
       }
     },
 
-    saveNoteBody: async (project, noteId, body) => {
+    saveNoteBody: async (project, noteId, body, expectedBody) => {
       const projectId = resolveProjectContextId(project);
       const trimmed = body.trim();
       if (!projectId || !trimmed) return false;
 
-      const previous = currentEntry(projectId).notes;
-      patchEntry(projectId, {
-        notes: previous.map((note) => (note.id === noteId ? { ...note, body: trimmed } : note)),
-        error: null,
-      });
-
-      const flags = flagsFor(projectId);
-      flags.notes = true;
-
+      const confirmedBody = expectedBody ?? currentEntry(projectId).notes.find((note) => note.id === noteId)?.body;
+      if (confirmedBody === undefined) return false;
+      const startedGeneration = generation;
+      const runtimeKey = getRuntimeKey();
+      const current = () => startedGeneration === generation && runtimeKey === getRuntimeKey();
       try {
-        const saved = await enqueueWrite(projectId, 'notes', () => updateProjectNote(project, noteId, { body: trimmed }));
+        const saved = await enqueueWrite(projectId, 'notes', async () => {
+          if (!current()) return null;
+          const flags = flagsFor(projectId);
+          flags.notes = true;
+          try {
+            return await updateProjectNote(project, noteId, { body: trimmed }, { expectedBody: confirmedBody });
+          } finally {
+            flags.notes = false;
+          }
+        });
+        if (!current()) return false;
         if (!saved) {
           patchEntry(projectId, { notes: currentEntry(projectId).notes.filter((note) => note.id !== noteId) });
           return false;
         }
         patchEntry(projectId, {
           notes: currentEntry(projectId).notes.map((note) => (note.id === noteId ? saved : note)),
+          error: null,
         });
         return true;
       } catch (error) {
-        patchEntry(projectId, { notes: previous, error: errorMessage(error, 'Failed to save note') });
+        if (current()) patchEntry(projectId, { error: errorMessage(error, 'Failed to save note') });
         return false;
-      } finally {
-        flags.notes = false;
       }
     },
 
@@ -552,6 +651,7 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
     reset: () => {
       generation += 1;
       confirmedTodos.clear();
+      pendingTodos.clear();
       loads.clear();
       writeChains.clear();
       mutationFlags.clear();
