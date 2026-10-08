@@ -190,6 +190,7 @@ describe('managed agent tool runtime', () => {
     const { runtime, dataDir } = await createRuntime();
     await prepareManagedEnv(runtime);
     const tools = await loadTools(dataDir, 'knowledge-schema');
+    expect(tools.openchamber.description).toContain('Read and manage project Notes, Todos and Plans with notes.*, todos.* and plans.* actions.');
     const actions = tools.openchamber.input.properties.action.oneOf.map((entry) => entry.const);
     for (const action of ['notes.list', 'notes.read', 'notes.create', 'notes.update', 'notes.delete', 'todos.list', 'todos.create', 'todos.update', 'todos.delete', 'plans.list', 'plans.read', 'plans.create', 'plans.update', 'plans.delete']) {
       expect(actions).toContain(action);
