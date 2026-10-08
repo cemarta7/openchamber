@@ -221,6 +221,14 @@ its own baseline when a dirty draft has outlived a peer refresh. A 409 leaves th
 committed note list unchanged and the row retains its dirty text. The row advances
 its confirmed body only after success and serializes overlapping text saves.
 
+The store keeps confirmed notes separately from ordered pending pin and delete
+operations. A body response updates the confirmed row before the next queued
+write starts. Pending deletes keep that row hidden until they settle. A failed
+pin or delete removes only its own operation, so the latest committed body,
+peer notes and later pending operations survive. Successful deletion and missing
+note responses remove the confirmed entity; later failures cannot restore it.
+Reset clears both note collections and retires queued and in-flight note writes.
+
 Ordinary loads still reuse a loaded entry. Visible-owner synchronization is owned by `lib/projectContextSync.ts`, as described in the panel's `DOCUMENTATION.md`. Forced loads wait for admitted local writes, so a notification sent before this client's save response cannot lose a peer change behind an in-flight flag. A write still pending when a forced read returns earns another read after it settles, including after rollback. Only a resolved write advances its field revision; a rejected attempt cannot hide authoritative peer data. Concurrent loads share one promise; refresh demand received during a read earns one trailing authoritative read. Runtime reset retires those promises and their generation, so an older success or failure cannot populate or alter a same-id entry on the new host.
 
 `useRoutingStore.ts` projects the server's Jev routing state (whether the Auto

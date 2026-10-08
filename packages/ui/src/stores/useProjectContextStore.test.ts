@@ -596,6 +596,136 @@ describe('item todos', () => {
 });
 
 describe('notes', () => {
+  for (const operation of ['pin', 'delete'] as const) {
+    test(`failed ${operation} keeps a body committed after optimistic admission`, async () => {
+      handlers.fetch = async () => ({ ...emptyPayload(), notes: [note(), note({ id: 'peer', body: 'Peer body' })] });
+      await store().load(PROJECT);
+      const body = deferred<NotePayload | null>();
+      const pin = deferred<NotePayload | null>();
+      const deletion = deferred<ContextPayload>();
+      handlers.updateNote = value => value === 'Saved body' ? body.promise : pin.promise;
+      handlers.deleteNote = () => deletion.promise;
+      const saving = store().saveNoteBody(PROJECT, 'n1', 'Saved body', 'body');
+      const changing = operation === 'pin'
+        ? store().setNotePinned(PROJECT, 'n1', true)
+        : store().deleteNote(PROJECT, 'n1');
+      expect(entry().notes.find(item => item.id === 'n1')?.body).toBe(operation === 'pin' ? 'body' : undefined);
+      body.resolve(note({ body: 'Saved body', updatedAt: 5 }));
+      expect(await saving).toBe(true);
+      expect(entry().notes.find(item => item.id === 'n1')?.body).toBe(operation === 'pin' ? 'Saved body' : undefined);
+      if (operation === 'pin') pin.reject(new Error('Pin rejected'));
+      else deletion.reject(new Error('Delete rejected'));
+      expect(await changing).toBe(false);
+      expect(entry().notes).toEqual([note({ body: 'Saved body', updatedAt: 5 }), note({ id: 'peer', body: 'Peer body' })]);
+    });
+  }
+
+  test('body success never publishes a pending-deleted row, and later failures cannot resurrect it', async () => {
+    handlers.fetch = async () => ({ ...emptyPayload(), notes: [note(), note({ id: 'peer' })] });
+    await store().load(PROJECT);
+    const body = deferred<NotePayload | null>();
+    const deletion = deferred<ContextPayload>();
+    handlers.updateNote = value => value ? body.promise : Promise.reject(new Error('Pin rejected'));
+    handlers.deleteNote = () => deletion.promise;
+    const saving = store().saveNoteBody(PROJECT, 'n1', 'Saved body');
+    const removing = store().deleteNote(PROJECT, 'n1');
+    const visible: string[][] = [];
+    const unsubscribe = useProjectContextStore.subscribe(state => visible.push(state.getEntry(PROJECT).notes.map(item => item.id)));
+    try {
+      body.resolve(note({ body: 'Saved body' }));
+      expect(await saving).toBe(true);
+      deletion.resolve({ ...emptyPayload(), notes: [note({ id: 'peer' }), note({ id: 'unread' })] });
+      expect(await removing).toBe(true);
+      expect(await store().setNotePinned(PROJECT, 'n1', true)).toBe(false);
+      handlers.deleteNote = failWith('Delete rejected');
+      expect(await store().deleteNote(PROJECT, 'n1')).toBe(false);
+      expect(visible.every(ids => !ids.includes('n1'))).toBe(true);
+      expect(entry().notes.map(item => item.id)).toEqual(['peer', 'unread']);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test('failed deletion keeps peer notes from an earlier queued creation and a later deletion hidden', async () => {
+    handlers.fetch = async () => ({ ...emptyPayload(), notes: [note(), note({ id: 'other' })] });
+    await store().load(PROJECT);
+    const creation = deferred<Awaited<ReturnType<typeof handlers.createNote>>>();
+    const first = deferred<ContextPayload>();
+    const later = deferred<ContextPayload>();
+    handlers.createNote = () => creation.promise;
+    handlers.deleteNote = () => calls.deleteNote === 1 ? first.promise : later.promise;
+    const creating = store().createNote(PROJECT, { body: 'Peer body' });
+    const deleting = store().deleteNote(PROJECT, 'n1');
+    const deletingOther = store().deleteNote(PROJECT, 'other');
+    const peer = note({ id: 'peer', body: 'Peer body' });
+    creation.resolve({ note: peer, context: { ...emptyPayload(), notes: [note(), note({ id: 'other' }), peer] } });
+    await creating;
+    expect(entry().notes.map(item => item.id)).toEqual(['peer']);
+    first.reject(new Error('Delete rejected'));
+    expect(await deleting).toBe(false);
+    expect(entry().notes.map(item => item.id)).toEqual(['n1', 'peer']);
+    later.resolve({ ...emptyPayload(), notes: [note(), peer] });
+    expect(await deletingOther).toBe(true);
+  });
+
+  test('a failed later pin returns to the earlier committed flag', async () => {
+    await store().createNote(PROJECT, { body: 'body' });
+    const first = deferred<NotePayload | null>();
+    const later = deferred<NotePayload | null>();
+    handlers.updateNote = () => calls.updateNote === 1 ? first.promise : later.promise;
+    const pinning = store().setNotePinned(PROJECT, 'n1', true);
+    const unpinning = store().setNotePinned(PROJECT, 'n1', false);
+    expect(entry().notes[0].pinned).toBe(false);
+    first.resolve(note({ pinned: true, body: 'Committed body' }));
+    expect(await pinning).toBe(true);
+    expect(entry().notes[0].pinned).toBe(false);
+    later.reject(new Error('Pin rejected'));
+    expect(await unpinning).toBe(false);
+    expect(entry().notes[0]).toEqual(note({ pinned: true, body: 'Committed body' }));
+  });
+
+  test('a missing body response followed by a failed delete leaves the entity absent', async () => {
+    await store().createNote(PROJECT, { body: 'body' });
+    const body = deferred<NotePayload | null>();
+    handlers.updateNote = () => body.promise;
+    handlers.deleteNote = failWith('Delete rejected');
+    const saving = store().saveNoteBody(PROJECT, 'n1', 'Saved body');
+    const deleting = store().deleteNote(PROJECT, 'n1');
+    body.resolve(null);
+    expect(await saving).toBe(false);
+    expect(await deleting).toBe(false);
+    expect(entry().notes).toEqual([]);
+  });
+
+  for (const operation of ['pin', 'delete'] as const) {
+    for (const outcome of ['success', 'failure'] as const) {
+      test(`reset rejects in-flight ${operation} ${outcome} and its queued follower`, async () => {
+        handlers.fetch = async () => ({ ...emptyPayload(), notes: [note()] });
+        await store().load(PROJECT);
+        const pin = deferred<NotePayload | null>();
+        const deletion = deferred<ContextPayload>();
+        handlers.updateNote = () => pin.promise;
+        handlers.deleteNote = () => deletion.promise;
+        const changing = operation === 'pin' ? store().setNotePinned(PROJECT, 'n1', true) : store().deleteNote(PROJECT, 'n1');
+        await Promise.resolve();
+        const follower = store().setNotePinned(PROJECT, 'n1', false);
+        store().reset();
+        handlers.fetch = async () => ({ ...emptyPayload(), notes: [note({ body: 'New runtime' })] });
+        await store().load(PROJECT);
+        if (outcome === 'failure') {
+          if (operation === 'pin') pin.reject(new Error('Old failure'));
+          else deletion.reject(new Error('Old failure'));
+        } else if (operation === 'pin') pin.resolve(note({ body: 'Old runtime', pinned: true }));
+        else deletion.resolve(emptyPayload());
+        expect(await changing).toBe(false);
+        expect(await follower).toBe(false);
+        expect(entry().notes).toEqual([note({ body: 'New runtime' })]);
+        expect(entry().error).toBeNull();
+        expect(calls.updateNote).toBe(operation === 'pin' ? 1 : 0);
+      });
+    }
+  }
+
   test('createNote adopts the committed list', async () => {
     handlers.createNote = async () => ({
       note: note({ id: 'n9', body: 'fresh' }),

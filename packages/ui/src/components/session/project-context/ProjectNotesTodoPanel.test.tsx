@@ -29,6 +29,8 @@ for (const [name, value] of Object.entries({
   ResizeObserver: browser.ResizeObserver,
   MutationObserver: browser.MutationObserver,
   PointerEvent: browser.PointerEvent,
+  Event: browser.Event,
+  CustomEvent: browser.CustomEvent,
   EventSource: TestEventSource,
   getComputedStyle: browser.getComputedStyle.bind(browser),
   requestAnimationFrame: browser.requestAnimationFrame.bind(browser),
@@ -52,6 +54,7 @@ let summaryFailed = false;
 let summaryNoteIds: string[] = [];
 let noteConflict = false;
 let writeNote: (() => Promise<Response>) | null = null;
+let removeNote: (() => Promise<Response>) | null = null;
 let writeTodo: (() => Promise<Response>) | null = null;
 const noteWrites: string[] = [];
 const todoWrites: Array<{ method: string; body: string }> = [];
@@ -64,6 +67,7 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
     });
   }
   if (url.pathname.startsWith('/api/project-context/')) {
+    if (url.pathname.includes('/notes/') && init?.method === 'DELETE' && removeNote) return removeNote();
     if (url.pathname.includes('/todos') && init?.method) {
       todoWrites.push({ method: init.method, body: String(init.body ?? '') });
       if (writeTodo) return writeTodo();
@@ -131,6 +135,7 @@ beforeEach(() => {
   summaryNoteIds = [];
   noteConflict = false;
   writeNote = null;
+  removeNote = null;
   writeTodo = null;
   noteWrites.length = 0;
   todoWrites.length = 0;
@@ -291,6 +296,65 @@ test('overlapping note edits advance expectedBody only after the earlier save su
   expect(editor.value).toBe('Later edit');
   expect(useProjectContextStore.getState().getEntry(project).notes[0].body).toBe('First edit');
 });
+
+for (const operation of ['pin', 'delete'] as const) {
+  test(`a mounted note retains its saved body after queued ${operation} failure`, async () => {
+    serverContext = { ...serverContext, notes: [peerNote] };
+    await mount();
+    const card = host.querySelector<HTMLElement>('li[role="button"]');
+    if (!card) throw new Error('Note card missing');
+    await act(async () => card.click());
+    const editor = Array.from(browser.document.querySelectorAll('textarea')).find(element => element.closest('li'));
+    const setter = Object.getOwnPropertyDescriptor(browser.HTMLTextAreaElement.prototype, 'value')?.set;
+    if (!editor || !setter) throw new Error('Note editor missing');
+    let releaseBody: (response: Response) => void = () => { throw new Error('No body request'); };
+    let releaseMutation: (response: Response) => void = () => { throw new Error('No mutation request'); };
+    let startedBody = () => {};
+    const bodyStarted = new Promise<void>(resolve => { startedBody = resolve; });
+    const saved = { ...peerNote, body: 'Saved body', updatedAt: 5 };
+    writeNote = () => {
+      if (noteWrites.length === 1) {
+        serverContext = { ...serverContext, notes: [saved] };
+        startedBody();
+        return new Promise(resolve => { releaseBody = resolve; });
+      }
+      return new Promise(resolve => { releaseMutation = resolve; });
+    };
+    removeNote = () => new Promise(resolve => { releaseMutation = resolve; });
+    await act(async () => {
+      setter.call(editor, 'Saved body');
+      editor.dispatchEvent(new browser.Event('input', { bubbles: true }));
+      editor.dispatchEvent(new browser.Event('change', { bubbles: true }));
+      // focusout exercises React's onBlur and starts the save without a timer wait.
+      editor.dispatchEvent(new browser.Event('focusout', { bubbles: true }));
+      await bodyStarted;
+    });
+    const store = useProjectContextStore.getState;
+    expect(store().getEntry(project).notes[0].body).toBe('Peer note');
+    expect(serverContext.notes[0].body).toBe('Saved body');
+    let mutation: Promise<boolean> = Promise.resolve(false);
+    await act(async () => {
+      mutation = operation === 'pin'
+        ? store().setNotePinned(project, peerNote.id, true)
+        : store().deleteNote(project, peerNote.id);
+    });
+    if (operation === 'delete') expect(host.querySelector('li')).toBeNull();
+    await act(async () => releaseBody(Response.json({ note: saved })));
+    if (operation === 'delete') expect(host.querySelector('li')).toBeNull();
+    await act(async () => {
+      releaseMutation(Response.json({ error: 'Write rejected' }, { status: 503 }));
+      expect(await mutation).toBe(false);
+    });
+    expect(store().getEntry(project).notes[0]).toEqual(saved);
+    expect(serverContext.notes[0]).toEqual(saved);
+    if (operation === 'delete' && !host.querySelector('li textarea')) {
+      const restored = host.querySelector<HTMLElement>('li[role="button"]');
+      if (!restored) throw new Error('Restored note missing');
+      await act(async () => restored.click());
+    }
+    expect(host.querySelector<HTMLTextAreaElement>('li textarea')?.value).toBe('Saved body');
+  });
+}
 
 test('todo completion and deletion appear before the deferred response and roll back on failure', async () => {
   serverContext = { ...serverContext, todos: [
