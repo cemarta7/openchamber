@@ -36,8 +36,50 @@ other.
 `notes.*`, `todos.*`, and `plans.*` use `project-knowledge.js` to call the
 injected `projectContextRuntime` directly. Storage, write locks, and change
 events remain owned by `../project-context/`. The injected
-`resolveProjectContextId(directory)` applies the existing owner rules for
-configured projects, worktrees, and managed Chats.
+`resolveProjectContextId(directory)` uses `knowledge-owner.js` to match the
+panel's concrete-directory owner rules in `useProjectContextOwner` and
+`projectResolution`. The generic memory resolver keeps its existing behavior.
+
+Managed Chats takes precedence, including the configured and legacy roots and
+their filesystem aliases. The storage id uses the original root path. Other
+directories use the longest registered ancestor with a directory boundary.
+An independent Git repository under a registered HOME therefore uses HOME
+until its own path is registered.
+
+Worktree lists come from the existing Git helpers. As in the UI, a project's
+own checkout is omitted from its list. Published UI topology also omits all
+registered checkout paths and assigns each repository's list to its registered
+primary checkout, or its first configured listing when the primary is not
+registered. Knowledge discovery uses that configured order and omits registered
+checkout paths. The longest matching worktree path
+selects the registered owner of its primary checkout, then the listing project
+as a fallback. This match overrides a direct registered ancestor only when the
+worktree path is strictly longer. A tie keeps the direct owner. A concrete
+directory with no registered or Chats owner fails with 404. No new path-derived
+store is created for an unregistered repository. Settings and topology failures
+propagate before storage access. Existing stored data is unchanged.
+
+The panel retains its last known topology after a failed refresh. This resolver
+has no browser topology snapshot, so a failed list rejects the action before
+storage access. It cannot treat that failure as an empty list and write to a
+registered ancestor. A successful empty list retains normal direct-owner
+resolution. The panel's primary-root read can fall back to its listing path;
+a thrown primary lookup here also rejects before storage access.
+Discovery also keeps the panel's deliberate HOME/filesystem-root Git exclusion.
+The existing `isGitRepository` helper tests the listing checkout. A supported
+linked checkout remains eligible even when its repository's primary is HOME.
+Git eligibility and root helpers retain their existing probe behavior; this
+module does not convert a thrown read into empty success. Listing runs before
+candidate eligibility here so a failed list always rejects the action.
+
+Resolution runs on each knowledge call without a new cache or polling. Chats
+and exact registered paths need no worktree lists. Other directories read each
+configured project's list once and resolve the selected listing's primary root
+once. Matching candidates are tried by decreasing path length, with configured
+order for equal lengths. Each candidate's Git eligibility is read until a
+supported listing is found. This keeps current registration and topology
+authoritative. Large project
+lists increase the number of local Git reads; no latency claim is made.
 
 Each action takes `projectId` or an absolute `directory`. Omit both to use
 the calling session directory. Configured IDs first resolve through

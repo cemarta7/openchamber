@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenChamberControlService } from './service.js';
 import { OpenChamberControlError } from './error.js';
-import { createMemoryProjectResolver } from '../agent-memory/project-resolution.js';
+import { createKnowledgeOwnerResolver } from './knowledge-owner.js';
 import { createProjectIdFromPath } from '../projects/project-id.js';
 
 const setup = (overrides = {}) => {
@@ -19,10 +19,13 @@ const setup = (overrides = {}) => {
     updatePlan: vi.fn(async () => ({ plan: context.plans[0], context })),
     deletePlan: vi.fn(async () => ({ deleted: true, context })),
   };
-  const resolveProjectContextId = createMemoryProjectResolver({
+  const resolveProjectContextId = createKnowledgeOwnerResolver({
     listProjectPaths: async () => ['/repo', '/registered-worktree'],
+    getWorktrees: async () => [{ path: '/worktree' }],
     resolvePrimaryWorktreeRoot: async () => ({ root: '/repo' }),
+    isGitRepository: async () => true,
     managedProjectRoots: ['/chats'],
+    realpath: async (root) => root,
   });
   const service = createOpenChamberControlService({
     projectContextRuntime: runtime,
@@ -30,6 +33,7 @@ const setup = (overrides = {}) => {
     sessionService: { resolveDirectory: async ({ projectId }) => {
       if (projectId === 'configured-repo') return '/repo';
       if (projectId === 'configured-worktree') return '/registered-worktree';
+      if (projectId === 'missing-folder') throw new OpenChamberControlError('Project folder missing', 400);
       throw new OpenChamberControlError('Project not found', 404);
     } },
     ...overrides,
@@ -54,10 +58,14 @@ describe('project knowledge control actions', () => {
 
   it.each([
     [{ projectId: 'missing' }, '/repo', 404],
+    [{ projectId: 'missing-folder' }, '/repo', 400],
     [{ projectId: 'configured-repo', directory: '/repo' }, '/repo', 400],
     [{ projectId: '' }, '/repo', 400],
+    [{ projectId: 3 }, '/repo', 400],
+    [{ directory: ' ' }, '/repo', 400],
     [{ directory: 3 }, '/repo', 400],
     [{ directory: 'relative' }, '/repo', 400],
+    [{ directory: '/unowned' }, '/repo', 404],
     [{}, undefined, 400],
   ])('rejects invalid scope before storage access', async (input, directory, statusCode) => {
     const { service, runtime } = setup();
@@ -68,6 +76,20 @@ describe('project knowledge control actions', () => {
   it('rejects unresolved owners and unavailable dependencies', async () => {
     await expect(setup({ resolveProjectContextId: async () => '' }).service.execute('plans.list', {}, '/repo')).rejects.toMatchObject({ statusCode: 404 });
     await expect(setup({ projectContextRuntime: null }).service.execute('plans.list', {}, '/repo')).rejects.toMatchObject({ statusCode: 503 });
+  });
+
+  it('rejects failed worktree discovery before a registered ancestor can receive a write', async () => {
+    const getWorktrees = vi.fn(async () => { throw new Error('Worktree discovery failed'); });
+    const resolveProjectContextId = createKnowledgeOwnerResolver({
+      listProjectPaths: async () => ['/home', '/repo'], getWorktrees,
+      resolvePrimaryWorktreeRoot: async () => ({ root: '/repo' }),
+      isGitRepository: async () => true,
+    });
+    const { service, runtime } = setup({ resolveProjectContextId });
+    await expect(service.execute('notes.create', { body: 'Must not reach ancestor' }, '/home/tree/src', { contextSessionId: 'ses_caller' }))
+      .rejects.toMatchObject({ statusCode: 500, message: 'Worktree discovery failed' });
+    expect(runtime.createNote).not.toHaveBeenCalled();
+    expect(runtime.readContext).not.toHaveBeenCalled();
   });
 
   it('reads each knowledge type and dispatches all mutations directly', async () => {
