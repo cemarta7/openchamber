@@ -9,8 +9,8 @@ other.
 
 ## Boundaries
 
-- `service.js` validates and executes the fixed project, model, session, and
-  scheduled-task action allowlist. `actions.js` marks CLI-only actions with
+- `service.js` executes the fixed action allowlist. `project-knowledge.js`
+  validates knowledge inputs and resolves the storage owner. `actions.js` marks CLI-only actions with
   `agentExposed: false` (currently `schedule.status`); the agent tool consumes
   the filtered `OPENCHAMBER_AGENT_TOOL_*` exports. `schedule.toggle` requires
   the `disabled` boolean and replaces separate enable/disable actions;
@@ -31,7 +31,40 @@ other.
 - `../openchamber-sessions/routes.js` and `../scheduled-tasks/service.js` own
   their domain operations and are composed into this service.
 
-## Invariants
+## Project knowledge actions
+
+`notes.*`, `todos.*`, and `plans.*` use `project-knowledge.js` to call the
+injected `projectContextRuntime` directly. Storage, write locks, and change
+events remain owned by `../project-context/`. The injected
+`resolveProjectContextId(directory)` applies the existing owner rules for
+configured projects, worktrees, and managed Chats.
+
+Each action takes `projectId` or an absolute `directory`. Omit both to use
+the calling session directory. Configured IDs first resolve through
+`sessionService.resolveDirectory`; they are never used as storage IDs.
+Conflicting or malformed selectors fail with 400, unknown projects and
+unresolved owners with 404. Missing runtime dependencies fail with 503.
+
+Notes support list/read/create/update/delete with `noteId` and `body`.
+Create records `source: 'agent'` and the callback's calling session as
+`origin.sessionId`. Update changes only the body and keeps the original
+provenance. Model inputs cannot change provenance or attachment state.
+Todos support list/create/update/delete with `todoId`, `text`, and
+`completed`. Item mutations return the committed context and preserve other
+todos. New IDs come from storage. Plans support list/read/create/update/delete
+with `planId`, including shared IDs. Create takes `title` and `body`;
+update takes the complete `raw` document. Read before updating and pass the
+returned `raw` as `expectedRaw` to reject a stale replacement with 409.
+Without that optional precondition, existing replacement behavior applies.
+
+Results include the resolved storage `projectId`. Lists return `notes`,
+`todos`, or `plans`; reads return `note` or `plan`. Note and plan mutations
+retain the runtime result, including `context`; todo mutations return
+`context`. Missing items fail with 404. Invalid text and oversized inputs
+fail with 400 before mutation. Operational errors remain failures through
+the existing control error adapter. These actions do not pin or share items.
+
+## Session and viewer invariants
 
 - Session status and messages come from official directory-scoped OpenCode
   APIs. Message output includes only ordered `text` parts.

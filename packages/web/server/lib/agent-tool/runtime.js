@@ -125,6 +125,16 @@ const CONTROL_PARAMETER_PROPERTIES = pickParameters(
     !WEB_PARAMETER_NAMES.includes(name) && !MEMORY_ONLY_PARAMETER_NAMES.includes(name)
   )),
 );
+Object.assign(CONTROL_PARAMETER_PROPERTIES, {
+  noteId: { type: 'string' },
+  todoId: { type: 'string' },
+  planId: { type: 'string', description: 'ID from plans.list or plans.create; shared plan IDs are accepted' },
+  body: { type: 'string', description: 'Note body, at most 3000 characters, or the body for plans.create, at most 200000 characters' },
+  text: { type: 'string', description: 'Todo text, at most 1000 characters' },
+  completed: { type: 'boolean', description: 'Todo completion state; false reopens a todo' },
+  raw: { type: 'string', description: 'Whole markdown document for plans.update, at most 200000 characters' },
+  expectedRaw: { type: 'string', description: 'Last raw document returned by plans.read; plans.update fails if it changed' },
+});
 const WEB_PARAMETER_PROPERTIES = pickParameters(WEB_PARAMETER_NAMES);
 const MEMORY_PARAMETER_PROPERTIES = {
   ...pickParameters(MEMORY_PARAMETER_NAMES),
@@ -439,7 +449,8 @@ export const createAgentToolRuntime = (dependencies) => {
     // OpenCode 2 tools no longer receive a directory, so the plugin sends the
     // session id and the directory is resolved here. An unresolvable session
     // falls through with no directory, exactly like the old "no directory" path.
-    let contextDirectory = asNonEmptyString(payload.contextDirectory) ?? undefined;
+    const knowledgeAction = /^(notes|todos|plans)\./.test(action);
+    let contextDirectory = knowledgeAction ? undefined : asNonEmptyString(payload.contextDirectory) ?? undefined;
     const sessionID = asNonEmptyString(payload.sessionID);
     if (!contextDirectory && sessionID && typeof resolveSessionDirectory === 'function') {
       contextDirectory = await Promise.resolve(resolveSessionDirectory(sessionID))
@@ -448,7 +459,7 @@ export const createAgentToolRuntime = (dependencies) => {
     }
     try {
       // The calling session scopes browser actions to that session's page.
-      const contextSessionId = asNonEmptyString(payload.contextSessionId) ?? sessionID;
+      const contextSessionId = knowledgeAction ? sessionID : asNonEmptyString(payload.contextSessionId) ?? sessionID;
       const data = await executeAction(action, { ...payload.input, action }, contextDirectory, contextSessionId
         ? { ...options, contextSessionId }
         : options);
