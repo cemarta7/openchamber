@@ -40,11 +40,11 @@ const planLink = (overrides: Partial<ContextPayload['plans'][number]> = {}) => (
 // local precedent of swapping plain handlers instead of using mock helpers.
 const handlers = {
   fetch: async (): Promise<ContextPayload> => emptyPayload(),
-  saveTodos: async (todos: ContextPayload['todos']): Promise<ContextPayload> => ({
-    notes: [],
-    todos,
-    plans: [],
-  }),
+  saveTodos: async (todos: ContextPayload['todos'], expectedTodos?: ContextPayload['todos']): Promise<ContextPayload> => {
+    void expectedTodos;
+    return { notes: [], todos, plans: [] };
+  },
+  todo: async (): Promise<ContextPayload> => emptyPayload(),
   createNote: async (): Promise<{ note: NotePayload; context: ContextPayload }> => ({
     note: note(),
     context: { notes: [note()], todos: [], plans: [] },
@@ -70,10 +70,13 @@ mock.module('@/lib/projectContextApi', () => ({
     calls.fetch += 1;
     return handlers.fetch();
   },
-  saveProjectTodos: (_project: unknown, todos: ContextPayload['todos']) => {
+  saveProjectTodos: (_project: unknown, todos: ContextPayload['todos'], expectedTodos: ContextPayload['todos']) => {
     calls.saveTodos += 1;
-    return handlers.saveTodos(todos);
+    return handlers.saveTodos(todos, expectedTodos);
   },
+  createProjectTodo: () => handlers.todo(),
+  updateProjectTodo: () => handlers.todo(),
+  deleteProjectTodo: () => handlers.todo(),
   createProjectNote: () => {
     calls.createNote += 1;
     return handlers.createNote();
@@ -140,6 +143,7 @@ beforeEach(() => {
 
   handlers.fetch = async () => emptyPayload();
   handlers.saveTodos = async (todos) => ({ notes: [], todos, plans: [] });
+  handlers.todo = async () => emptyPayload();
   handlers.createNote = async () => ({ note: note(), context: { notes: [note()], todos: [], plans: [] } });
   handlers.updateNote = async () => note();
   handlers.deleteNote = async () => emptyPayload();
@@ -310,12 +314,29 @@ describe('load', () => {
 });
 
 describe('saveTodos', () => {
-  test('applies optimistically before the request resolves', async () => {
+  beforeEach(async () => { await store().load(PROJECT); });
+
+  test('uses the rendered snapshot even after a newer confirmed load', async () => {
+    const rendered = entry().todos;
+    handlers.fetch = async () => ({ ...emptyPayload(), todos: [{ id: 'peer', text: 'peer', completed: false, createdAt: 1 }] });
+    await store().load(PROJECT, { force: true });
+    let supplied: ContextPayload['todos'] | undefined;
+    handlers.saveTodos = async (_todos, expectedTodos) => {
+      void _todos;
+      supplied = expectedTodos;
+      throw new Error('Todos changed');
+    };
+    expect(await store().saveTodos(PROJECT, [], rendered)).toBe(false);
+    expect(supplied).toEqual([]);
+    expect(entry().todos.map(todo => todo.id)).toEqual(['peer']);
+  });
+
+  test('keeps the confirmed list until the request resolves', async () => {
     const gate = deferred<ContextPayload>();
     handlers.saveTodos = () => gate.promise;
 
     const pending = store().saveTodos(PROJECT, [{ id: 't1', text: 'typed', completed: false, createdAt: 1 }]);
-    expect(entry().todos).toHaveLength(1);
+    expect(entry().todos).toHaveLength(0);
 
     gate.resolve({ notes: [], todos: [{ id: 't1', text: 'typed', completed: false, createdAt: 1 }], plans: [] });
     expect(await pending).toBe(true);
@@ -359,11 +380,9 @@ describe('saveTodos', () => {
     });
 
     const pending = store().saveTodos(PROJECT, [{ id: 'local', text: 'local', completed: false, createdAt: 1 }]);
-    await store().load(PROJECT);
+    await store().load(PROJECT, { force: false });
 
-    expect(entry().todos.map((todo) => todo.id)).toEqual(['local']);
-    // The same snapshot still delivers the fields the write did not touch.
-    expect(entry().notes.map((entryNote) => entryNote.body)).toEqual(['from server']);
+    expect(entry().todos).toEqual([]);
 
     gate.resolve({ notes: [], todos: [{ id: 'local', text: 'local', completed: false, createdAt: 1 }], plans: [] });
     await pending;
@@ -372,6 +391,38 @@ describe('saveTodos', () => {
   test('ignores a project without a resolvable path', async () => {
     expect(await store().saveTodos({ id: 'x', path: '' }, [])).toBe(false);
     expect(calls.saveTodos).toBe(0);
+  });
+});
+
+describe('item todos', () => {
+  test('adopts peer items in the committed response to an ordinary edit', async () => {
+    handlers.todo = async () => ({ notes: [], plans: [], todos: [
+      { id: 'local', text: 'local', completed: true, createdAt: 1 },
+      { id: 'peer', text: 'peer', completed: false, createdAt: 2 },
+    ] });
+    expect(await store().updateTodo(PROJECT, 'local', { completed: true })).toBe(true);
+    expect(entry().todos.map((todo) => todo.id)).toEqual(['local', 'peer']);
+  });
+
+  test('failed item writes preserve the last confirmed list', async () => {
+    handlers.fetch = async () => ({ ...emptyPayload(), todos: [{ id: 'kept', text: 'kept', completed: false, createdAt: 1 }] });
+    await store().load(PROJECT);
+    handlers.todo = failWith('missing todo');
+    expect(await store().deleteTodo(PROJECT, 'kept')).toBe(false);
+    expect(entry().todos.map((todo) => todo.id)).toEqual(['kept']);
+    expect(entry().error).toBe('missing todo');
+  });
+
+  test('reset rejects an old runtime item response', async () => {
+    const gate = deferred<ContextPayload>();
+    handlers.todo = () => gate.promise;
+    const pending = store().createTodo(PROJECT, 'old');
+    await Promise.resolve();
+    store().reset();
+    await store().load(PROJECT);
+    gate.resolve({ ...emptyPayload(), todos: [{ id: 'old', text: 'old', completed: false, createdAt: 1 }] });
+    expect(await pending).toBe(false);
+    expect(entry().todos).toEqual([]);
   });
 });
 

@@ -29,7 +29,30 @@ A place to keep longer plans as saved files. You can:
 - open a plan to read it in the side panel
 - delete plans you no longer need
 
-You should land back in the Context tab with your note saved, your todo checked, or your plan listed — that's how you know it took.
+An open saved plan updates when an agent or another client changes it. Unsaved
+edits stay in the editor. If the saved document changes before your edit saves,
+the save reports an error and keeps your draft. Deleting a plan makes an open
+draft read-only and does not recreate the plan.
+
+## Agent actions
+
+On a managed OpenCode runtime, the existing `openchamber` tool can list, read,
+create, update and delete project notes and plans. It can list, create, update
+and delete todos, including completing or reopening an item. Changes appear in
+the open project panel through the existing event stream.
+
+Actions use the calling session's project by default. An agent can supply a
+configured `projectId` or a `directory`, but cannot supply both. Worktrees use
+their project owner. Managed Chats share their Chats owner.
+
+For a plan update, read the plan first and send its returned `raw` as
+`expectedRaw` with the new `raw`. If the plan has changed, the update fails with
+a conflict. Read it again before preparing another update. Without this optional
+precondition, a plan update replaces the saved document.
+
+Todo item changes preserve other items. Reordering or clearing completed items
+from the UI checks the last confirmed list. A concurrent change rejects that
+bulk save. Existing note and plan attachments remain specific to each session.
 
 ## Related
 

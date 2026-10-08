@@ -197,7 +197,14 @@ Examples:
 
 These stores coordinate persistent project/session metadata across multiple views.
 
-`useProjectContextStore.ts` caches server-owned project notes, todos, and plan links, keyed by the path-derived project id. It replaced a pair of `window` CustomEvents that made every mounted notes panel re-read the whole project config. Writes are optimistic and roll back on failure; they are serialized per project, because the server's own store does a read-modify-write and two concurrent saves would otherwise race it. A load captures per-field mutation revisions and preserves fields changed by a newer write, even when that write finishes before the response arrives. A failed load sets `error` and preserves the cached snapshot. Note and plan creation are deliberately not optimistic, since ids and timestamps are assigned by the server. Notes, todos, and plans are written through separate routes and tracked by separate in-flight flags, so a todo toggle cannot clobber a note edit in the same window. Pinned notes and plans are assembled into a synthetic context part by `lib/projectContextPinning.ts` at send time; that module tracks per-session what it already sent so an unchanged pinned set is not re-sent every turn.
+`useProjectContextStore.ts` caches server-owned project notes, todos, and plan links, keyed by the path-derived project id. Writes are serialized per project. Note edits and deletions and plan deletions are optimistic and roll back on failure. Creation waits for server IDs and timestamps. Todo writes adopt the committed list without an optimistic replacement. A load captures per-field mutation revisions and preserves fields changed by a newer write, even when that write finishes before the response arrives. A failed load sets `error` and preserves the cached snapshot. Notes, todos, and plans use separate routes and in-flight flags. Session knowledge owns note and plan attachments.
+
+Item todo creation, update and deletion use separate routes. Bulk clear and
+reorder require a previously loaded todo snapshot and send it as `expectedTodos`.
+They preserve cached data on failure. Reset clears this baseline and rejects
+queued or in-flight todo and plan saves captured from the previous runtime.
+Saved-plan editors send `expectedRaw` through `savePlan`; callers that omit it
+retain the existing replacement behavior.
 
 Ordinary loads still reuse a loaded entry. Visible-owner synchronization is owned by `lib/projectContextSync.ts`, as described in the panel's `DOCUMENTATION.md`. Forced loads wait for admitted local writes, so a notification sent before this client's save response cannot lose a peer change behind an in-flight flag. A write still pending when a forced read returns earns another read after it settles, including after rollback. Only a resolved write advances its field revision; a rejected attempt cannot hide authoritative peer data. Concurrent loads share one promise; refresh demand received during a read earns one trailing authoritative read. Runtime reset retires those promises and their generation, so an older success or failure cannot populate or alter a same-id entry on the new host.
 

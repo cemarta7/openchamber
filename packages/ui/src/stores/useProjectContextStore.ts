@@ -15,8 +15,10 @@ import { getRuntimeKey } from '@/lib/runtime-switch';
 import {
   createProjectNote,
   createProjectPlan,
+  createProjectTodo,
   deleteProjectNote,
   deleteProjectPlan,
+  deleteProjectTodo,
   fetchProjectContext,
   shareProjectPlan,
   unshareProjectPlan,
@@ -25,6 +27,7 @@ import {
   setProjectPlanPinned,
   updateProjectNote,
   updateProjectPlan,
+  updateProjectTodo,
   type ProjectNote,
   type ProjectNoteSource,
   type ProjectPlanLink,
@@ -62,7 +65,10 @@ interface ProjectContextState {
 interface ProjectContextActions {
   getEntry: (project: ProjectRef | null | undefined) => ProjectContextEntry;
   load: (project: ProjectRef, options?: { force?: boolean }) => Promise<void>;
-  saveTodos: (project: ProjectRef, todos: ProjectTodoItem[]) => Promise<boolean>;
+  saveTodos: (project: ProjectRef, todos: ProjectTodoItem[], expectedTodos?: ProjectTodoItem[]) => Promise<boolean>;
+  createTodo: (project: ProjectRef, text: string) => Promise<boolean>;
+  updateTodo: (project: ProjectRef, todoId: string, patch: { text?: string; completed?: boolean }) => Promise<boolean>;
+  deleteTodo: (project: ProjectRef, todoId: string) => Promise<boolean>;
   createNote: (
     project: ProjectRef,
     value: { body: string; source?: ProjectNoteSource; origin?: { sessionId: string; messageId?: string } },
@@ -71,7 +77,7 @@ interface ProjectContextActions {
   setNotePinned: (project: ProjectRef, noteId: string, pinned: boolean) => Promise<boolean>;
   deleteNote: (project: ProjectRef, noteId: string) => Promise<boolean>;
   createPlan: (project: ProjectRef, value: { title: string; body: string }) => Promise<ProjectPlanLink | null>;
-  savePlan: (project: ProjectRef, planId: string, raw: string) => Promise<boolean>;
+  savePlan: (project: ProjectRef, planId: string, raw: string, options?: { expectedRaw?: string }) => Promise<boolean>;
   setPlanPinned: (project: ProjectRef, planId: string, pinned: boolean) => Promise<boolean>;
   deletePlan: (project: ProjectRef, planId: string) => Promise<boolean>;
   /** Move a plan into the team's shared folder, or back; the plan gets a new id. */
@@ -130,6 +136,7 @@ const errorMessage = (error: unknown, fallback: string): string => (
 
 export const useProjectContextStore = create<ProjectContextStore>((set, get) => {
   let generation = 0;
+  const confirmedTodos = new Map<string, ProjectTodoItem[]>();
   const loads = new Map<string, { promise: Promise<void>; refresh: () => void }>();
   const patchEntry = (projectId: string, patch: Partial<ProjectContextEntry>) => {
     set((state) => ({
@@ -143,6 +150,35 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
   const currentEntry = (projectId: string): ProjectContextEntry => (
     get().entries[projectId] ?? EMPTY_PROJECT_CONTEXT_ENTRY
   );
+
+  // Todo responses are committed snapshots. Item writes never send a cached
+  // list, and bulk writes carry the snapshot the user actually saw.
+  const mutateTodos = async (project: ProjectRef, operation: () => Promise<{ todos: ProjectTodoItem[] }>): Promise<boolean> => {
+    const projectId = resolveProjectContextId(project);
+    if (!projectId) return false;
+    const startedGeneration = generation;
+    const runtimeKey = getRuntimeKey();
+    const current = () => startedGeneration === generation && runtimeKey === getRuntimeKey();
+    try {
+      return await enqueueWrite(projectId, 'todos', async () => {
+        if (!current()) return false;
+        const flags = flagsFor(projectId);
+        flags.todos = true;
+        try {
+          const committed = await operation();
+          if (!current()) return false;
+          confirmedTodos.set(projectId, committed.todos);
+          patchEntry(projectId, { todos: committed.todos, error: null });
+          return true;
+        } finally {
+          flags.todos = false;
+        }
+      });
+    } catch (error) {
+      if (current()) patchEntry(projectId, { error: errorMessage(error, 'Failed to save project todos') });
+      return false;
+    }
+  };
 
   return {
     entries: {},
@@ -202,6 +238,9 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
               continue;
             }
             const committed = currentEntry(projectId);
+            if (!flags.todos && flags.revisions.todos === revisions.todos) {
+              confirmedTodos.set(projectId, data.todos);
+            }
 
             // Completed writes still outrank a snapshot requested before them.
             patchEntry(projectId, {
@@ -229,36 +268,21 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
       return promise;
     },
 
-    /**
-     * Optimistically apply todos, then persist.
-     *
-     * On failure the previous list is restored, so the panel never shows a
-     * state that is not on disk without also showing the error.
-     */
-    saveTodos: async (project, todos) => {
+    /** A reorder or bulk clear must compare the last confirmed list. */
+    saveTodos: async (project, todos, snapshot) => {
       const projectId = resolveProjectContextId(project);
       if (!projectId) return false;
-
-      const previous = currentEntry(projectId).todos;
-      patchEntry(projectId, { todos, error: null });
-
-      const flags = flagsFor(projectId);
-      flags.todos = true;
-
-      try {
-        const committed = await enqueueWrite(projectId, 'todos', () => saveProjectTodos(project, todos));
-        patchEntry(projectId, { todos: committed.todos, loaded: true });
-        return true;
-      } catch (error) {
-        patchEntry(projectId, {
-          todos: previous,
-          error: errorMessage(error, 'Failed to save project todos'),
-        });
+      const expectedTodos = snapshot ?? confirmedTodos.get(projectId);
+      if (!expectedTodos || !confirmedTodos.has(projectId)) {
+        patchEntry(projectId, { error: 'Project todos have not loaded' });
         return false;
-      } finally {
-        flags.todos = false;
       }
+      return mutateTodos(project, () => saveProjectTodos(project, todos, expectedTodos));
     },
+
+    createTodo: (project, text) => mutateTodos(project, () => createProjectTodo(project, text)),
+    updateTodo: (project, todoId, patch) => mutateTodos(project, () => updateProjectTodo(project, todoId, patch)),
+    deleteTodo: (project, todoId) => mutateTodos(project, () => deleteProjectTodo(project, todoId)),
 
     /**
      * Create a note. Not optimistic: the id and timestamps come from the
@@ -408,15 +432,22 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
      * so renaming a plan's heading in the editor is reflected in the panel
      * without a reload. Resolves false when the plan is gone.
      */
-    savePlan: async (project, planId, raw) => {
+    savePlan: async (project, planId, raw, options) => {
       const projectId = resolveProjectContextId(project);
       if (!projectId) return false;
 
       const flags = flagsFor(projectId);
       flags.plans = true;
+      const startedGeneration = generation;
+      const runtimeKey = getRuntimeKey();
+      const current = () => startedGeneration === generation && runtimeKey === getRuntimeKey();
 
       try {
-        const result = await enqueueWrite(projectId, 'plans', () => updateProjectPlan(project, planId, raw));
+        const result = await enqueueWrite(projectId, 'plans', async () => {
+          if (!current()) return null;
+          return updateProjectPlan(project, planId, raw, options);
+        });
+        if (!current()) return false;
         if (!result) {
           patchEntry(projectId, {
             plans: currentEntry(projectId).plans.filter((plan) => plan.id !== planId),
@@ -429,7 +460,7 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
         });
         return true;
       } catch (error) {
-        patchEntry(projectId, { error: errorMessage(error, 'Failed to save plan') });
+        if (current()) patchEntry(projectId, { error: errorMessage(error, 'Failed to save plan') });
         return false;
       } finally {
         flags.plans = false;
@@ -520,6 +551,7 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
     /** Drop every cached project. Used when the active runtime changes. */
     reset: () => {
       generation += 1;
+      confirmedTodos.clear();
       loads.clear();
       writeChains.clear();
       mutationFlags.clear();

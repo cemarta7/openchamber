@@ -16,6 +16,13 @@ consume another tab's pending navigation request.
 `WalkthroughView` gates discovery and source loading while retaining generated
 results and any explicitly started generation job.
 
+Saved project plans in `PlanView` use the owner in their target descriptor for
+reads, conditional saves and event observation. A clean buffer adopts peer raw
+markdown. A dirty buffer keeps its last confirmed raw as the save precondition.
+Deletion makes that buffer read-only and cancels queued writes. Read failure
+preserves the document. Hidden plan views stop event refreshes; file-backed
+session plans retain their existing filesystem save path.
+
 ## Large text files
 
 The 200,000-character threshold selects an initial code preview, not read-only

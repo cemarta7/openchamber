@@ -168,17 +168,41 @@ export const fetchProjectContext = async (
 export const saveProjectTodos = async (
   project: ProjectRef,
   todos: ProjectTodoItem[],
+  expectedTodos: ProjectTodoItem[],
 ): Promise<ProjectContextData> => {
   const response = await runtimeFetch(`${basePath(requireProjectId(project))}/todos`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ todos }),
+    body: JSON.stringify({ todos, expectedTodos }),
   });
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'Failed to save project todos'));
   }
   return parseContext(await response.json());
 };
+
+const mutateProjectTodo = async (
+  project: ProjectRef,
+  method: 'POST' | 'PATCH' | 'DELETE',
+  todoId: string | null,
+  value?: { text?: string; completed?: boolean },
+): Promise<ProjectContextData> => {
+  const suffix = todoId === null ? '' : `/${encodeURIComponent(todoId)}`;
+  const response = await runtimeFetch(`${basePath(requireProjectId(project))}/todos${suffix}`, {
+    method,
+    ...(value ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) } : {}),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Failed to save project todo'));
+  }
+  return parseContext(await response.json());
+};
+
+export const createProjectTodo = (project: ProjectRef, text: string) => mutateProjectTodo(project, 'POST', null, { text });
+export const updateProjectTodo = (project: ProjectRef, todoId: string, patch: { text?: string; completed?: boolean }) => (
+  mutateProjectTodo(project, 'PATCH', todoId, patch)
+);
+export const deleteProjectTodo = (project: ProjectRef, todoId: string) => mutateProjectTodo(project, 'DELETE', todoId);
 
 export const createProjectNote = async (
   project: ProjectRef,
@@ -325,13 +349,14 @@ export const updateProjectPlan = async (
   project: ProjectRef,
   planId: string,
   raw: string,
+  options: { expectedRaw?: string } = {},
 ): Promise<{ plan: ProjectPlanLink; raw: string } | null> => {
   const response = await runtimeFetch(
     `${basePath(requireProjectId(project))}/plans/${encodeURIComponent(planId)}`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ raw }),
+      body: JSON.stringify({ raw, ...options }),
     },
   );
   if (response.status === 404) {

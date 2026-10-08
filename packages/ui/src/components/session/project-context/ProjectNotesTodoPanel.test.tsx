@@ -28,6 +28,7 @@ for (const [name, value] of Object.entries({
   HTMLTextAreaElement: browser.HTMLTextAreaElement,
   ResizeObserver: browser.ResizeObserver,
   MutationObserver: browser.MutationObserver,
+  PointerEvent: browser.PointerEvent,
   EventSource: TestEventSource,
   getComputedStyle: browser.getComputedStyle.bind(browser),
   requestAnimationFrame: browser.requestAnimationFrame.bind(browser),
@@ -47,11 +48,27 @@ let serverContext = emptyContext();
 let readFailed = false;
 let readContext = async (): Promise<Response> => Response.json(serverContext);
 let reads = 0;
+let summaryFailed = false;
+let summaryNoteIds: string[] = [];
 const noteWrites: string[] = [];
+const todoWrites: Array<{ method: string; body: string }> = [];
 const originalFetch = globalThis.fetch;
 globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(input instanceof Request ? input.url : String(input), 'http://runtime.test');
+  if (url.pathname === '/api/session-knowledge/summary') {
+    return summaryFailed ? Response.json({ error: 'offline' }, { status: 503 }) : Response.json({
+      notes: summaryNoteIds.map(id => ({ id, body: 'Attached note' })), plans: [], memory: { global: 0, project: 0 },
+    });
+  }
   if (url.pathname.startsWith('/api/project-context/')) {
+    if (url.pathname.includes('/todos') && init?.method) {
+      todoWrites.push({ method: init.method, body: String(init.body ?? '') });
+      if (init.method === 'PATCH') {
+        serverContext = { ...serverContext, todos: serverContext.todos.map(todo => todo.id === 'peer-todo' ? { ...todo, completed: true } : todo) };
+      }
+      if (init.method === 'PUT') return Response.json({ error: 'Todos changed' }, { status: 409 });
+      return Response.json(serverContext);
+    }
     if (init?.method === 'PATCH') {
       noteWrites.push(String(init.body));
       const saved = { ...peerNote, body: 'Local autosave draft', updatedAt: 2 };
@@ -104,7 +121,10 @@ beforeEach(() => {
   readFailed = false;
   readContext = async () => Response.json(serverContext);
   reads = 0;
+  summaryFailed = false;
+  summaryNoteIds = [];
   noteWrites.length = 0;
+  todoWrites.length = 0;
   Object.defineProperty(browser.document, 'visibilityState', { value: 'visible', configurable: true });
   Object.defineProperty(browser.navigator, 'onLine', { value: true, configurable: true });
   useProjectContextStore.getState().reset();
@@ -281,4 +301,48 @@ test('bursts share one read and changes during that read earn only one trailing 
   });
   expect(reads).toBe(initialReads + 2);
   expect(host.textContent).toContain('Peer note');
+});
+
+test('ordinary todo completion preserves a peer item that the panel has not read', async () => {
+  serverContext = { ...serverContext, todos: [{ id: 'peer-todo', text: 'Visible todo', completed: false, createdAt: 1 }] };
+  useUIStore.setState({ projectContextTab: 'todos' });
+  await mount();
+  serverContext.todos.push({ id: 'unread', text: 'Unread peer item', completed: false, createdAt: 2 });
+  const checkbox = host.querySelector<HTMLElement>('[role="checkbox"]');
+  if (!checkbox) throw new Error('Todo checkbox missing');
+  await act(async () => checkbox.click());
+  await settle();
+  expect(todoWrites).toEqual([{ method: 'PATCH', body: JSON.stringify({ completed: true }) }]);
+  expect(host.textContent).toContain('Unread peer item');
+  expect(useProjectContextStore.getState().getEntry(project).todos).toHaveLength(2);
+});
+
+test('bulk clear sends the last confirmed list and keeps it after a conflict', async () => {
+  const confirmed = [{ id: 'peer-todo', text: 'Finished todo', completed: true, createdAt: 1 }];
+  serverContext = { ...serverContext, todos: confirmed };
+  useUIStore.setState({ projectContextTab: 'todos' });
+  await mount();
+  const clear = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Clear completed');
+  if (!clear) throw new Error('Clear completed control missing');
+  await act(async () => clear.click());
+  await settle();
+  expect(todoWrites).toEqual([{ method: 'PUT', body: JSON.stringify({ todos: [], expectedTodos: confirmed }) }]);
+  expect(host.textContent).toContain('Finished todo');
+  expect(useProjectContextStore.getState().getEntry(project).error).toBe('Todos changed');
+});
+
+test('peer edits and failed summary refreshes retain the current session attachment', async () => {
+  serverContext = { ...serverContext, notes: [peerNote] };
+  summaryNoteIds = [peerNote.id];
+  useSessionUIStore.setState({ currentSessionId: 'attached-session', currentSessionDirectory: '/fixture/chats' });
+  await mount();
+  expect(host.querySelector('li button[aria-pressed]')?.getAttribute('aria-pressed')).toBe('true');
+  summaryFailed = true;
+  serverContext = { ...serverContext, notes: [{ ...peerNote, body: 'Peer updated attached note' }] };
+  await announce();
+  expect(host.textContent).toContain('Peer updated attached note');
+  expect(host.querySelector('li button[aria-pressed]')?.getAttribute('aria-pressed')).toBe('true');
+
+  await act(async () => useSessionUIStore.setState({ currentSessionId: 'other-session' }));
+  expect(host.querySelector('li button[aria-pressed]')?.getAttribute('aria-pressed')).toBe('false');
 });
