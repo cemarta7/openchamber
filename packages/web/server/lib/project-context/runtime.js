@@ -14,6 +14,7 @@
 
 import { asNonEmptyString, isRecord as isObjectRecord } from '../shared/guards.js';
 import { projectConfigFileStemOf } from '../projects/project-id.js';
+import { isDeepStrictEqual } from 'node:util';
 
 const PROJECT_CONTEXT_VERSION = 2;
 const PROJECT_NOTE_BODY_MAX_LENGTH = 3000;
@@ -188,6 +189,17 @@ const createEmptyContext = () => ({
 });
 
 const SHARED_PLAN_ID_PREFIX = 'shared:';
+
+const mutationError = (message, status) => Object.assign(new Error(message), { status });
+
+const todoText = (value) => {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) throw mutationError('text is required', 400);
+  if (text.length > PROJECT_TODO_TEXT_MAX_LENGTH) {
+    throw mutationError(`text must be at most ${PROJECT_TODO_TEXT_MAX_LENGTH} characters`, 400);
+  }
+  return text;
+};
 
 export const createProjectContextRuntime = (deps) => {
   const { fsPromises, path, projectsDirPath, createId, resolveSharedPlansDir, onChanged } = deps;
@@ -469,11 +481,69 @@ export const createProjectContextRuntime = (deps) => {
     onChanged?.(sanitizeProjectId(projectId));
   };
 
-  const saveTodos = async (projectId, todos) => {
+  const saveTodos = async (projectId, todos, options = {}) => {
+    if (options.expectedTodos !== undefined && !Array.isArray(options.expectedTodos)) {
+      throw mutationError('expectedTodos must be an array', 400);
+    }
     return withWriteLock(projectId, async () => {
       const now = Date.now();
       const current = await readStoredContext(projectId);
+      if (options.expectedTodos !== undefined && !isDeepStrictEqual(options.expectedTodos, current.todos)) {
+        throw mutationError('Project todos changed; reload before saving', 409);
+      }
       const next = { ...current, todos: sanitizeTodos(todos, now) };
+      await writeContext(projectId, next);
+      return next;
+    });
+  };
+
+  const createTodo = async (projectId, value) => {
+    const text = todoText(value?.text);
+    return withWriteLock(projectId, async () => {
+      const current = await readStoredContext(projectId);
+      if (current.todos.length >= PROJECT_TODO_MAX_ITEMS) {
+        throw mutationError(`A project can hold at most ${PROJECT_TODO_MAX_ITEMS} todos`, 400);
+      }
+      const todo = { id: idFactory(), text, completed: false, createdAt: Date.now() };
+      const next = { ...current, todos: [...current.todos, todo] };
+      await writeContext(projectId, next);
+      return next;
+    });
+  };
+
+  const updateTodo = async (projectId, todoId, patch) => {
+    const id = asNonEmptyString(todoId);
+    if (!id) throw mutationError('todoId is required', 400);
+    const hasText = patch?.text !== undefined;
+    const hasCompleted = patch?.completed !== undefined;
+    if (!hasText && !hasCompleted) throw mutationError('text or completed is required', 400);
+    const text = hasText ? todoText(patch.text) : null;
+    if (hasCompleted && typeof patch.completed !== 'boolean') {
+      throw mutationError('completed must be a boolean', 400);
+    }
+    return withWriteLock(projectId, async () => {
+      const current = await readStoredContext(projectId);
+      if (!current.todos.some((todo) => todo.id === id)) throw mutationError('Todo not found', 404);
+      const next = {
+        ...current,
+        todos: current.todos.map((todo) => todo.id === id ? {
+          ...todo,
+          ...(hasText ? { text } : {}),
+          ...(hasCompleted ? { completed: patch.completed } : {}),
+        } : todo),
+      };
+      await writeContext(projectId, next);
+      return next;
+    });
+  };
+
+  const deleteTodo = async (projectId, todoId) => {
+    const id = asNonEmptyString(todoId);
+    if (!id) throw mutationError('todoId is required', 400);
+    return withWriteLock(projectId, async () => {
+      const current = await readStoredContext(projectId);
+      if (!current.todos.some((todo) => todo.id === id)) throw mutationError('Todo not found', 404);
+      const next = { ...current, todos: current.todos.filter((todo) => todo.id !== id) };
       await writeContext(projectId, next);
       return next;
     });
@@ -497,7 +567,7 @@ export const createProjectContextRuntime = (deps) => {
       const now = Date.now();
       const current = await readStoredContext(projectId);
       if (current.notes.length >= PROJECT_NOTE_MAX_ITEMS) {
-        throw new Error(`A project can hold at most ${PROJECT_NOTE_MAX_ITEMS} notes`);
+        throw mutationError(`A project can hold at most ${PROJECT_NOTE_MAX_ITEMS} notes`, 400);
       }
 
       const note = {
@@ -624,7 +694,7 @@ export const createProjectContextRuntime = (deps) => {
    * stable identity behind the link, and renaming it would strand the markdown
    * if the manifest write failed afterwards.
    */
-  const updatePlan = async (projectId, planId, value) => {
+  const updatePlan = async (projectId, planId, value, options = {}) => {
     const id = asNonEmptyString(planId);
     if (!id) {
       throw new Error('planId is required');
@@ -632,7 +702,16 @@ export const createProjectContextRuntime = (deps) => {
     if (typeof value?.raw !== 'string') {
       throw new Error('raw is required');
     }
+    if (options.expectedRaw !== undefined && typeof options.expectedRaw !== 'string') {
+      throw mutationError('expectedRaw must be a string', 400);
+    }
     const raw = clampLength(value.raw, PROJECT_PLAN_BODY_MAX_LENGTH);
+    const checkExpectedRaw = async (filePath) => {
+      if (options.expectedRaw !== undefined
+        && await fsPromises.readFile(filePath, 'utf8') !== options.expectedRaw) {
+        throw mutationError('Plan changed; reload before saving', 409);
+      }
+    };
 
     const sharedFile = sharedPlanFileOf(id);
     if (sharedFile) {
@@ -647,6 +726,7 @@ export const createProjectContextRuntime = (deps) => {
           if (error && error.code === 'ENOENT') return null;
           throw error;
         }
+        await checkExpectedRaw(filePath);
         await fsPromises.writeFile(filePath, raw, 'utf8');
         onChanged?.(sanitizeProjectId(projectId));
         const parsed = parsePlanMarkdown(raw);
@@ -676,6 +756,7 @@ export const createProjectContextRuntime = (deps) => {
         throw error;
       }
 
+      await checkExpectedRaw(filePath);
       await fsPromises.writeFile(filePath, raw, 'utf8');
 
       const parsed = parsePlanMarkdown(raw);
@@ -705,6 +786,9 @@ export const createProjectContextRuntime = (deps) => {
 
     return withWriteLock(projectId, async () => {
       const current = await readStoredContext(projectId);
+      if (current.plans.length >= PROJECT_PLAN_MAX_ITEMS) {
+        throw mutationError(`A project can hold at most ${PROJECT_PLAN_MAX_ITEMS} personal plans`, 400);
+      }
       const createdAt = Date.now();
       const plansDir = plansDirFor(projectId);
       await fsPromises.mkdir(plansDir, { recursive: true });
@@ -885,6 +969,9 @@ export const createProjectContextRuntime = (deps) => {
   return {
     readContext,
     saveTodos,
+    createTodo,
+    updateTodo,
+    deleteTodo,
     createNote,
     updateNote,
     deleteNote,

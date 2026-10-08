@@ -24,6 +24,127 @@ const writeJson = async (filePath, value) => {
 
 const readJson = async (filePath) => JSON.parse(await fsPromises.readFile(filePath, 'utf8'));
 
+describe('atomic todo mutations', () => {
+  test('creates stable server ids, patches fields, reopens and deletes one item', async () => {
+    const first = await runtime.createTodo(PROJECT_ID, { text: ' one ' });
+    const item = first.todos[0];
+    await runtime.createTodo(PROJECT_ID, { text: 'two' });
+    await runtime.updateTodo(PROJECT_ID, item.id, { completed: true });
+    const edited = await runtime.updateTodo(PROJECT_ID, item.id, { text: 'edited' });
+    expect(edited.todos[0]).toEqual({ ...item, text: 'edited', completed: true });
+    await runtime.updateTodo(PROJECT_ID, item.id, { completed: false });
+    const deleted = await runtime.deleteTodo(PROJECT_ID, item.id);
+    expect(deleted.todos.map((todo) => todo.text)).toEqual(['two']);
+    expect((await runtime.readContext(PROJECT_ID)).todos).toEqual(deleted.todos);
+    await expect(runtime.updateTodo(PROJECT_ID, item.id, { completed: true })).rejects.toMatchObject({ status: 404 });
+    await expect(runtime.deleteTodo(PROJECT_ID, item.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  test('serializes parallel creates and field patches without losing unrelated data', async () => {
+    await runtime.createNote(PROJECT_ID, { body: 'keep note', source: 'agent', origin: { sessionId: 'ses_1' } });
+    await Promise.all(Array.from({ length: 20 }, (_, index) => runtime.createTodo(PROJECT_ID, { text: `todo ${index}` })));
+    const before = await runtime.readContext(PROJECT_ID);
+    const id = before.todos[0].id;
+    await Promise.all([
+      runtime.updateTodo(PROJECT_ID, id, { text: 'edited' }),
+      runtime.updateTodo(PROJECT_ID, id, { completed: true }),
+      runtime.deleteTodo(PROJECT_ID, before.todos[1].id),
+    ]);
+    const after = await runtime.readContext(PROJECT_ID);
+    expect(after.todos).toHaveLength(19);
+    expect(after.todos[0]).toEqual({ ...before.todos[0], text: 'edited', completed: true });
+    expect(after.notes).toEqual(before.notes);
+  });
+
+  test('rejects stale bulk writes in either ordering and preserves legacy replacement', async () => {
+    const initial = await runtime.createTodo(PROJECT_ID, { text: 'one' });
+    const id = initial.todos[0].id;
+    const results = await Promise.allSettled([
+      runtime.createTodo(PROJECT_ID, { text: 'agent' }),
+      runtime.saveTodos(PROJECT_ID, [], { expectedTodos: initial.todos }),
+    ]);
+    expect(results[1]).toMatchObject({ status: 'rejected', reason: { status: 409 } });
+    expect((await runtime.readContext(PROJECT_ID)).todos).toHaveLength(2);
+    const confirmed = (await runtime.readContext(PROJECT_ID)).todos;
+    await Promise.all([
+      runtime.saveTodos(PROJECT_ID, [...confirmed].reverse(), { expectedTodos: confirmed }),
+      runtime.updateTodo(PROJECT_ID, id, { completed: true }),
+    ]);
+    expect((await runtime.readContext(PROJECT_ID)).todos.find((todo) => todo.id === id).completed).toBe(true);
+    await runtime.saveTodos(PROJECT_ID, []);
+    expect((await runtime.readContext(PROJECT_ID)).todos).toEqual([]);
+  });
+
+  test('rejects invalid items and capacity overflow', async () => {
+    for (const text of ['', '   ', 12, 'x'.repeat(1001)]) {
+      await expect(runtime.createTodo(PROJECT_ID, { text })).rejects.toMatchObject({ status: 400 });
+    }
+    await expect(runtime.updateTodo(PROJECT_ID, 'x', {})).rejects.toMatchObject({ status: 400 });
+    await expect(runtime.updateTodo(PROJECT_ID, 'x', { completed: 'yes' })).rejects.toMatchObject({ status: 400 });
+    await runtime.saveTodos(PROJECT_ID, Array.from({ length: 500 }, (_, index) => ({ id: `t${index}`, text: 'todo', createdAt: 1 })));
+    await expect(runtime.createTodo(PROJECT_ID, { text: 'overflow' })).rejects.toMatchObject({ status: 400 });
+    expect((await runtime.readContext(PROJECT_ID)).todos).toHaveLength(500);
+  });
+
+  test('failed commits, malformed reads and stale writes emit no change', async () => {
+    const changes = [];
+    let failRename = false;
+    const guarded = createProjectContextRuntime({
+      fsPromises: { ...fsPromises, rename: async (...args) => {
+        if (failRename) throw new Error('commit failed');
+        return fsPromises.rename(...args);
+      } },
+      path, projectsDirPath, createId: () => 'todo-1', onChanged: (id) => changes.push(id),
+    });
+    const initial = await guarded.createTodo(PROJECT_ID, { text: 'keep' });
+    changes.length = 0;
+    failRename = true;
+    await expect(guarded.updateTodo(PROJECT_ID, 'todo-1', { completed: true })).rejects.toThrow('commit failed');
+    expect((await guarded.readContext(PROJECT_ID)).todos).toEqual(initial.todos);
+    await expect(guarded.saveTodos(PROJECT_ID, [], { expectedTodos: [] })).rejects.toMatchObject({ status: 409 });
+    await fsPromises.writeFile(contextPath(), '{ malformed', 'utf8');
+    await expect(guarded.createTodo(PROJECT_ID, { text: 'new' })).rejects.toThrow('malformed');
+    expect(changes).toEqual([]);
+  });
+});
+
+describe('conditional plan updates', () => {
+  test('refuses capacity overflow before creating a file', async () => {
+    await writeJson(contextPath(), { version: 2, notes: [], todos: [],
+      plans: Array.from({ length: 500 }, (_, index) => ({ id: `p${index}`, file: `${index}.md`, title: 'Plan', createdAt: 1 })) });
+    await expect(runtime.createPlan(PROJECT_ID, { title: 'overflow', body: 'new' })).rejects.toMatchObject({ status: 400 });
+    expect((await readJson(contextPath())).plans).toHaveLength(500);
+    await expect(fsPromises.access(plansDir())).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('preserves raw markdown and legacy calls; rejects stale replacement', async () => {
+    const { plan } = await runtime.createPlan(PROJECT_ID, { title: 'A', body: 'original' });
+    const original = await runtime.readPlan(PROJECT_ID, plan.id);
+    const raw = '# B\r\n\r\n  keep formatting\n';
+    await runtime.updatePlan(PROJECT_ID, plan.id, { raw }, { expectedRaw: original.raw });
+    await expect(runtime.updatePlan(PROJECT_ID, plan.id, { raw: '# stale' }, { expectedRaw: original.raw })).rejects.toMatchObject({ status: 409 });
+    expect((await runtime.readPlan(PROJECT_ID, plan.id)).raw).toBe(raw);
+    await runtime.updatePlan(PROJECT_ID, plan.id, { raw: '# Legacy\n' });
+    expect((await runtime.readPlan(PROJECT_ID, plan.id)).raw).toBe('# Legacy\n');
+  });
+
+  test('checks raw shared plans under the lock and does not announce conflicts', async () => {
+    const sharedDir = path.join(projectsDirPath, 'shared');
+    await fsPromises.mkdir(sharedDir);
+    await fsPromises.writeFile(path.join(sharedDir, 'team.md'), '# Team\n');
+    const changes = [];
+    const shared = createProjectContextRuntime({ fsPromises, path, projectsDirPath,
+      resolveSharedPlansDir: async () => sharedDir, onChanged: (id) => changes.push(id) });
+    const results = await Promise.allSettled([
+      shared.updatePlan(PROJECT_ID, 'shared:team.md', { raw: '# First\n' }, { expectedRaw: '# Team\n' }),
+      shared.updatePlan(PROJECT_ID, 'shared:team.md', { raw: '# Second\n' }, { expectedRaw: '# Team\n' }),
+    ]);
+    expect(results[1]).toMatchObject({ status: 'rejected', reason: { status: 409 } });
+    expect((await shared.readPlan(PROJECT_ID, 'shared:team.md')).raw).toBe('# First\n');
+    expect(changes).toEqual([PROJECT_ID]);
+  });
+});
+
 beforeEach(async () => {
   projectsDirPath = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-project-context-'));
   idCounter = 0;

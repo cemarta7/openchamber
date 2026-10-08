@@ -3,6 +3,10 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 
 import { registerProjectContextRoutes } from './routes.js';
+import { createProjectContextRuntime } from './runtime.js';
+import fsPromises from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
 
 /**
  * End-to-end route tests over real HTTP.
@@ -71,6 +75,42 @@ const createApp = (overrides = {}) => {
 };
 
 const BASE = '/api/project-context/path_dGVzdA';
+
+describe('persisted item routes and preconditions', () => {
+  it('returns committed contexts and rejects stale bulk and plan writes', async () => {
+    const projectsDirPath = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-context-http-'));
+    try {
+      let counter = 0;
+      const runtime = createProjectContextRuntime({ fsPromises, path, projectsDirPath, createId: () => `item-${++counter}` });
+      const { app } = createApp(runtime);
+      const created = await request(app).post(`${BASE}/todos`).send({ text: 'first' }).expect(201);
+      const id = created.body.todos[0].id;
+      await request(app).patch(`${BASE}/todos/${id}`).send({ completed: true }).expect(200);
+      await request(app).put(`${BASE}/todos`).send({ todos: [], expectedTodos: created.body.todos }).expect(409);
+      const latest = await request(app).get(BASE).expect(200);
+      expect(latest.body.todos[0].completed).toBe(true);
+      await request(app).put(`${BASE}/todos`).send({ todos: latest.body.todos, expectedTodos: latest.body.todos }).expect(200);
+      await request(app).delete(`${BASE}/todos/${id}`).expect(200);
+      await request(app).delete(`${BASE}/todos/${id}`).expect(404);
+      await request(app).patch(`${BASE}/todos/${id}`).send({ text: 'gone' }).expect(404);
+      for (const body of [{}, { text: '' }, { text: 1 }, { text: 'x'.repeat(1001) }]) {
+        await request(app).post(`${BASE}/todos`).send(body).expect(400);
+      }
+      await request(app).patch(`${BASE}/todos/x`).send({ completed: 'yes' }).expect(400);
+      await request(app).patch(`${BASE}/todos/x`).send({}).expect(400);
+      await request(app).put(`${BASE}/todos`).send({ todos: [], expectedTodos: null }).expect(400);
+      const plan = await request(app).post(`${BASE}/plans`).send({ title: 'A', body: 'old' }).expect(201);
+      const planPath = `${BASE}/plans/${plan.body.plan.id}`;
+      const read = await request(app).get(planPath).expect(200);
+      await request(app).put(planPath).send({ raw: '# Updated\n', expectedRaw: read.body.raw }).expect(200);
+      await request(app).put(planPath).send({ raw: '# Stale\n', expectedRaw: read.body.raw }).expect(409);
+      expect((await request(app).get(planPath).expect(200)).body.raw).toBe('# Updated\n');
+      await request(app).put(planPath).send({ raw: '# Invalid', expectedRaw: 1 }).expect(400);
+    } finally {
+      await fsPromises.rm(projectsDirPath, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('project context routes over HTTP', () => {
   it('reads the context', async () => {
