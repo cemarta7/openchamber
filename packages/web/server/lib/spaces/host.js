@@ -12,6 +12,7 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
+import { getStoredLogin, renewStoredLogin } from '../opencode/auth.js';
 import { createCodeIn } from './code-in.js';
 import { createCodeOut } from './code-out.js';
 import { createSpaceDispatcher } from './dispatcher.js';
@@ -19,6 +20,7 @@ import { SpaceError } from './errors.js';
 import { createGatekeeperChannel } from './gatekeeper-channel.js';
 import { createHostGit } from './host-git.js';
 import { createSpaceJourney } from './journey.js';
+import { KEEP_INTERVAL_MS, createLoginExchange, createLoginKeeper } from './login-keeper.js';
 import { hashProjectDirectory } from './labels.js';
 import { spaceProjectPath } from './layout.js';
 import { createSpaceManager } from './manager.js';
@@ -120,6 +122,11 @@ export function readOrCreateOwner(dataDir) {
  * without it every space is marked as of an unknown project. `readIdleStop` and `saveIdleStop`
  * read and keep the user's idle stop setting in the host's settings. `archive` is the chat archive
  * of `space-archive.js`, which a delete saves the space's chats to; without it they go with it.
+ * `readHostLogin(provider)` reads the host's own browser login for a provider from the host's
+ * OpenCode, for a login grant, and `renewHostLogin(provider, exchange)` replaces it with the one
+ * the issuer gives for its refresh token; the tests give a login of their own, and `loginWindowOf`
+ * lets the live test point that grant's upstream at its stand-in. `userAgent` names this
+ * OpenChamber to the issuer.
  */
 export function createSpacesHost({
   dataDir,
@@ -131,6 +138,10 @@ export function createSpacesHost({
   readIdleStop,
   saveIdleStop,
   archive = null,
+  readHostLogin = getStoredLogin,
+  renewHostLogin = renewStoredLogin,
+  loginWindowOf = undefined,
+  userAgent = 'OpenChamber',
   runCommand = runCommandProcess,
   openCommandStream = openCommandStreamProcess,
   place = null,
@@ -173,6 +184,7 @@ export function createSpacesHost({
   let events = null;
   let unsubscribeHostEvents = null;
   let followTimer = null;
+  let keepTimer = null;
   let known = { spaces: [], readAt: -Infinity };
   let listing = null;
   // When each space's session list was last read; within the TTL the accepted list is served again.
@@ -210,6 +222,7 @@ export function createSpacesHost({
               return {
                 id: space.id,
                 name: space.name,
+                state: space.state,
                 projectDirectory,
                 directory: projectDirectory === null ? null : spaceProjectPath(space.id, projectDirectory),
               };
@@ -236,6 +249,24 @@ export function createSpacesHost({
   };
 
   let hub = null;
+  // The host's login, kept fresh for the running spaces that hold it; the journey reads the
+  // login through it, so a grant and a start renew a login about to end before saying it.
+  const keeper = createLoginKeeper({
+    readLogin: readHostLogin,
+    renewLogin: renewHostLogin,
+    exchange: createLoginExchange({ userAgent }),
+    holders: async () => {
+      const holding = [];
+      for (const space of await knownSpaces()) {
+        if (space.state !== 'running') continue;
+        for (const grant of records.read(space.id).record?.grants ?? []) if (grant.kind === 'login') holding.push({ spaceId: space.id, grant });
+      }
+      return holding;
+    },
+    say: (spaceId, grant, login) => journey.sayLogin(spaceId, grant, login),
+    now,
+    logger,
+  });
   const journey = createSpaceJourney({
     manager,
     place: dockerPlace,
@@ -265,6 +296,8 @@ export function createSpacesHost({
     // A key named by an environment variable is read from the host's own environment, now, and
     // its value is kept nowhere (decision 5).
     readHostSecret: (name) => hostEnvironment[name],
+    readHostLogin: keeper.fresh,
+    loginWindowOf,
     readIdleStop,
     saveIdleStop,
     announce: (spaceId, payload) => { hub?.injectEvent({ payload, directory: 'global', spaceId }); },
@@ -347,10 +380,14 @@ export function createSpacesHost({
       unsubscribeHostEvents = globalEventHub.subscribeEvent((event) => { if (event.spaceId === null) index.observeHostEvent(event.payload); });
       followTimer = setTimer(() => { void follow(); }, FOLLOW_INTERVAL_MS);
       followTimer?.unref?.();
+      keepTimer = setTimer(() => { void keeper.tick(); }, KEEP_INTERVAL_MS);
+      keepTimer?.unref?.();
       // A running space whose gatekeeper lost its grants, from a start cut short, gets them again.
       void journey.restoreLostGrants();
       return follow();
     },
+    /** One look of the login keeper, now: what its timer does every minute, for the tests. */
+    keepLoginsFresh: () => keeper.tick(),
     /** For the proxy: the merged session list, or the host's own when no space exists. */
     mergeSessionList,
     /** For the body parsers: a request to a space keeps its body for the space. */
@@ -362,6 +399,8 @@ export function createSpacesHost({
     close: () => {
       if (followTimer !== null) clearTimer(followTimer);
       followTimer = null;
+      if (keepTimer !== null) clearTimer(keepTimer);
+      keepTimer = null;
       unsubscribeHostEvents?.();
       unsubscribeHostEvents = null;
       events?.close();

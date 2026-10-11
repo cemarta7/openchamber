@@ -91,6 +91,14 @@ login, AWS profile for Bedrock) asks only its form and calls
 `integration.connect.external`, which stores a reference to credentials managed
 outside OpenCode; the account then lists as "External credentials".
 
+Vertex can sign in through Google Application Default Credentials on the server
+machine, which OpenCode neither stores nor reports as a connection. When
+OpenCode resolved a project for Vertex (`settings.project` on the provider it
+serves), `usesMachineCredentials` counts that as credentials: the card shows
+"From environment" and the models section stays open. A provider listed in the
+OpenCode config is switched on (`activation: "enabled"`) even without a key, so
+activation alone is not a sign-in signal.
+
 The custom-provider form can discover models before save through
 `POST /api/provider/discover-models`. Discovery is a one-time prefill the user
 starts with "Find models": they pick which returned models to add, the review
@@ -143,6 +151,17 @@ per Location) and mounts the shared `providers/ProviderOAuthMethods.tsx`
 with that directory. It appears in the status card while the server reports
 `needs_auth`; once the credential is stored, the page connects the server
 again, which is what moves it out of `needs_auth`.
+
+### Claude sign-in on Usage
+
+Claude usage reads Claude Code's own login on the server machine, which the
+Providers page cannot add. When Claude reports not configured, the Usage page
+shows `usage/ClaudeCodeSignIn.tsx` in its warning instead of the "go to
+Providers" text. With the opencode-claude plugin installed it mounts the
+plugin's `claude-code` integration sign-in through the shared
+`providers/ProviderOAuthMethods.tsx` and re-reads Claude usage once it
+finishes. Without the plugin, or when the integration list cannot be read, it
+shows the `claude auth login` command, which works in both cases.
 
 ### Policy-blocked MCP servers and skills
 

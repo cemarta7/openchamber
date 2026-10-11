@@ -16,7 +16,8 @@ import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useI18n, type I18nKey } from '@/lib/i18n';
-import type { SpaceCreationStep, SpaceSetup } from '@/lib/spaces/spaces-api';
+import { SPACE_LOGIN_NAMES } from '@/lib/spaces/model-access';
+import { providerGrantOf, type SpaceCreationStep, type SpaceSetup } from '@/lib/spaces/spaces-api';
 import { spaceAccessNoticeOf } from '@/lib/spaces/space-access';
 import { runSpaceAction, spaceConditionOf, type SpaceCondition } from '@/lib/spaces/space-repair';
 import { useSpacesStore, type SpaceAction } from '@/lib/spaces/spaces-store';
@@ -148,7 +149,7 @@ export const SpaceGroupStatus: React.FC<{ spaceId: string; className?: string }>
     </Button>
   );
 
-  if (entry?.state === 'preparing' && entry.step && entry.step !== 'ready') {
+  if (entry?.state === 'preparing' && entry.step && entry.step !== 'ready' && entry.step !== 'failed') {
     return (
       <div className={className}>
         <Line icon="loader-4" tone="muted">
@@ -216,7 +217,7 @@ export const SpaceGroupStatus: React.FC<{ spaceId: string; className?: string }>
         <div className="flex flex-col gap-1">
           {access.failures.map((failure) => (
             <React.Fragment key={failure.provider}>
-              {grantLine(failure.provider, t('spaces.group.accessMissing', { provider: providerName(failure.provider), reason: spaceFailureText(t, failure) }))}
+              {grantLine(failure.provider, t('spaces.group.accessMissing', { provider: providerName(failure.provider), reason: spaceFailureText(t, failure, { name: SPACE_LOGIN_NAMES.get(failure.provider) ?? providerName(failure.provider) }) }))}
             </React.Fragment>
           ))}
         </div>
@@ -229,7 +230,9 @@ export const SpaceGroupStatus: React.FC<{ spaceId: string; className?: string }>
         <div className="flex flex-col gap-1">
           {notice.providers.map((providerId) => (
             <React.Fragment key={providerId}>
-              {grantLine(providerId, t('spaces.group.access.needsAgain', { provider: providerName(providerId) }))}
+              {grantLine(providerId, providerGrantOf(entry?.grants ?? [], providerId)?.kind === 'login'
+                ? t('spaces.group.access.loginNeedsAgain', { name: SPACE_LOGIN_NAMES.get(providerId) ?? providerName(providerId) })
+                : t('spaces.group.access.needsAgain', { provider: providerName(providerId) }))}
             </React.Fragment>
           ))}
         </div>

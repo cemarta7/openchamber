@@ -138,7 +138,7 @@ export function ProjectLabel({ project, theme }: { project: DraftTargetProject; 
 }
 
 /** Desktop: inline project and branch selects. */
-export function DraftTargetSelectors(props: DraftTargetProps) {
+function DraftTargetSelectorsView(props: DraftTargetProps) {
     const { t } = useI18n();
     const {
         projects,
@@ -420,7 +420,6 @@ export function DraftTargetSelectors(props: DraftTargetProps) {
                             <SelectTrigger
                                 ref={worktreeTriggerRef}
                                 onKeyDown={handlePickerKeyDown}
-                                size="sm"
                                 className="h-7 min-w-0 w-fit max-w-[48vw] sm:max-w-[20rem] border-transparent bg-transparent px-1.5 hover:[background-image:none] data-[popup-open]:[background-image:none]"
                             >
                                 {hasUncommittedChanges ? (
@@ -445,7 +444,7 @@ export function DraftTargetSelectors(props: DraftTargetProps) {
                         {projectRootBranchOption ? (
                             <SelectGroup>
                                 <SelectLabel>{t('chat.chatInput.projectRoot')}</SelectLabel>
-                                <SelectItem key={projectRootBranchOption.value} value={projectRootBranchOption.value} showSelectedBackground={false} className="max-w-[24rem] truncate">
+                                <SelectItem key={projectRootBranchOption.value} value={projectRootBranchOption.value} className="max-w-[24rem] truncate">
                                     {projectRootBranchOption.label}
                                 </SelectItem>
                             </SelectGroup>
@@ -461,13 +460,13 @@ export function DraftTargetSelectors(props: DraftTargetProps) {
                         <SelectGroup>
                             <SelectLabel>{t('chat.chatInput.worktrees')}</SelectLabel>
                             {worktreeBranchOptions.map((option) => (
-                                <SelectItem key={option.value} value={option.value} showSelectedBackground={false} className="max-w-[24rem] truncate">
+                                <SelectItem key={option.value} value={option.value} className="max-w-[24rem] truncate">
                                     {option.pending ? '⏳ ' : ''}{option.label}
                                 </SelectItem>
                             ))}
                         </SelectGroup>
                         {selectedDirectory && !selectedBranchIsKnown ? (
-                            <SelectItem value={selectedDirectory} showSelectedBackground={false} className="max-w-[24rem] truncate">
+                            <SelectItem value={selectedDirectory} className="max-w-[24rem] truncate">
                                 {selectedBranchLabel}
                             </SelectItem>
                         ) : null}
@@ -725,3 +724,6 @@ export function MobileDraftTargetSheets(
         </>
     );
 }
+
+/** Memoized: the composer re-renders on every keystroke, and nothing here depends on the draft text. */
+export const DraftTargetSelectors = React.memo(DraftTargetSelectorsView);

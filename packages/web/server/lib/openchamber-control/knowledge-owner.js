@@ -49,15 +49,15 @@ export const createKnowledgeOwnerResolver = ({
     const projects = (await listProjectPaths()).map((project) => ({ path: project, normalized: normalize(project) })).filter((project) => project.normalized);
     const direct = longestOwner(projects, resolved);
     if (direct?.normalized === resolved) return createProjectIdFromPath(direct.path);
-    const configuredPaths = new Set(projects.map((project) => project.normalized));
 
     const candidates = [];
     for (const project of projects) {
       let matchedPath = '';
       for (const worktree of await getWorktrees(project.path)) {
         const worktreePath = normalize(worktree.path);
-        // Published UI topology omits every configured checkout.
-        if (configuredPaths.has(worktreePath) || !contains(worktreePath, resolved)) continue;
+        // Published UI topology also omits checkouts holding a configured subfolder.
+        if (!contains(worktreePath, resolved)
+          || projects.some((registered) => contains(worktreePath, registered.normalized))) continue;
         if (worktreePath.length > matchedPath.length) {
           matchedPath = worktreePath;
         }

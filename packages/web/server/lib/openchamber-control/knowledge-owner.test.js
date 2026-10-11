@@ -64,12 +64,13 @@ describe('knowledge panel owner parity', () => {
     }
   });
 
-  it('selects the longest worktree match and preserves the direct owner on a tie', async () => {
+  it('omits a worktree parent of a registered project and keeps the direct owner on a tie', async () => {
     const fixture = setup(['/repo-a', '/repo-b', '/trees/nested'], [
       { project: '/repo-a', worktrees: [{ path: '/trees' }] },
       { project: '/repo-b', worktrees: [{ path: '/trees/nested' }] },
     ]);
-    expect(await fixture.resolver('/trees/src')).toBe(createProjectIdFromPath('/repo-a'));
+    expect(await fixture.resolver('/trees/src')).toBe('');
+    expect(await fixture.resolver('/trees/src')).toBe(fixture.panelOwner('/trees/src'));
     expect(await fixture.resolver('/trees/nested/src')).toBe(createProjectIdFromPath('/trees/nested'));
     expect(await fixture.resolver('/trees/nested/src')).toBe(fixture.panelOwner('/trees/nested/src'));
   });
@@ -82,6 +83,17 @@ describe('knowledge panel owner parity', () => {
     expect(await fixture.resolver('/tree/src')).toBe(createProjectIdFromPath('/tree'));
     expect(await fixture.resolver('/repo/src')).toBe(createProjectIdFromPath('/repo'));
     expect(fixture.resolvePrimaryWorktreeRoot).not.toHaveBeenCalled();
+  });
+
+  it('omits a checkout holding a registered subfolder like the published UI topology', async () => {
+    const fixture = setup(['/home/user', '/repo', '/home/user/worktree/nested'], [
+      { project: '/repo', primary: '/repo', worktrees: [{ path: '/repo' }, { path: '/home/user/worktree' }] },
+    ]);
+    expect(await fixture.resolver('/home/user/worktree/src')).toBe(createProjectIdFromPath('/home/user'));
+    expect(await fixture.resolver('/home/user/worktree/nested/src')).toBe(createProjectIdFromPath('/home/user/worktree/nested'));
+    for (const directory of ['/home/user/worktree/src', '/home/user/worktree/nested/src']) {
+      expect(await fixture.resolver(directory)).toBe(fixture.panelOwner(directory));
+    }
   });
 
   it.each([

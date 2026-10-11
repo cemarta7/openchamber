@@ -3,7 +3,7 @@ import { createPortal, flushSync } from 'react-dom';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useChatColumnActions, useChatSessionSelection } from '../chatColumnSession';
 import { useInlineCommentDraftStore } from '@/stores/useInlineCommentDraftStore';
-import { useSessions } from '@/sync/sync-context';
+import { useSessionDirectory } from '@/sync/sync-context';
 import { useInputStore } from '@/sync/input-store';
 import { useUIStore } from '@/stores/useUIStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -65,7 +65,7 @@ const normalizeDistilledInsight = (insight: string): string => (
   insight.trim().replace(/^[-*+]\s+/, '').slice(0, PROJECT_NOTE_BODY_MAX_LENGTH)
 );
 
-export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerRef, readingKey, canReadAloud }) => {
+const TextSelectionMenuImpl: React.FC<TextSelectionMenuProps> = ({ containerRef, readingKey, canReadAloud }) => {
   const { t } = useI18n();
   const { isPlaying: isReading, play: playReading, stop: stopReading } = useMessageTTS(readingKey);
   const [position, setPosition] = React.useState<MenuPosition>({ x: 0, y: 0, placement: 'above', show: false });
@@ -141,7 +141,9 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
   const projects = useProjectsStore((state) => state.projects);
   const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
   const effectiveDirectory = useEffectiveDirectory();
-  const sessions = useSessions();
+  // A leaf read: the session list is replaced on every streamed step, while
+  // only this session's directory feeds the notes project fallback.
+  const currentSessionDirectory = useSessionDirectory(currentSessionId);
   const mobileCommentController = useMobileCommentComposerController();
   const mobileCommentDraft = useMobileCommentDraft(mobileCommentController);
   const mobileCommentActive = mobileCommentDraft.status === 'open';
@@ -630,19 +632,11 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     });
   }, [addContextDraft, attachCitedImages, commentText, currentSessionId, effectiveDirectory, focusColumnInput, hideMenu, newSessionDraftOpen, selectedAnchor, selectedMessageId, selectedTextMarkdown, t]);
 
-  const currentSession = React.useMemo(() => {
-    if (!currentSessionId) {
-      return null;
-    }
-    return sessions.find((session) => session.id === currentSessionId) ?? null;
-  }, [currentSessionId, sessions]);
-
   const currentProjectRef = React.useMemo(() => {
-    const directory = effectiveDirectory
-      ?? (typeof currentSession?.directory === 'string' ? currentSession.directory : '');
+    const directory = effectiveDirectory ?? currentSessionDirectory ?? '';
     const resolved = resolveProjectForSessionDirectory(projects, availableWorktreesByProject, directory);
     return resolved ? { id: resolved.id, path: resolved.path } : null;
-  }, [availableWorktreesByProject, currentSession?.directory, effectiveDirectory, projects]);
+  }, [availableWorktreesByProject, currentSessionDirectory, effectiveDirectory, projects]);
 
   const handleAddToNotes = React.useCallback(async () => {
     if (!selectedText || !currentProjectRef) {
@@ -971,3 +965,7 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     document.body
   );
 };
+
+// Rendered by every assistant message, which re-renders on each streamed
+// chunk; its props (a ref, the message id, a flag) do not change then.
+export const TextSelectionMenu = React.memo(TextSelectionMenuImpl);

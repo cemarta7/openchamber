@@ -74,6 +74,8 @@ import { cloneMessageImageExportSource } from './imageExport';
 const CONTAIN_LAYOUT_STYLE = { contain: 'layout' as const, transform: 'translateZ(0)' };
 const MESSAGE_FOOTER_CONTAINER_STYLE = { containerType: 'inline-size' as const, containerName: 'message-footer' };
 const INLINE_MESSAGE_ACTIONS_CLASS_NAME = 'mt-2 mb-1 flex items-center justify-start gap-1.5';
+// One shared empty list, so the gallery's props stay equal across streamed chunks.
+const NO_FINALIZED_MARKDOWN: readonly string[] = [];
 
 const getDisplayFileName = (file: string): string => {
     const normalized = file.replace(/\\/g, '/');
@@ -1279,10 +1281,9 @@ const AssistantMessageBody = React.memo(({
     const finalizedAssistantMarkdownContents = React.useMemo(() => (
         isMessageCompleted
             ? assistantTextParts.map(extractTextContent).filter((text) => text.trim().length > 0)
-            : []
+            : NO_FINALIZED_MARKDOWN
     ), [assistantTextParts, isMessageCompleted]);
     const assistantPlanText = React.useMemo(() => flattenAssistantTextParts(assistantTextParts), [assistantTextParts]);
-    const suggestedPlanTitle = React.useMemo(() => suggestPlanTitleFromText(assistantPlanText), [assistantPlanText]);
 
     const openContextPreview = useUIStore((state) => state.openContextPreview);
     const isVSCode = isVSCodeRuntime();
@@ -1358,6 +1359,13 @@ const AssistantMessageBody = React.memo(({
         };
     }, [assistantPlanText, effectiveDirectory, effectiveReviewTransferDirection, sessionId, t]);
     const [isPlanDialogOpen, setIsPlanDialogOpen] = React.useState(false);
+    // The plan dialog mounts on its first open and stays mounted so closing
+    // still animates; until then a streaming message renders none of it.
+    const [isPlanDialogMounted, setIsPlanDialogMounted] = React.useState(false);
+    const suggestedPlanTitle = React.useMemo(
+        () => (isPlanDialogMounted ? suggestPlanTitleFromText(assistantPlanText) : ''),
+        [assistantPlanText, isPlanDialogMounted],
+    );
     const [isSavingPlan, setIsSavingPlan] = React.useState(false);
     const [isForkDialogOpen, setIsForkDialogOpen] = React.useState(false);
     const [isForkSubmitting, setIsForkSubmitting] = React.useState(false);
@@ -1501,6 +1509,7 @@ const AssistantMessageBody = React.memo(({
             if (!assistantPlanText.trim()) {
                 return;
             }
+            setIsPlanDialogMounted(true);
             setIsPlanDialogOpen(true);
         },
         [assistantPlanText]
@@ -2384,7 +2393,7 @@ const AssistantMessageBody = React.memo(({
                   readingKey={messageId}
                   canReadAloud={!isMiniChatSurface && showMessageTTSButtons}
               />
-             {canUseProjectPlanActions ? (
+             {canUseProjectPlanActions && isPlanDialogMounted ? (
                  <SaveProjectPlanDialog
                      open={isPlanDialogOpen}
                      onOpenChange={setIsPlanDialogOpen}

@@ -232,7 +232,12 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.splashFgDark === 'string' && candidate.splashFgDark.trim().length > 0) {
       result.splashFgDark = candidate.splashFgDark.trim();
     }
-    if (typeof candidate.lastDirectory === 'string' && candidate.lastDirectory.length > 0) {
+    // An empty string forgets the last directory (the last project was
+    // removed). Every reader treats it as unset, so nothing is warmed at start
+    // or turned back into a project.
+    if (candidate.lastDirectory === '') {
+      result.lastDirectory = '';
+    } else if (typeof candidate.lastDirectory === 'string') {
       const normalized = normalizePathForPersistence(candidate.lastDirectory);
       if (typeof normalized === 'string' && normalized.length > 0) {
         result.lastDirectory = normalized;
@@ -445,6 +450,15 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (typeof candidate.autoSaveEnabled === 'boolean') {
       result.autoSaveEnabled = candidate.autoSaveEnabled;
+    }
+    if (candidate.confirmFileTreeMove === true || candidate.confirmFileTreeMove === false) {
+      result.confirmFileTreeMove = candidate.confirmFileTreeMove;
+    }
+    if (candidate.layoutAnimations === true || candidate.layoutAnimations === false) {
+      result.layoutAnimations = candidate.layoutAnimations;
+    }
+    if (candidate.fileTreeSide === 'left' || candidate.fileTreeSide === 'right') {
+      result.fileTreeSide = candidate.fileTreeSide;
     }
     if (typeof candidate.diffWrapLines === 'boolean') {
       result.diffWrapLines = candidate.diffWrapLines;

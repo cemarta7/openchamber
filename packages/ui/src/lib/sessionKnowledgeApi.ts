@@ -24,12 +24,19 @@ interface SessionKnowledge {
 
 const EMPTY: SessionKnowledge = { text: '', signature: '' };
 
+/** Pending delivery reports keep the next send from repeating the same block. */
+const deliveryReports = new Map<string, Promise<void>>();
+
 export const fetchSessionKnowledge = async (
   directory: string | null,
   sessionId: string | null,
 ): Promise<SessionKnowledge> => {
   if (!directory) {
     return EMPTY;
+  }
+
+  if (sessionId) {
+    await deliveryReports.get(sessionId);
   }
 
   try {
@@ -67,15 +74,20 @@ export const reportSessionKnowledgeDelivered = async (
   }
 
   invalidateSummary(directory, sessionId);
-  try {
-    await runtimeFetch('/api/session-knowledge/delivered', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ directory, sessionId, signature }),
-    });
-  } catch {
-    // Only means the block may be sent once more.
-  }
+  const report = (async () => {
+    try {
+      await runtimeFetch('/api/session-knowledge/delivered', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directory, sessionId, signature }),
+      });
+    } catch {
+      // Only means the block may be sent once more.
+    }
+  })();
+  deliveryReports.set(sessionId, report);
+  await report;
+  if (deliveryReports.get(sessionId) === report) deliveryReports.delete(sessionId);
 };
 
 export interface SessionKnowledgeSummary {

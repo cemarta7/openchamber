@@ -1,6 +1,7 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 import { GlassPopupMotion } from './GlassPopupMotion';
+import { publishFloatingPanelClearance, withdrawFloatingPanelClearance } from '../state/composerInsetReaders';
 
 interface ComposerFloatingPanelProps {
     header: React.ReactNode;
@@ -10,7 +11,7 @@ interface ComposerFloatingPanelProps {
     ariaLabel?: string;
 }
 
-/** Shared dock for mutually exclusive BTW, queue, and suggestion panels. */
+/** Shared dock for the mutually exclusive BTW, permission, and form panels. */
 /** Panels mounted per chat column, so the marker survives an overlap. */
 const mountedPanels = new WeakMap<HTMLElement, number>();
 
@@ -27,13 +28,11 @@ export function ComposerFloatingPanel({ header, children, compact = false, role,
         column.setAttribute('data-floating-panel', 'true');
         // The floating status/navigation overlays translate up by this
         // offset, and the transcript's tail spacer grows by it so the panel
-        // never covers the last rows.
+        // never covers the last rows. Written onto those readers, not the
+        // column, so a resize does not restyle the whole transcript.
         const update = () => {
             const gap = Number.parseFloat(getComputedStyle(panel).marginBottom) || 0;
-            const clearance = `${Math.ceil(panel.getBoundingClientRect().height + gap)}px`;
-            if (column.style.getPropertyValue('--chat-floating-panel-clearance') !== clearance) {
-                column.style.setProperty('--chat-floating-panel-clearance', clearance);
-            }
+            publishFloatingPanelClearance(column, Math.ceil(panel.getBoundingClientRect().height + gap));
         };
         update();
         const observer = globalThis.ResizeObserver ? new ResizeObserver(update) : null;
@@ -44,7 +43,7 @@ export function ComposerFloatingPanel({ header, children, compact = false, role,
             // A panel fading out overlaps the one replacing it; the newcomer
             // has already written its own clearance, so leave it in place.
             if (remaining <= 0) {
-                column.style.removeProperty('--chat-floating-panel-clearance');
+                withdrawFloatingPanelClearance(column);
                 mountedPanels.delete(column);
                 column.removeAttribute('data-floating-panel');
             } else {

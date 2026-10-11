@@ -622,6 +622,12 @@
   padding-bottom: var(--oc-kb-scroll-inset, var(--oc-kb-layout, 0px));
 }
 
+/* The transcript's end fade band (index.css `.chat-scroll-fade--end`) is
+   measured from the scroller's bottom edge, so it extends with it. */
+:root.oc-capacitor-app .oc-mobile-app-shell .chat-scroll-fade--end {
+  bottom: calc(-1 * max(var(--oc-kb-layout, 0px) - var(--oc-app-bottom-safe, 0px), 0px));
+}
+
 /* WKWebView draws the text caret as a native layer that ignores CSS transforms:
    after the keyboard rise it visibly flies from the pre-keyboard position to
    the final one. Hide it during the transition (+ UIKit's reposition lag,

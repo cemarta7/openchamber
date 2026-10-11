@@ -60,6 +60,8 @@ import { useUIStore } from "@/stores/useUIStore"
 import { useBtwStore } from "@/stores/useBtwStore"
 import { selectNewChildSessions } from "./child-session-discovery"
 import { syncDebug } from "./debug"
+import { normalizePath } from "@/lib/pathNormalization"
+import { Binary } from "./binary"
 import { getReconnectCandidateSessionIds, mergeBootstrapSessions } from "./reconnect-recovery"
 import { messagesBefore } from "./message-ordering"
 import { opencodeClient } from "@/lib/opencode/client"
@@ -77,7 +79,7 @@ import { refreshStoresForCatalogKind } from "@/stores/catalogRefresh"
 import { useMcpStore } from "@/stores/useMcpStore"
 import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { spaceIdOfDirectory } from "@/lib/spaces/space-route"
-import { refreshSpacesJourney, useSpacesStore } from "@/lib/spaces/spaces-store"
+import { isSpaceDirectoryStopped, isSpaceStopped, refreshSpacesJourney, useSpacesStore } from "@/lib/spaces/spaces-store"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { toast } from "@/components/ui"
 import { appendNotification } from "./notification-store"
@@ -129,6 +131,8 @@ import {
   setImperativeSessionMessageLoader,
   type SessionMessageLoadState,
 } from "./session-message-loader"
+import { openCodeStartupSignal } from "./opencode-startup-gate"
+import { claimFirstServerConnect, notifyFirstServerConnect } from "./first-server-connect"
 
 // ---------------------------------------------------------------------------
 // Context
@@ -310,6 +314,11 @@ export function useAllSessionStatuses(): Record<string, SessionStatus> {
   )
 }
 
+const subscribeLiveSessionLists = (childStores: ChildStoreManager, notify: () => void) => childStores.subscribeAllSelected(
+  (state: State) => state.session,
+  notify,
+)
+
 export function useAllLiveSessions(): Session[] {
   return useLiveSyncSelector(
     useCallback((states) => {
@@ -317,13 +326,26 @@ export function useAllLiveSessions(): Session[] {
       return aggregateLiveSessions(states)
     }, []),
     areSessionListsEquivalent,
-    useCallback(
-      (childStores: ChildStoreManager, notify: () => void) => childStores.subscribeAllSelected(
-        (state: State) => state.session,
-        notify,
-      ),
-      [],
-    ),
+    subscribeLiveSessionLists,
+  )
+}
+
+const EMPTY_LIVE_SESSIONS: Session[] = []
+
+/**
+ * Live sessions whose ids are not in `excludedIds`, newest first. Updates to
+ * an excluded session (a `time.updated` bump on every streamed step) do not
+ * re-render the caller.
+ */
+export function useLiveSessionsExcluding(excludedIds: ReadonlySet<string>): Session[] {
+  return useLiveSyncSelector(
+    useCallback((states) => {
+      countSyncPerformance("liveSessionAggregateRuns")
+      const sessions = aggregateLiveSessions(states).filter((session) => !excludedIds.has(session.id))
+      return sessions.length === 0 ? EMPTY_LIVE_SESSIONS : sessions
+    }, [excludedIds]),
+    areSessionListsEquivalent,
+    subscribeLiveSessionLists,
   )
 }
 
@@ -1534,6 +1556,19 @@ async function resyncDirectoryAfterReconnect(
   ingestDirectoryStateIntoRoutingIndex(routingIndex, directory, store.getState())
 }
 
+/**
+ * A deferred store that looked idle before a stream gap may own a session
+ * that started a turn, or asked a permission or form, during it. OpenCode's
+ * active-session list is global, so one read finds those stores without
+ * reading any directory. A failed read leaves them deferred as before.
+ */
+async function refreshStoresActiveAfterGap(childStores: ChildStoreManager): Promise<void> {
+  const runtime = { key: getRuntimeKey(), sdk: opencodeClient.getSdkClient() }
+  const active = await opencodeClient.getActiveSessionStatuses()
+  if (!active || !isCatalogRuntimeCurrent(runtime)) return
+  childStores.refreshStaleDirectoriesWithActiveSessions(new Set(Object.keys(active)))
+}
+
 type CatalogRuntime = { key: string; sdk: ReturnType<typeof opencodeClient.getSdkClient> }
 
 const isCatalogRuntimeCurrent = (runtime: CatalogRuntime): boolean =>
@@ -1938,28 +1973,26 @@ export function handleEvent(
     } else if (result.type === "catalog") {
       scheduleCatalogReload(result.kind, childStores, null)
     }
-    // On server.connected, re-bootstrap all directories
-    // but only if not during recent boot
     if (payload.type === "server.connected") {
+      // OpenCode answers for the first time, boot window or not: directory
+      // bootstraps that failed while it was starting get their one retry.
+      if (expectedRuntimeKey === getRuntimeKey() && claimFirstServerConnect(childStores, expectedRuntimeKey)) {
+        childStores.retryFailedBootstraps()
+        notifyFirstServerConnect(expectedRuntimeKey)
+      }
+      // OpenCode's stream restarted outside the boot window: events were lost.
+      // Stores in use re-read now; the rest re-read when used again.
       if (!recent) {
-        for (const dir of childStores.children.keys()) {
-          const store = childStores.getChild(dir)
-          if (store && store.getState().status !== "loading") {
-            childStores.requestBootstrap({
-              directory: dir,
-              priority: dir === opencodeClient.getDirectory() ? "selected" : "background",
-              reason: "server-connected",
-              force: true,
-            })
-          }
-        }
-        // Bootstrap re-reads the commands of open directories; a command in
-        // any other directory may have exited during the gap.
+        getImperativeSessionMessageLoader()?.markHistoryStale()
+        const refreshing = childStores.refreshAfterStreamRestart(opencodeClient.getDirectory())
+        // Bootstrap re-reads the commands of the directories it refreshes; a
+        // command in any other directory may have exited during the gap.
         for (const dir of directoriesWithRunningShells()) {
-          if (childStores.getChild(dir)) continue
+          if (refreshing.has(normalizePath(dir) ?? dir)) continue
           void runBackgroundNetworkTask(() => refreshBackgroundShells(dir, (target) => opencodeClient.listRunningShells(target)))
             .catch(() => undefined)
         }
+        void refreshStoresActiveAfterGap(childStores)
       }
     }
     return
@@ -2512,7 +2545,7 @@ export function SyncProvider(props: {
     messageLoaderRef.current = new SessionMessageLoader(childStores, {
       sdk: opencodeClient,
       runtimeKey,
-    })
+    }, openCodeStartupSignal)
   }
   const messageLoader = messageLoaderRef.current
   const messageLoaderDisposalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2807,6 +2840,10 @@ export function SyncProvider(props: {
   useEffect(() => {
     const unsubscribeQueueEvents = subscribeMessageQueueSync(runtimeKey)
     const resyncAfterStreamGap = (reason: SessionMaterializationReason) => {
+      // Cached transcripts may have missed events too; each revalidates its
+      // tail the next time it is opened. Mark first so the active sessions'
+      // tail refreshes below count as that revalidation.
+      messageLoader.markHistoryStale()
       for (const dir of childStores.children.keys()) triggerDirectoryResync(dir, reason)
     }
     const pipeline = createEventPipeline({
@@ -2846,6 +2883,11 @@ export function SyncProvider(props: {
         // that one space, the directories the global list knows for it, so a session made or
         // finished during the gap shows up without a full global reload.
         useSpacesStore.getState().noteStream(spaceId, status)
+        // A stream that is back on a space this window lists as stopped means the space was started
+        // elsewhere: the list is read again, so the group and the paused polls follow.
+        if (status === "connected" && isSpaceStopped(spaceId)) {
+          void refreshSpacesJourney().catch(() => undefined)
+        }
         if (status !== "connected") {
           // A space that stopped itself for the idle stop ends its stream on its way out. While the
           // host's list still says it runs, read the list again at each failed reconnect, which the
@@ -2928,7 +2970,7 @@ export function SyncProvider(props: {
       pipeline.cleanup()
       unsubscribeQueueEvents()
     }
-  }, [props.sdk, childStores, routingIndex, messageStreamTransport, runtimeKey, triggerDirectoryResync])
+  }, [props.sdk, childStores, messageLoader, routingIndex, messageStreamTransport, runtimeKey, triggerDirectoryResync])
 
   useEffect(() => {
     let stopped = false
@@ -3012,6 +3054,9 @@ export function SyncProvider(props: {
           if (stopped) return
           const now = Date.now()
           for (const [directory, store] of childStores.children.entries()) {
+            // A stopped space answers nothing: the journey list is the authority, so its
+            // directories wait, status as they last reported, until the list says it runs.
+            if (isSpaceDirectoryStopped(directory)) continue
             const state = store.getState()
             const candidateSessionIds = getActiveSessionCandidateIds(directory, state)
             if (candidateSessionIds.length === 0) {
@@ -3253,6 +3298,41 @@ export function useSessionMessages(sessionID: string, directory?: string) {
       if (state.message[sessionID] !== previous.message[sessionID]) notify()
     })
   }, [sessionID, store])
+  return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+/**
+ * Derive one value from a session's message list. The caller re-renders only
+ * when the derived value changes under `isEqual`, not on every message update:
+ * a streamed step replaces the list many times while a derived flag or reading
+ * stays the same. `select` runs when the session's list changes, and again on
+ * the caller's own renders, so it reads current state either way. A selector
+ * that also reads message parts passes `watchParts`, so parts that load after
+ * their message re-run it too.
+ */
+export function useSessionMessagesSelector<T>(
+  sessionID: string,
+  directory: string | undefined,
+  select: (messages: Message[], state: State) => T,
+  isEqual: (left: T, right: T) => boolean = Object.is,
+  watchParts = false,
+): T {
+  const store = useDirectoryStore(directory)
+  const cacheRef = useRef<{ value: T } | null>(null)
+  const getSnapshot = useCallback(() => {
+    const state = store.getState()
+    const next = select(sessionID ? state.message[sessionID] ?? EMPTY_MESSAGES : EMPTY_MESSAGES, state)
+    const cached = cacheRef.current
+    if (cached && isEqual(cached.value, next)) return cached.value
+    cacheRef.current = { value: next }
+    return next
+  }, [isEqual, select, sessionID, store])
+  const subscribe = useCallback((notify: () => void) => {
+    if (!sessionID) return () => undefined
+    return store.subscribe((state, previous) => {
+      if (state.message[sessionID] !== previous.message[sessionID] || (watchParts && state.part !== previous.part)) notify()
+    })
+  }, [sessionID, store, watchParts])
   return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
@@ -3563,10 +3643,52 @@ export function useSession(sessionID?: string | null, directory?: string) {
   return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
+/**
+ * Derive one value from a session record. `session.updated` replaces the
+ * record on every streamed step (its `time.updated` moves), so a caller that
+ * reads only a few fields re-renders only when the derived value changes
+ * under `isEqual`. Same lookup and subscription as `useSession`.
+ */
+export function useSessionSelector<T>(
+  sessionID: string | null | undefined,
+  directory: string | undefined,
+  select: (session: Session | undefined) => T,
+  isEqual: (left: T, right: T) => boolean = Object.is,
+): T {
+  const { childStores } = useSyncRuntime()
+  const cacheRef = useRef<{ value: T } | null>(null)
+  const getSnapshot = useCallback(() => {
+    let session: Session | undefined
+    if (directory) {
+      const sessions = childStores.getChild(directory)?.getState().session
+      session = sessions ? getSessionById(sessions, sessionID) : undefined
+    } else {
+      session = findLiveSession(getLiveStates(childStores), sessionID)
+    }
+    const next = select(session)
+    const cached = cacheRef.current
+    if (cached && isEqual(cached.value, next)) return cached.value
+    cacheRef.current = { value: next }
+    return next
+  }, [childStores, directory, isEqual, select, sessionID])
+
+  const subscribe = useCallback((notify: () => void) => {
+    if (directory) {
+      return childStores.ensureChild(directory, { bootstrap: false }).subscribe((state, previous) => {
+        if (state.session !== previous.session) notify()
+      })
+    }
+    return childStores.subscribeAllSelected((state) => state.session, notify)
+  }, [childStores, directory])
+
+  return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+const selectSessionDirectory = (session: Session | undefined): string | undefined => session?.directory ?? undefined
+
 /** Get one session directory by id for a directory */
 export function useSessionDirectory(sessionID?: string | null, directory?: string): string | undefined {
-  const session = useSession(sessionID, directory)
-  return (session as (typeof session & { directory?: string | null }) | undefined)?.directory ?? undefined
+  return useSessionSelector(sessionID, directory, selectSessionDirectory)
 }
 
 /** Get the current directory */
@@ -3734,6 +3856,13 @@ const snapshotPartsMatchState = (snapshot: SessionMessageRecordsSnapshot, state:
   return true
 }
 
+// Session lists are ID-sorted; snapshot reads run on every store notification,
+// so the revert lookup must not scan the directory's whole session list.
+const getSessionRevertMessageID = (sessions: State["session"], sessionID: string): string | undefined => {
+  const result = Binary.search(sessions, sessionID, (session) => session.id)
+  return result.found ? sessions[result.index]?.revert?.messageID : undefined
+}
+
 const getReusableSessionMessageRecordsSnapshot = (
   store: StoreApi<DirectoryStore>,
   state: State,
@@ -3744,8 +3873,7 @@ const getReusableSessionMessageRecordsSnapshot = (
   const cached = readCachedSessionMessageRecordsSnapshot(store, sessionID, suspendPartUpdates, suspendedPartUpdatesMessageID)
   if (!cached) return undefined
   const sourceMessages = state.message[sessionID] ?? EMPTY_MESSAGES
-  const session = state.session.find((candidate) => candidate.id === sessionID)
-  const revertMessageID = (session as { revert?: { messageID?: string } } | undefined)?.revert?.messageID
+  const revertMessageID = getSessionRevertMessageID(state.session, sessionID)
   if (
     cached.sourceMessages === sourceMessages
     && cached.revertMessageID === revertMessageID
@@ -3764,8 +3892,7 @@ function getVisibleMessagesForSession(state: State, sessionID: string, previous?
   revertMessageID?: string
 } {
   const sourceMessages = state.message[sessionID] ?? EMPTY_MESSAGES
-  const session = state.session.find((candidate) => candidate.id === sessionID)
-  const revertMessageID = (session as { revert?: { messageID?: string } } | undefined)?.revert?.messageID
+  const revertMessageID = getSessionRevertMessageID(state.session, sessionID)
 
   if (
     previous
@@ -3869,6 +3996,20 @@ export function useSessionRenderable(sessionID: string, directory?: string): boo
   return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
+const EMPTY_RECORD_IDS: ReadonlySet<string> = new Set()
+const userHistoryRecordIDs = new WeakMap<UserMessageHistorySnapshot["records"], ReadonlySet<string>>()
+
+// Part notifications during streaming carry many message IDs; one ID set per
+// records array keeps the relevance check linear instead of parts × prompts.
+const getUserHistoryRecordIDs = (snapshot: UserMessageHistorySnapshot): ReadonlySet<string> => {
+  let ids = userHistoryRecordIDs.get(snapshot.records)
+  if (!ids) {
+    ids = new Set(snapshot.records.map((record) => record.message.id))
+    userHistoryRecordIDs.set(snapshot.records, ids)
+  }
+  return ids
+}
+
 /**
  * The user's prompts in the visible transcript of a session, oldest first.
  * Session-scoped ArrowUp recall merges this with the persisted input history,
@@ -3888,10 +4029,9 @@ export function useUserMessageHistory(sessionID: string, directory?: string): Tr
     if (!sessionID) return () => undefined
     const unsubscribeMessages = subscribeDirectorySessionMessages(store, sessionID, (change) => {
       if (!change.messagesChanged && !change.reset && change.partMessageIDs.length > 0) {
-        const records = snapshotRef.current.sessionID === sessionID ? snapshotRef.current.records : []
-        const affectsUserHistory = change.partMessageIDs.some((messageID) => (
-          records.some((record) => record.message.id === messageID)
-        ))
+        const snapshot = snapshotRef.current
+        const recordIDs = snapshot.sessionID === sessionID ? getUserHistoryRecordIDs(snapshot) : EMPTY_RECORD_IDS
+        const affectsUserHistory = change.partMessageIDs.some((messageID) => recordIDs.has(messageID))
         if (!affectsUserHistory) {
           countSyncPerformance("userMessageHistoryNotificationSkips")
           return
@@ -3901,9 +4041,7 @@ export function useUserMessageHistory(sessionID: string, directory?: string): Tr
     })
     const unsubscribeSession = store.subscribe((state, previous) => {
       if (state.session === previous.session) return
-      const currentRevert = state.session.find((session) => session.id === sessionID)?.revert?.messageID
-      const previousRevert = previous.session.find((session) => session.id === sessionID)?.revert?.messageID
-      if (currentRevert !== previousRevert) notify()
+      if (getSessionRevertMessageID(state.session, sessionID) !== getSessionRevertMessageID(previous.session, sessionID)) notify()
     })
     return () => {
       unsubscribeMessages()
@@ -4002,9 +4140,7 @@ export function useSessionMessageRecords(
     })
     const unsubscribeSession = store.subscribe((state, previous) => {
       if (state.session === previous.session) return
-      const currentRevert = state.session.find((session) => session.id === sessionID)?.revert?.messageID
-      const previousRevert = previous.session.find((session) => session.id === sessionID)?.revert?.messageID
-      if (currentRevert !== previousRevert) notify()
+      if (getSessionRevertMessageID(state.session, sessionID) !== getSessionRevertMessageID(previous.session, sessionID)) notify()
     })
     return () => {
       unsubscribeMessages()

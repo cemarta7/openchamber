@@ -5,7 +5,7 @@ import { dropdownMenuItemClass, dropdownMenuPopupClass } from '@/components/ui/d
 import type { IconName } from '@/components/icon/icons';
 import { MESSAGE_IMAGE_EXPORT_EXCLUDE_ATTRIBUTE } from '../message/imageExport';
 import { getMermaidViewerController } from './mermaidViewer';
-import { getMarkdownCodeText } from './codeText';
+import { emptyTrailingCodeLine } from './openFenceIncremental';
 import { getMarkdownSelectionText, type RenderedCopyFormat } from './selectionMarkdown';
 
 // ---------------------------------------------------------------------------
@@ -42,7 +42,6 @@ export type DecorateContext = {
   labels: DecorateLabels;
   mermaidControls: MermaidControlOptions;
   codeBlockLineWrap: boolean;
-  deferCodeLineNumberSync?: boolean;
   onToggleCodeBlockLineWrap?: () => void;
   // Tables fit the available width and wrap cell text instead of scrolling.
   tableCellWrap: boolean;
@@ -156,7 +155,6 @@ const applyCodeBlockWrapState = (wrapper: HTMLElement, enabled: boolean, labels:
   const body = wrapper.querySelector<HTMLElement>('[data-md-code-body]');
   const pre = wrapper.querySelector<HTMLElement>('pre');
   const code = wrapper.querySelector<HTMLElement>('pre code');
-  const lineContents = wrapper.querySelectorAll<HTMLElement>('[data-md-code-line-content]');
   const wrapButton = wrapper.querySelector<HTMLButtonElement>('[data-md-action="toggle-code-wrap"]');
   wrapper.setAttribute('data-code-wrap', enabled ? 'true' : 'false');
   body?.classList.toggle('overflow-x-auto', !enabled);
@@ -173,73 +171,42 @@ const applyCodeBlockWrapState = (wrapper: HTMLElement, enabled: boolean, labels:
     code.style.whiteSpace = enabled ? 'pre-wrap' : 'pre';
     code.style.overflowWrap = enabled ? 'anywhere' : 'normal';
   }
-  for (const lineContent of Array.from(lineContents)) {
-    lineContent.style.whiteSpace = enabled ? 'pre-wrap' : 'pre';
-    lineContent.style.overflowWrap = enabled ? 'anywhere' : 'normal';
-  }
   if (wrapButton) applyWrapButtonState(wrapButton, enabled, labels.enableCodeWrap, labels.disableCodeWrap);
 };
 
-const layoutCodeLines = (pre: HTMLPreElement): void => {
-  const code = pre.querySelector<HTMLElement>(':scope > code');
-  if (!code || code.hasAttribute('data-md-code-lines')) return;
+const CODE_LINES_ATTR = 'data-md-code-lines';
 
-  // The real gutter takes over the reserved footprint.
-  pre.removeAttribute('data-md-gutter-reserved');
-
-  const text = code.textContent ?? '';
-  const hasTrailingNewline = text.endsWith('\n');
-  const lines = hasTrailingNewline ? text.slice(0, -1).split('\n') : text.split('\n');
-  const sourceLines = lines.length > 0 ? lines : [''];
-  const highlightedLines = Array.from(code.children).filter((child) => child.classList.contains('line'));
-  if (
-    hasTrailingNewline
-    && highlightedLines.length === sourceLines.length + 1
-    && highlightedLines.at(-1)?.textContent === ''
-  ) {
-    highlightedLines.pop();
+// Line numbers are a CSS counter over the code's `.line` children (see
+// index.css), so a block needs no element per number. Shiki already emits
+// one `<span class="line">` per source line, separated by line breaks;
+// unhighlighted code gets the same shape here, so the highlighted paint has
+// the geometry of the first one and the open-fence patch keeps working on it.
+const markCodeLines = (pre: HTMLPreElement): void => {
+  // A direct child walk rather than `:scope > code`: happy-dom, which the
+  // decoration tests run on, does not match `:scope`.
+  const code = Array.from(pre.children).find((child) => child.tagName === 'CODE');
+  if (!code || code.hasAttribute(CODE_LINES_ATTR)) return;
+  code.setAttribute(CODE_LINES_ATTR, '');
+  if (Array.from(code.children).some((child) => child.classList.contains('line'))) {
+    emptyTrailingCodeLine(code);
+    return;
   }
-  const preserveHighlighting = highlightedLines.length === sourceLines.length;
-  const fragment = document.createDocumentFragment();
 
-  sourceLines.forEach((sourceLine, index) => {
-    const row = document.createElement('span');
-    row.setAttribute('data-md-code-line', '');
-
-    const number = document.createElement('span');
-    number.setAttribute('data-md-code-line-number', String(index + 1));
-    number.setAttribute('aria-hidden', 'true');
-
-    const content = document.createElement('span');
-    content.setAttribute('data-md-code-line-content', '');
-    if (preserveHighlighting) {
-      const highlightedLine = highlightedLines[index];
-      if (highlightedLine) content.append(...Array.from(highlightedLine.childNodes));
-    } else {
-      content.textContent = sourceLine;
-    }
-    row.append(number, content);
-    fragment.appendChild(row);
-    if (index < sourceLines.length - 1 || hasTrailingNewline) {
-      const lineBreak = document.createElement('span');
-      lineBreak.setAttribute('data-md-code-line-break', '');
-      lineBreak.textContent = '\n';
-      fragment.appendChild(lineBreak);
-    }
+  const doc = code.ownerDocument;
+  const fragment = doc.createDocumentFragment();
+  (code.textContent ?? '').split('\n').forEach((sourceLine, index) => {
+    if (index > 0) fragment.appendChild(doc.createTextNode('\n'));
+    const line = doc.createElement('span');
+    line.className = 'line';
+    if (sourceLine) line.textContent = sourceLine;
+    fragment.appendChild(line);
   });
-
   code.replaceChildren(fragment);
-  code.setAttribute('data-md-code-lines', '');
-  code.toggleAttribute('data-md-code-trailing-newline', hasTrailingNewline);
 };
-
-export { getMarkdownCodeText };
 
 export const applyMarkdownCodeBlockWrapState = (root: HTMLElement, enabled: boolean, labels: DecorateLabels): void => {
   const wrappers = root.querySelectorAll<HTMLElement>('[data-component="markdown-code"]');
   for (const wrapper of Array.from(wrappers)) {
-    const pre = wrapper.querySelector<HTMLPreElement>('pre');
-    if (pre) layoutCodeLines(pre);
     applyCodeBlockWrapState(wrapper, enabled, labels);
   }
 };
@@ -284,7 +251,9 @@ const decorateCodeBlocks = (root: HTMLElement, ctx: DecorateContext): void => {
     // `data-md-lang` is stamped by the async highlight pass; on the synchronous
     // first paint it isn't set yet, so fall back to the `language-*` class marked
     // emits — keeps the card header label stable instead of flashing 'text'.
-    const classLang = pre.querySelector('code')?.className.match(/language-([\w+#.-]+)/)?.[1];
+    // Lowercased like the highlight pass's stamp, so the label does not
+    // change case when highlighting lands.
+    const classLang = pre.querySelector('code')?.className.match(/language-([\w+#.-]+)/)?.[1]?.toLowerCase();
     const language = pre.getAttribute('data-md-lang') ?? classLang ?? 'text';
 
     const wrapper = document.createElement('div');
@@ -316,15 +285,7 @@ const decorateCodeBlocks = (root: HTMLElement, ctx: DecorateContext): void => {
     pre.style.margin = '0';
     pre.style.background = 'transparent';
     pre.classList.add('min-w-0', 'w-full', 'flex-1');
-    if (!ctx.deferCodeLineNumberSync) {
-      layoutCodeLines(pre);
-    } else {
-      // Streaming defers the per-line gutter markup, but the gutter's
-      // horizontal footprint is reserved immediately — otherwise the
-      // end-of-stream decorate pass shifts every code line right by the
-      // gutter column and the finished message visibly jumps.
-      pre.setAttribute('data-md-gutter-reserved', '');
-    }
+    markCodeLines(pre);
     body.appendChild(pre);
     wrapper.appendChild(header);
     wrapper.appendChild(body);
@@ -824,14 +785,14 @@ const closeAllMenus = (container: HTMLElement): void => {
 
 const getContainingMarkdownCode = (node: Node): HTMLElement | null => {
   const element = node.nodeType === 1 ? node as Element : node.parentElement;
-  return element?.closest<HTMLElement>('pre code[data-md-code-lines]') ?? null;
+  return element?.closest<HTMLElement>(`pre code[${CODE_LINES_ATTR}]`) ?? null;
 };
 
 const getMarkdownCodeSelectionText = (range: Range): string | null => {
   const code = getContainingMarkdownCode(range.startContainer);
   if (!code || code !== getContainingMarkdownCode(range.endContainer)) return null;
   // Line numbers are CSS-generated, so the DOM range is already the exact
-  // source selection, including boundaries between rows and empty lines.
+  // source selection, including line breaks and empty lines.
   return range.toString();
 };
 
@@ -920,8 +881,7 @@ export const attachMarkdownInteractions = (
 
     // Copy code
     if (action === 'copy-code') {
-      const code = actionEl.closest('[data-component="markdown-code"]')?.querySelector('code');
-      const text = code ? getMarkdownCodeText(code) : '';
+      const text = actionEl.closest('[data-component="markdown-code"]')?.querySelector('code')?.textContent ?? '';
       if (text) {
         actionEl.setAttribute('data-md-copy-pending', '');
         void copyTextToClipboard(text)

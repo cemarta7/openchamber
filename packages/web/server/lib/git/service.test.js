@@ -33,6 +33,7 @@ import {
   getTrackingBranch,
   getWorktrees,
   isGitRepository,
+  isPatchEquivalentOfHead,
   observeWorktreeTopology,
   populateWorktreeWithLockRecovery,
   previewWorktreeCreate,
@@ -202,6 +203,23 @@ describe('getLog on a repository with no commits yet', () => {
     await git.commit('first');
     const history = await getLog(tmpDir, { maxCount: 25 });
     expect(history.all.map((entry) => entry.message)).toEqual(['first']);
+  });
+});
+
+describe('getLog with a base', () => {
+  it('lists only the commits the target adds, never what the base gained since', async () => {
+    const { tmpDir, git } = await createTempRepo();
+    await git.commit('one', { '--allow-empty': null });
+    await git.raw(['branch', 'feature']);
+    await git.commit('main moved on', { '--allow-empty': null });
+    await git.checkout('feature');
+    await git.commit('feature work', { '--allow-empty': null });
+
+    const branchOnly = await getLog(tmpDir, { from: 'main', to: 'HEAD', maxCount: 25 });
+    expect(branchOnly.all.map((entry) => entry.message)).toEqual(['feature work']);
+    // A checkout behind the base adds nothing.
+    const behind = await getLog(tmpDir, { from: 'feature', to: 'main~1', maxCount: 25 });
+    expect(behind.all).toEqual([]);
   });
 });
 
@@ -905,6 +923,28 @@ describe('getStatus', () => {
     await expect(getStatus(repo)).resolves.toMatchObject({ current: 'main' });
   });
 
+  it('never rewrites the index, so a terminal commit does not meet its lock (#2229)', async () => {
+    if (!canRunGit()) return;
+
+    const repo = createTempDir();
+    runGit(repo, ['init', '-b', 'main']);
+    runGit(repo, ['config', 'user.email', 'test@example.com']);
+    runGit(repo, ['config', 'user.name', 'Test User']);
+    fs.writeFileSync(path.join(repo, 'README.md'), '# Test\n');
+    runGit(repo, ['add', 'README.md']);
+    runGit(repo, ['commit', '-m', 'Initial commit']);
+    // Same content under an older timestamp: the index entry is stale, and a
+    // status that takes the optional lock rewrites the index to refresh it.
+    const older = new Date(Date.now() - 60_000);
+    fs.utimesSync(path.join(repo, 'README.md'), older, older);
+    const indexPath = path.join(repo, '.git', 'index');
+    const indexBefore = fs.readFileSync(indexPath);
+
+    await expect(getStatus(repo)).resolves.toMatchObject({ isClean: true });
+
+    expect(fs.readFileSync(indexPath).equals(indexBefore)).toBe(true);
+  });
+
   it('names the base an upstream-less branch was counted against, and only then', async () => {
     if (!canRunGit()) return;
 
@@ -922,6 +962,14 @@ describe('getStatus', () => {
     await expect(getStatus(repo)).resolves.toMatchObject({ tracking: null, ahead: 0, aheadBase: 'origin/main' });
 
     runGit(repo, ['commit', '--allow-empty', '-m', 'Unpublished work']);
+    await expect(getStatus(repo)).resolves.toMatchObject({ tracking: null, ahead: 1, aheadBase: 'origin/main' });
+
+    // A contributor's PR head fetched as a fork remote-tracking branch is
+    // already published, though the branch tracks nothing.
+    runGit(repo, ['update-ref', 'refs/remotes/pr-fork/feature', 'HEAD']);
+    await expect(getStatus(repo)).resolves.toMatchObject({ tracking: null, ahead: 0, aheadBase: 'origin/main' });
+
+    runGit(repo, ['commit', '--allow-empty', '-m', 'Work after checkout']);
     await expect(getStatus(repo)).resolves.toMatchObject({ tracking: null, ahead: 1, aheadBase: 'origin/main' });
   });
 
@@ -1217,6 +1265,56 @@ describe('worktree root resolution', () => {
     runGit(repo, ['worktree', 'add', '-b', 'feature/test', worktree, 'HEAD']);
 
     expect(fs.realpathSync((await resolvePrimaryWorktreeRoot(worktree)).root)).toBe(fs.realpathSync(repo));
+  });
+});
+
+describe.runIf(canRunGit())('isPatchEquivalentOfHead', () => {
+  it('finds a rebased commit patch in HEAD history', async () => {
+    const repo = createTempDir();
+    runGit(repo, ['init', '-b', 'main']);
+    runGit(repo, ['config', 'user.email', 'test@example.com']);
+    runGit(repo, ['config', 'user.name', 'Test User']);
+    fs.writeFileSync(path.join(repo, 'file.txt'), 'base\n');
+    runGit(repo, ['add', 'file.txt']);
+    runGit(repo, ['commit', '-m', 'base']);
+    const root = runGit(repo, ['rev-parse', 'HEAD']).trim();
+    runGit(repo, ['checkout', '-b', 'feature']);
+    fs.appendFileSync(path.join(repo, 'file.txt'), 'feature\n');
+    runGit(repo, ['commit', '-am', 'feature change']);
+    const original = runGit(repo, ['rev-parse', 'HEAD']).trim();
+    runGit(repo, ['tag', 'before-rebase', original]);
+    runGit(repo, ['checkout', 'main']);
+    fs.writeFileSync(path.join(repo, 'main.txt'), 'main\n');
+    runGit(repo, ['add', 'main.txt']);
+    runGit(repo, ['commit', '-m', 'main change']);
+    runGit(repo, ['checkout', 'feature']);
+    runGit(repo, ['rebase', 'main']);
+
+    await expect(isPatchEquivalentOfHead(repo, original)).resolves.toBe(true);
+    await expect(isPatchEquivalentOfHead(repo, root)).resolves.toBe(false);
+  });
+
+  it('rejects an unrelated commit with a different patch', async () => {
+    const repo = createTempDir();
+    runGit(repo, ['init', '-b', 'main']);
+    runGit(repo, ['config', 'user.email', 'test@example.com']);
+    runGit(repo, ['config', 'user.name', 'Test User']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'base']);
+    runGit(repo, ['checkout', '-b', 'old-feature']);
+    fs.writeFileSync(path.join(repo, 'old.txt'), 'old\n');
+    runGit(repo, ['add', 'old.txt']);
+    runGit(repo, ['commit', '-m', 'old change']);
+    const oldCommit = runGit(repo, ['rev-parse', 'HEAD']).trim();
+    runGit(repo, ['commit', '--allow-empty', '-m', 'empty change']);
+    const emptyCommit = runGit(repo, ['rev-parse', 'HEAD']).trim();
+    runGit(repo, ['checkout', 'main']);
+    fs.writeFileSync(path.join(repo, 'new.txt'), 'new\n');
+    runGit(repo, ['add', 'new.txt']);
+    runGit(repo, ['commit', '-m', 'new change']);
+
+    await expect(isPatchEquivalentOfHead(repo, oldCommit)).resolves.toBe(false);
+    await expect(isPatchEquivalentOfHead(repo, emptyCommit)).resolves.toBe(false);
+    await expect(isPatchEquivalentOfHead(repo, 'missing')).resolves.toBe(false);
   });
 });
 

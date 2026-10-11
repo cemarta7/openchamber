@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 
-import { applySpaceWork, cleanUpSpaceDisk, createSpace, listSpaces, previewSpaceApply, openSpaceDomain, readSpaceDisk, readSpaceIdleStop, readSpaceJournal, readSpaceSetup, readSpacesSwitch, runSpaceSetup, setSpaceIdleStop, SpacesRequestError } from './spaces-api';
+import { applySpaceWork, cleanUpSpaceDisk, createSpace, listSpaces, previewSpaceApply, openSpaceDomain, pullSpaceImage, readSpaceDisk, readSpaceIdleStop, readSpaceJournal, readSpaceSetup, readSpacesSwitch, runSpaceSetup, setSpaceIdleStop, SpacesRequestError } from './spaces-api';
 
 const ID = 'a1b2c3d4e5f6';
 const originalFetch = globalThis.fetch;
@@ -46,6 +46,24 @@ describe('spaces-api', () => {
     answer(200, JSON.stringify({ spaces: [entry] }));
     const [space] = await listSpaces();
     expect(space).toMatchObject({ id: ID, state: 'preparing', step: 'checking_place', network: { mode: 'allowlist' } });
+  });
+
+  test('parses a failed creation in the list, whose step is "failed", with the rest of the list', async () => {
+    // The host lists a creation that failed, here or in a host that quit before the code arrived,
+    // with `step: 'failed'`. A list this version could not read would freeze every group's status.
+    const failed = { ...entry, id: 'b2c3d4e5f6a7', state: 'failed', step: 'failed', failure: { code: 'space_code_never_arrived', message: 'OpenChamber closed before the code arrived.' } };
+    answer(200, JSON.stringify({ spaces: [entry, failed] }));
+    expect((await listSpaces()).map((space) => [space.id, space.state, space.step, space.failure?.code ?? null])).toEqual([[ID, 'preparing', 'checking_place', null], ['b2c3d4e5f6a7', 'failed', 'failed', 'space_code_never_arrived']]);
+  });
+
+  test('parses a space given the host\'s login (7a) with the rest of the list', async () => {
+    // One space with a login grant used to fail the whole list as malformed, and the sidebar then
+    // showed no spaces at all.
+    const login = { kind: 'login', id: 'openai', provider: 'openai', method: 'chatgpt-token-sharing', url: 'http://gatekeeper:8080/model/openai' };
+    answer(200, JSON.stringify({ spaces: [entry, { ...entry, id: 'b2c3d4e5f6a7', state: 'running', step: null, grants: [login], access: 'granted' }] }));
+    const spaces = await listSpaces();
+    expect(spaces.map((space) => space.id)).toEqual([ID, 'b2c3d4e5f6a7']);
+    expect(spaces[1]?.grants).toEqual([login]);
   });
 
   test('reads the folder a space was made for, and names none for a host before 5e-3', async () => {
@@ -102,7 +120,18 @@ describe('spaces-api', () => {
 });
 
 describe('the disk of a place', () => {
-  const disk = { imageBytes: 1_632_000_000, toolsBytes: 438_000_000, spacesBytes: 0, freeBytes: 1_632_000_000, freesImage: true };
+  const disk = { imageBytes: 1_632_000_000, imagePulling: false, imageFailure: null, toolsBytes: 438_000_000, spacesBytes: 0, freeBytes: 1_632_000_000, freesImage: true };
+
+  test('starts the image download with a POST and reads the disk it answers; a host that says nothing of a download is read as none', async () => {
+    const pulling = { ...disk, imageBytes: null, freeBytes: 0, freesImage: false, imagePulling: true };
+    const posts = answer(202, JSON.stringify(pulling));
+    expect(await pullSpaceImage('docker')).toEqual(pulling);
+    expect(posts[0].method).toBe('POST');
+    expect(new URL(posts[0].url).pathname).toBe('/api/openchamber/spaces/places/docker/image');
+    const older = { imageBytes: disk.imageBytes, toolsBytes: disk.toolsBytes, spacesBytes: disk.spacesBytes, freeBytes: disk.freeBytes, freesImage: disk.freesImage };
+    answer(200, JSON.stringify(older));
+    expect(await readSpaceDisk('docker')).toEqual(disk);
+  });
 
   test('reads the disk of a place, and a clean-up is a POST that answers what was freed and the disk after', async () => {
     const reads = answer(200, JSON.stringify(disk));

@@ -36,7 +36,7 @@ import { useGlobalSyncStore } from '@/sync/global-sync-store';
 import { createSessionOwnershipIndex } from '../sessions/sessionOwnership';
 import { useProjectSessionLists } from '../projects/useProjectSessionLists';
 import { useSessionSidebarSections } from '../projects/useSessionSidebarSections';
-import { SessionPrefetchEffect } from './useSessionPrefetch';
+import { SessionPrefetchProvider } from './useSessionPrefetch';
 import { normalizePath } from '../utils';
 import type { SessionGroup, SessionNode } from '../types';
 import { SessionProjectScroller } from '../projects/SessionProjectScroller';
@@ -49,7 +49,8 @@ import type { SidebarViewMode } from '@/stores/useSessionDisplayStore';
 import { holdOrder, rankByLatestActivity } from './projectSort';
 import type { DeleteSessionConfirmState } from '../sessions/useSessionActions';
 import { useExpandedParents } from '../sessions/useExpandedParents';
-import { getChatsRootForHome, getChatsRootFromDirectory, isChatDirectoryPath } from '@/lib/chatDirectories';
+import { getChatsRootFromDirectory, isChatDirectoryPath } from '@/lib/chatDirectories';
+import { useChatsRoot } from '@/hooks/useChatsRoot';
 import { isCapacitorApp } from '@/lib/platform';
 import { deriveRecentActivitySections, deriveTimelineActivityItems, sessionTreeMatchesSidebarQuery } from '../recent/activitySections';
 import { resolveSidebarSessionLocations } from '../recent/sessionLocation';
@@ -264,12 +265,13 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     runKeyBySessionId,
   });
   const { getSessionsForProject, getArchivedSessionsForProject } = useProjectSessionLists({ ownership });
+  const knownChatsRoot = useChatsRoot();
   // Built before the sections hook runs, because that hook owns the search data
   // for every group the sidebar renders — the chats group included. A group the
   // hook never sees renders an empty list while a search is active.
   const chatGroup = React.useMemo<SessionGroup | null>(() => {
     if (topology.isVSCode) return null;
-    const chatsRoot = getChatsRootForHome(view.homeDirectory)
+    const chatsRoot = knownChatsRoot
       ?? collection.chatSessions.map((session) => getChatsRootFromDirectory(session.directory)).find(Boolean)
       ?? null;
     if (!chatsRoot) return null;
@@ -293,7 +295,7 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
         .filter((session) => !session.time?.archived && isRootSession(session))
         .map((session) => buildActiveSessionNode(collection.childrenMap, session)),
     };
-  }, [collection.chatSessions, collection.childrenMap, topology.isVSCode, view.homeDirectory]);
+  }, [collection.chatSessions, collection.childrenMap, knownChatsRoot, topology.isVSCode]);
   const standaloneGroups = React.useMemo<SessionGroup[]>(
     () => chatGroup ? [chatGroup] : EMPTY_STANDALONE_GROUPS,
     [chatGroup],
@@ -306,6 +308,7 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     projectRepoStatus: topology.projectRepoStatus,
     projectRootBranches: topology.projectRootBranches,
     gitBranches: topology.gitBranches,
+    sessionOrderRanks: collection.sessionOrderRanks,
     lastRepoStatus: topology.lastRepoStatus,
     buildGroupedSessions,
     hasSessionSearchQuery: view.hasSessionSearchQuery,
@@ -1001,11 +1004,11 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
       sessionOwnerBySessionId={ownership.bySessionId}
       handleSessionSelect={selectSessionForProject}
     />
-    <SessionPrefetchEffect
+    <SessionPrefetchProvider
       sortedSessions={collection.orderedSessions}
       recentSessions={recentSessions}
       prefetchSession={prefetchSession}
-    />
+    >
     <SessionRowOrderProvider
       entries={sidebarRowModel.selectionEntries}
       descendantIds={sidebarRowModel.selectionDescendantIds}
@@ -1026,7 +1029,18 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
         <SessionProjectScroller model={scrollerModel} view={scrollerView} actions={scrollerActionSet} />
       </div>
     </SessionRowOrderProvider>
+    </SessionPrefetchProvider>
   </>;
 };
 
-export const SessionProjectCollection: React.FC<SessionProjectCollectionProps> = (props) => props.view.isVisible ? <VisibleSessionProjects {...props} /> : null;
+/**
+ * Built the first time the sidebar is shown and kept while it is closed, so
+ * opening the sidebar again does not rebuild and re-measure the whole list in
+ * the frame the toggle starts. The closed sidebar skips the list's rendering
+ * (see `Sidebar`), and the work it feeds on pauses with `view.isVisible`.
+ */
+export const SessionProjectCollection: React.FC<SessionProjectCollectionProps> = (props) => {
+  const [shown, setShown] = React.useState(props.view.isVisible);
+  if (props.view.isVisible && !shown) setShown(true);
+  return shown ? <VisibleSessionProjects {...props} /> : null;
+};

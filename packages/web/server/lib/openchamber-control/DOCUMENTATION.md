@@ -51,10 +51,11 @@ until its own path is registered.
 
 Worktree lists come from the existing Git helpers. As in the UI, a project's
 own checkout is omitted from its list. Published UI topology also omits all
-registered checkout paths and assigns each repository's list to its registered
+registered checkout paths and checkouts that contain a registered project
+subfolder. It assigns each repository's list to its registered
 primary checkout, or its first configured listing when the primary is not
 registered. Knowledge discovery uses that configured order and omits registered
-checkout paths. The longest matching worktree path
+checkout paths and checkouts containing registered project subfolders. The longest matching worktree path
 selects the registered owner of its primary checkout, then the listing project
 as a fallback. This match overrides a direct registered ancestor only when the
 worktree path is strictly longer. A tie keeps the direct owner. A concrete
@@ -148,6 +149,14 @@ resolution within the calling tool.
 - Send and fork dispatches without an explicit model/agent/variant reuse the
   target session's last user-message selection before falling back to the
   configured defaults; only session creation resolves defaults directly.
+- `session.create` with `pullRequest` passes the number, and `worktree` and
+  `branch` as folder and local-branch names, to the session service, which
+  creates the worktree through the injected `createChangeRequestWorktree`
+  (the Git routes' contributor pipeline) before any session exists. A
+  malformed number, or `startRef`/`setUpstream` beside it, is a 400; a
+  server without that pipeline answers 501 and never makes a plain branch
+  worktree instead; a provider or transfer refusal keeps its status and
+  message, and no session is created.
 - Default agents resolve from the owning project before global settings and
   OpenCode defaults. Directory-based requests identify the project before
   creating a worktree; existing linked worktrees resolve through Git's primary
@@ -178,7 +187,9 @@ resolution within the calling tool.
   tracker works. The URL decides what is stored: a GitHub pull or issue
   address becomes the GitHub entry (kind from the path, live state as for any
   link), a Linear issue address the Linear entry, anything else an `external`
-  entry shown by identifier. It only adds or refreshes links, never removes
+  entry shown by identifier. A GitLab merge request or issue address (the
+  `/-/merge_requests/N` shape on any host) is keyed by the thread, so linking
+  it again from a tab like `/diffs` or with a query refreshes the one entry. It only adds or refreshes links, never removes
   one: the user owns removal. A missing field or a non-http(s) URL is a 400 and
   nothing is written.
 - `file.open` shows a file in the user's viewer. `file-open.js` resolves a

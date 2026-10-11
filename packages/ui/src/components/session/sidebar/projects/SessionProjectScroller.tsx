@@ -19,8 +19,10 @@ import { sessionEvents } from '@/lib/sessionEvents';
 import { CHAT_DRAFT_PROJECT_ID } from '@/lib/chatDirectories';
 import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
 import { refreshGlobalSessions } from '@/stores/useGlobalSessionsStore';
+import { spaceTakesNoNewSession, useSpacesStore } from '@/lib/spaces/spaces-store';
 import { useUIStore } from '@/stores/useUIStore';
 import { useChildStoreManager } from '@/sync/sync-context';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import type { ProjectSortOrder, WorktreeSortOrder } from '@/stores/useSessionDisplayStore';
 import { streamPerfCount } from '@/stores/utils/streamDebug';
 import { Icon } from '@/components/icon/Icon';
@@ -127,6 +129,7 @@ function SessionProjectScrollerComponent({ model, view, actions }: Props): React
   streamPerfCount('ui.sidebar_projects_list.render');
   const { t } = useI18n();
   const childStores = useChildStoreManager();
+  const { files } = useRuntimeAPIs();
   const toggleFolderCollapse = useSessionFoldersStore((state) => state.toggleFolderCollapse);
   const renameFolder = useSessionFoldersStore((state) => state.renameFolder);
   const deleteFolder = useSessionFoldersStore((state) => state.deleteFolder);
@@ -134,6 +137,7 @@ function SessionProjectScrollerComponent({ model, view, actions }: Props): React
   const showDeletionDialog = useUIStore((state) => state.showDeletionDialog);
   // A project's isolated spaces page: while the feature's switch is on, and never in VS Code (decision 16).
   const spacesPageAvailable = useUIStore((state) => state.isolatedSpacesEnabled) && !isVSCodeRuntime();
+  const spacesJourney = useSpacesStore((state) => state.journey);
   const [folderDeleteConfirm, setFolderDeleteConfirm] = React.useState<DeleteFolderConfirmState>(null);
   const [stickyIdentity, setStickyIdentity] = React.useState<string | null>(null);
   const [focusedRowKey, setFocusedRowKey] = React.useState<string | null>(null);
@@ -192,6 +196,13 @@ function SessionProjectScrollerComponent({ model, view, actions }: Props): React
         : t('sessions.sidebar.bulkActions.failedArchivePlural', { count: failedIds.length }));
     }
   }, [confirmArchiveAll, t]);
+
+  const openProjectFolder = React.useCallback((projectPath: string) => {
+    if (!files.revealPath) return;
+    void files.revealPath(projectPath).catch(() => {
+      toast.error(t('sidebarFilesTree.toast.revealFailed'));
+    });
+  }, [files, t]);
 
   const stickyDescriptorIndex = React.useMemo(() => {
     if (!view.stickyZoneHeaders) return -1;
@@ -348,6 +359,7 @@ function SessionProjectScrollerComponent({ model, view, actions }: Props): React
         }}
         onManageWorktrees={() => actions.openWorktreesPage(project.id)}
         onManageSpaces={spacesPageAvailable ? () => useUIStore.getState().setSpacesPageProjectId(project.id) : undefined}
+        onOpenFolder={project.normalizedPath && files.revealPath ? () => openProjectFolder(project.normalizedPath) : undefined}
         onRenameStart={() => actions.openProjectEditDialog(project.id)}
         onArchiveAll={() => void requestArchiveAll(label, row.section.groups)}
         onClose={() => actions.removeProject(project.id)}
@@ -452,6 +464,8 @@ function SessionProjectScrollerComponent({ model, view, actions }: Props): React
     if (row.kind === 'status') return renderStatus(row);
     if (row.emptyKind === 'sidebar') return model.emptyState;
     if (row.emptyKind === 'search') return model.searchEmptyState;
+    // A space whose group offers Delete and nothing else has no session to start and no line to say so.
+    if (row.emptyKind === 'group' && spaceTakesNoNewSession(spacesJourney?.get(row.group?.space?.id ?? ''))) return null;
     if (row.emptyKind === 'group' && row.group?.directory && !row.group.emptyMessage) {
       const group = row.group;
       return <Button variant="link" size="xs" className="w-full justify-start pl-[26px] text-left font-normal normal-case text-muted-foreground/70 underline-offset-auto hover:text-foreground hover:underline" onClick={() => {
@@ -468,7 +482,7 @@ function SessionProjectScrollerComponent({ model, view, actions }: Props): React
     return <div className="py-1 pl-[26px] text-left typography-micro text-muted-foreground">
       {row.emptyKind === 'archived' ? t('sessions.sidebar.group.empty.noArchivedSessions') : row.group?.emptyMessage ?? t('sessions.sidebar.group.empty.noSessionsInWorkspace')}
     </div>;
-  }, [actions, deleteFolder, model, projectPickerOptions, renameFolder, renderStatus, requestArchiveAll, showDeletionDialog, spacesPageAvailable, t, toggleFolderCollapse, view]);
+  }, [actions, deleteFolder, files, model, openProjectFolder, projectPickerOptions, renameFolder, renderStatus, requestArchiveAll, showDeletionDialog, spacesJourney, spacesPageAvailable, t, toggleFolderCollapse, view]);
 
   const structuralIds = React.useMemo(() => model.rowModel.rows.flatMap((row) => row.kind === 'project-header' ? [row.section.project.id] : row.kind === 'group-header' ? [row.groupKey] : []), [model.rowModel.rows]);
   const projectDragIds = React.useMemo(() => new Set(model.sectionsForRender.map((section) => section.project.id)), [model.sectionsForRender]);

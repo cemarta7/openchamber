@@ -1143,4 +1143,6 @@ const ToolOutputDialog: React.FC<ToolOutputDialogProps> = ({ popup, onOpenChange
     );
 };
 
-export default ToolOutputDialog;
+// Mounted by every chat message, which re-renders on each streamed chunk
+// while the popup state and handlers stay the same.
+export default React.memo(ToolOutputDialog);

@@ -100,6 +100,46 @@ describe('agent tool action allowlist', () => {
 });
 
 describe('managed agent tool runtime', () => {
+  it('rejects a stale note replacement from a second session without a write or event', async () => {
+    const owner = createProjectIdFromPath('/repo');
+    const onChanged = vi.fn();
+    const { runtime, dataDir } = await createRuntime({
+      resolveSessionDirectory: async (id) => ['ses_A', 'ses_B'].includes(id) ? '/repo' : null,
+      executeAction: (...args) => service.execute(...args),
+    });
+    const projectContextRuntime = createProjectContextRuntime({
+      fsPromises: fs, path, projectsDirPath: path.join(dataDir, 'projects'),
+      createId: () => 'note-1', onChanged,
+    });
+    const service = createOpenChamberControlService({
+      projectContextRuntime,
+      resolveProjectContextId: async (directory) => directory === '/repo' ? owner : '',
+      sessionService: { resolveDirectory: async () => '/repo' },
+    });
+    const call = (sessionID, action, parameters = {}) => runtime.execute({
+      tool: 'openchamber', sessionID, input: { action, ...parameters },
+    });
+    await call('ses_A', 'notes.create', { body: 'v1' });
+    const a = (await call('ses_A', 'notes.read', { noteId: 'note-1' })).data.note;
+    const b = (await call('ses_B', 'notes.read', { noteId: 'note-1' })).data.note;
+    expect(a.body).toBe('v1');
+    expect(b.body).toBe('v1');
+    expect(await call('ses_A', 'notes.update', { noteId: a.id, body: 'v2', expectedBody: a.body }))
+      .toMatchObject({ ok: true, data: { projectId: owner, note: { body: 'v2' } } });
+    const committed = await fs.readFile(projectContextRuntime.contextPathFor(owner), 'utf8');
+    const events = onChanged.mock.calls.length;
+    expect(await call('ses_B', 'notes.update', { noteId: b.id, body: 'v3', expectedBody: b.body }))
+      .toEqual({ schemaVersion: 1, ok: false, action: 'notes.update', error: {
+        kind: 'usage', message: 'Project note changed; reload before saving',
+      } });
+    expect(await fs.readFile(projectContextRuntime.contextPathFor(owner), 'utf8')).toBe(committed);
+    expect(onChanged).toHaveBeenCalledTimes(events);
+    const reread = (await call('ses_B', 'notes.read', { noteId: b.id })).data.note;
+    expect(reread).toMatchObject({ body: 'v2', origin: { sessionId: 'ses_A' } });
+    expect(await call('ses_B', 'notes.update', { noteId: b.id, body: 'v3', expectedBody: reread.body }))
+      .toMatchObject({ ok: true, data: { note: { body: 'v3', origin: { sessionId: 'ses_A' } } } });
+  });
+
   it('runs generated knowledge calls through authenticated HTTP and persistent storage', async () => {
     const directory = '/repo';
     const owner = createProjectIdFromPath(directory);

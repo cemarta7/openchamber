@@ -35,6 +35,7 @@ import { handleSessionRenameKeyDown } from '@/components/session/sessionRenameKe
 import { useIsSessionAiRenamePending } from '@/sync/use-session-ai-rename';
 import { useSessionBlockingRequestCounts } from '@/sync/sync-context';
 import { usePrefetchSessionMessages, useSessionMessageRecordsForExport } from '@/sync/use-sync';
+import { useSessionHoverPrefetch } from '../list/useSessionPrefetch';
 import { getSyncSessionMaterializationStatus } from '@/sync/sync-refs';
 import { useViewportStore, viewportSessionKey } from '@/sync/viewport-store';
 import { DraggableSessionRow } from '../folders/sessionFolderDnd';
@@ -94,6 +95,8 @@ import {
 type SecondaryMeta = {
   projectLabel?: string | null;
   branchLabel?: string | null;
+  /** The branch label is an isolated space's name; the row marks it with the space's container icon. */
+  inSpace?: boolean;
 };
 
 export type SessionNodeItemProps = {
@@ -424,6 +427,8 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   // the raw worktree branch. Project rows pass no secondaryMeta and keep the
   // worktree fallback.
   const tooltipBranchLabel = resolveTooltipBranchLabel(secondaryMeta, node.worktree?.branch ?? null);
+  // A space's name stands where a branch would; the mark beside it is the space's, as on its group.
+  const branchInSpace = secondaryMeta?.inSpace === true;
   const prLookup = React.useMemo(
     () => resolveSessionPrLookup(node.worktree, isVSCode),
     [isVSCode, node.worktree],
@@ -565,6 +570,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   // Same gate as the sidebar's neighbor prefetch: the VS Code webview keeps
   // its message traffic to what is actually opened.
   const prefetchOnPressDisabled = isVSCode;
+  const hoverPrefetch = useSessionHoverPrefetch();
 
   const selectionModeEnabled = useSessionMultiSelectStore((state) => state.enabled);
   const isRowSelected = useSessionMultiSelectStore(
@@ -811,6 +817,21 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
     });
   }, [session.id, sessionDirectory]);
 
+  const handleOpenInSidePanel = () => {
+    if (!sessionDirectory) return;
+    // The tab lives under the main chat's directory, which is the one
+    // the panel reads; the session's own directory rides along so a
+    // chat from another project (or Chat) still resolves itself.
+    const panelDirectory = resolveEffectiveDirectory() ?? sessionDirectory;
+    openContextPanelTab(panelDirectory, {
+      mode: 'chat',
+      dedupeKey: `session:${session.id}`,
+      label: sessionTitle,
+      sessionTitleFallback: sessionTitle,
+      targetDirectory: sessionDirectory,
+    });
+  };
+
   // Capture outside-clicks to save edits — immune to focus-race with onBlur.
   React.useEffect(() => {
     if (!isEditing) return;
@@ -915,6 +936,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
             title={renameForm}
             titleClassName="text-foreground"
             branchLabel={tooltipBranchLabel}
+            spaceMark={branchInSpace ? t('sessions.sidebar.group.space') : null}
             statusDot={null}
             pinnedMarker={null}
             timeSlot={sessionCompactUpdatedLabel}
@@ -1138,6 +1160,10 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
       toggleRowSelected(session.id, selectionScopeKey, collectNodeDescendantIds(node), sessionRowKey);
       return;
     }
+    if (event?.shiftKey && !isVSCode && sessionDirectory) {
+      handleOpenInSidePanel();
+      return;
+    }
     if (event?.currentTarget) holdSessionRowPosition(event.currentTarget);
     handleSessionSelect(session.id, sessionDirectory);
   };
@@ -1159,6 +1185,11 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
     if (event.button === 2 || (event.button === 0 && event.ctrlKey && !selectionModeEnabled)) {
       suppressNextSelectRef.current = true;
     }
+    // Shift-click opens the session in the side panel; without this the
+    // browser extends the text selection across the sidebar.
+    if (event.button === 0 && event.shiftKey && !selectionModeEnabled) {
+      event.preventDefault();
+    }
   };
   const handleRowPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (mobileVariant && event.pointerType === 'touch') {
@@ -1178,6 +1209,23 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
     ) {
       void prefetchSessionMessages({ directory: sessionDirectory, sessionID: session.id }).catch(() => undefined);
     }
+  };
+  // Resting the pointer on a row, or reaching it with the keyboard, starts
+  // loading its messages after a short delay, so the click that usually
+  // follows opens a warm session. Touch has no hover: a tap's enter event
+  // lands with the press, which the press prefetch above already covers.
+  const hoverPrefetchTarget = !isActive && !selectionModeEnabled && sessionDirectory
+    ? { id: session.id, directory: sessionDirectory }
+    : null;
+  const handleRowPointerEnter = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType !== 'mouse' || !hoverPrefetchTarget) return;
+    hoverPrefetch?.schedule(hoverPrefetchTarget);
+  };
+  const handleRowFocus = () => {
+    if (hoverPrefetchTarget) hoverPrefetch?.schedule(hoverPrefetchTarget);
+  };
+  const handleRowHoverEnd = () => {
+    if (hoverPrefetchTarget) hoverPrefetch?.cancel(hoverPrefetchTarget);
   };
   const handleRowPointerEnd = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (mobileVariant && event.pointerType === 'touch') {
@@ -1485,25 +1533,11 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
         <SessionMenuItemHint hint={t('sessions.sidebar.session.menuHint.openInSidePanel')}>
         <Item
           disabled={!sessionDirectory}
-          onClick={() => {
-            if (!sessionDirectory) return;
-            // The tab lives under the main chat's directory, which is the one
-            // the panel reads; the session's own directory rides along so a
-            // chat from another project (or Chat) still resolves itself.
-            const panelDirectory = resolveEffectiveDirectory() ?? sessionDirectory;
-            openContextPanelTab(panelDirectory, {
-              mode: 'chat',
-              dedupeKey: `session:${session.id}`,
-              label: sessionTitle,
-              sessionTitleFallback: sessionTitle,
-              targetDirectory: sessionDirectory,
-            });
-          }}
+          onClick={handleOpenInSidePanel}
           className="[&>svg]:mr-1"
         >
           <Icon name="chat-4" className="mr-1 h-4 w-4" />
           <span className="truncate">{t('sessions.sidebar.session.menu.openInSidePanel')}</span>
-          <span className="shrink-0 typography-micro px-1 rounded leading-none pb-px text-[var(--status-warning)] bg-[var(--status-warning)]/10">{t('sessions.sidebar.session.menu.betaBadge')}</span>
         </Item>
         </SessionMenuItemHint>
       ) : null}
@@ -1638,6 +1672,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
         ? 'text-interactive-selection-foreground'
         : needsAttention ? 'text-foreground' : 'text-foreground/80'}
       branchLabel={tooltipBranchLabel}
+      spaceMark={branchInSpace ? t('sessions.sidebar.group.space') : null}
       statusDot={isSessionActionPending ? sessionActionSpinner : showStatusMarker ? statusMarkerContent : null}
       pinnedMarker={isPinnedSession && !isSessionActionPending ? pinnedMarkerContent : null}
       timeSlot={showActivityDuration
@@ -1775,6 +1810,10 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
 	                    onPointerDown={handleRowPointerDown}
  	                    onPointerUp={handleRowPointerEnd}
  	                    onPointerCancel={handleRowPointerEnd}
+                    onPointerEnter={handleRowPointerEnter}
+                    onPointerLeave={handleRowHoverEnd}
+                    onFocus={handleRowFocus}
+                    onBlur={handleRowHoverEnd}
  	                    onMouseDown={handleRowMouseDown}
  	                    onClick={(event) => handleRowSelect(event)}
                     onDoubleClick={(e) => {
@@ -1903,7 +1942,9 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                     ) : null}
                     {tooltipBranchLabel ? (
                       <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-                        <Icon name="git-branch" className={cn('h-3 w-3 flex-shrink-0', branchPrIconColor && 'oc-ref-tint')} style={branchPrIconColor ? refTintStyle(branchPrIconColor) : undefined} />
+                        {branchInSpace
+                          ? <Icon name="box-3" className="h-3 w-3 flex-shrink-0" aria-hidden={false} role="img" aria-label={t('sessions.sidebar.group.space')} />
+                          : <Icon name="git-branch" className={cn('h-3 w-3 flex-shrink-0', branchPrIconColor && 'oc-ref-tint')} style={branchPrIconColor ? refTintStyle(branchPrIconColor) : undefined} />}
                         <span className="min-w-0 truncate">{tooltipBranchLabel}</span>
                       </div>
                     ) : null}
@@ -2083,7 +2124,8 @@ const getNodeSessionDirectory = (node: SessionNode): string | null => {
 
 const isSecondaryMetaEqual = (prev?: SecondaryMeta | null, next?: SecondaryMeta | null): boolean => {
   return (prev?.projectLabel ?? null) === (next?.projectLabel ?? null)
-    && (prev?.branchLabel ?? null) === (next?.branchLabel ?? null);
+    && (prev?.branchLabel ?? null) === (next?.branchLabel ?? null)
+    && (prev?.inSpace ?? false) === (next?.inSpace ?? false);
 };
 
 const getMenuSessionIdFromKey = (props: SessionNodeItemProps): string | null => {

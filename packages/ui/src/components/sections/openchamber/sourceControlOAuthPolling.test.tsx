@@ -338,7 +338,6 @@ mock.module('@/components/sections/shared/SettingsSection', () => ({
   SETTINGS_FIELDS_STACK_CLASS: '',
   SETTINGS_HELPER_CLASS: '',
   SETTINGS_SELECT_ROW_TRIGGER_CLASS: '',
-  SETTINGS_SELECT_SIZE: 'sm',
   SettingsControlGroup: ({ children }: ElementProps) => children ?? null,
   SettingsFieldRow: ({ children, description }: ElementProps) => [description ?? null, children ?? null],
   SettingsStackedField: ({ children }: ElementProps) => children ?? null,
@@ -362,6 +361,7 @@ mock.module('@/stores/useSourceControlAuthStore', () => ({
 mock.module('@/lib/device', () => ({ useDeviceInfo: () => ({ isMobile: false }) }));
 mock.module('@/lib/i18n', () => ({ useI18n: () => ({ t: translate }) }));
 mock.module('@/lib/url', () => ({ openExternalUrl: async () => undefined }));
+mock.module('@/lib/worktrees/worktreeBootstrap', () => ({ waitForWorktreeGitReady: async () => undefined }));
 mock.module('@/lib/utils', () => ({
   cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
 }));

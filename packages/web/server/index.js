@@ -1474,6 +1474,7 @@ const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
     )));
     return existing.filter(Boolean);
   },
+  noProjectDirectory: OPENCHAMBER_CHATS_DIR,
   // A managed restart can move OpenCode to a NEW port (the old one may stay
   // occupied if killProcessOnPort/waitForPortRelease didn't free it in time,
   // on any platform). Rebind the message-stream upstream readers to the current port
@@ -1678,6 +1679,7 @@ const openChamberSessionService = createOpenChamberSessionService({
   sessionKnowledgeRuntime,
   worktreeBootstrapStore,
   hydrateWorktreeCheckout: featureRoutesRuntime.hydrateBoundCheckout,
+  createChangeRequestWorktree: featureRoutesRuntime.createChangeRequestWorktree,
   // OpenCode 2.x has no archive route, so the state is OpenChamber's own and
   // lives beside the instance it describes.
   dataDir: OPENCHAMBER_DATA_DIR,
@@ -1707,6 +1709,7 @@ const browserControlBroker = createBrowserControlBroker({
             requestId: request.requestId,
             action: request.action,
             parameters: request.parameters,
+            context: request.context,
           },
         });
         delivered += 1;
@@ -2123,6 +2126,8 @@ async function main(options = {}) {
     readIdleStop: async () => readIdleStopSetting((await readSettingsFromDiskMigrated())?.isolatedSpacesIdleStop),
     saveIdleStop: (setting) => persistSettings({ isolatedSpacesIdleStop: setting }),
     archive: spaceArchive,
+    // What the host says to the login issuer when it renews a browser login for a space.
+    userAgent: `OpenChamber/${OPENCHAMBER_VERSION}`,
   });
   const startupSettings = await readSettingsFromDiskMigrated().catch(() => null);
   if (startupSettings?.isolatedSpacesEnabled === true) {

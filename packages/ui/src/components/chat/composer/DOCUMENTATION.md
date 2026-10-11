@@ -17,8 +17,8 @@ animation. Do not restore separate draft and session composer branches:
 remounting the editor loses focus and interrupts the transition. Keep the
 existing mobile fixed-position rules unchanged.
 
-`ComposerFloatingPanel` is the shared frame for `BtwPanel`, `PermissionDock`,
-`FormDock` and `QueuedMessageChips`. They mount inside the composer form, outside both the
+`ComposerFloatingPanel` is the shared frame for `BtwPanel`, `PermissionDock`
+and `FormDock`. They mount inside the composer form, outside both the
 full editor and collapsed mobile pill, with one absolute `bottom-full`
 anchor, input-column width, gap, and glass surface. Appearing, disappearing,
 or collapsing a panel does not resize the transcript or composer.
@@ -66,8 +66,11 @@ reply resolves its directory from the store that holds the form.
 session, its subagents' included, in the same frame: one dot per pending
 request with the current one solid, the request's tool in the header, and
 Deny / Always allow / Allow once through the shared response hook, so
-Alt+Enter, Alt+Shift+Enter and Alt+Backspace answer the current request. A
-pending permission hides the form dock, the queue chips and the suggestion.
+Alt+Enter, Alt+Shift+Enter and Alt+Backspace answer the current request.
+Always allow and its shortcut exist only when the request carries `save`
+patterns: OpenCode remembers nothing from an "always" without them, so the
+question tool's request offers Deny and Allow once. A
+pending permission hides the form dock and the suggestion.
 The BTW sheet keeps the inline `PermissionCard` for its child session's
 requests; both render the request through `PermissionRequestContent` and
 `PermissionActions`.
@@ -81,22 +84,40 @@ list, which is why trimming that list never drops a session with a pending
 request and never drops the newest session first (session ids descend with
 time; the reducer trims by creation time).
 
-`SessionSuggestionChip` is not a frame: it renders as the composer's own top
-row, inside the box and inside the mobile pill, so the surface stays one
-shape. Visibility priority is BTW, then a pending form, then a nonempty
-queue, then suggestion. Every BTW frame, including its collapsed strip,
-creation state, and pending draft, hides the other three. Composer content
-also hides suggestion; new-session drafts hide form, queue and suggestion.
-Hiding the queue does not pause its delivery.
+The composer's top rows render inside the box and inside the mobile pill, so
+the surface stays one shape. Top to bottom: worktree setup and a message
+waiting for its space (`ComposerStatusStrip`), the goal (`SessionGoalRow`), a
+running review loop (`AutoReviewStrip`), background commands, a staged revert
+(`RevertedMessagesStrip`), the queue (`QueuedMessagesStrip`),
+the "looks done" hint or the review offer, the suggestion
+(`SessionSuggestionChip`). BTW hides all of them. A pending form, a nonempty
+queue, composer content and a new-session draft hide the suggestion; a
+new-session draft also hides the queue.
+
+`RevertedMessagesStrip` lists the user messages a staged revert hides (see
+"Committing a revert" in `sync/DOCUMENTATION.md`). Its one action is Restore,
+which clears the revert and puts the messages and the agent's file changes
+back. Committing needs no button: the next prompt or compaction commits it on
+the server. One message is its own row; several collapse into a count with
+Restore on the header and a read-only list that expands in place, collapsed
+again for a new revert point.
+
+`QueuedMessagesStrip` shows one queued message as its own row with edit, send
+and remove. Several collapse into a count that expands in place into a list
+with drag-to-reorder, capped at four rows before it scrolls. Its open/closed
+state is one persisted preference in `useUIStore` (`messageQueueExpanded`,
+collapsed by default), shared by every session and surviving session switches
+and reloads. It receives the composer's main-session queue target instead of
+resolving the global selection, so a chat pinned in the side panel addresses
+its own queue. It stays visible under the form and permission docks.
 
 `selectComposerQueue` in the submission builder excludes server-scheduled items
 before the composer counts manual content or reads captured send configuration.
 Mixed queues use only ordinary items for manual send; a scheduled-only queue
 cannot trigger an empty composer send. Scheduled items stay visible in the
-queue chips with reorder and remove, but no edit or send action.
+queue rows with reorder and remove, but no edit or send action.
 
-`BackgroundShellsStrip` shares that top-row slot, above the "looks done" hint
-and the suggestion: the commands that went to the background (not the ones
+`BackgroundShellsStrip` lists the commands that went to the background (not the ones
 a turn is waiting for, see `background` in `sync/background-shells.ts`) of
 the session and of its
 subagents at any depth (`sessionsInTree` over the global sessions store, a
@@ -120,31 +141,30 @@ opens the composer's review dialog (the one `/handoff-review` opens) or a
 walkthrough of the whole working tree, and is not shown on a mobile layout,
 where neither action is offered elsewhere either.
 
-The queue header toggles an `aria-expanded` disclosure with the current count.
-Its open/closed state is one persisted preference in `useUIStore`
-(`messageQueueExpanded`, open by default), shared by every session and
-surviving session switches and reloads.
-The expanded list retains its drag sensors, ordering, edit, send, and remove
-actions, and clamps to available space above the composer. It receives the
-composer's main-session queue target instead of resolving the global selection,
-so a chat pinned in the side panel addresses its own queue.
-
-The shared frame measures its height and gap into the chat column's
-`--chat-floating-panel-clearance`. The floating status row and
+The shared frame measures its height and gap as
+`--chat-floating-panel-clearance`, published through
+`state/composerInsetReaders.ts` onto the elements that read it, never on the
+chat column (inherited from the column, every resize of the frame restyled
+the whole transcript). The floating status row, the recap hint and
 `ScrollToBottomButton` translate upward by that amount, the transcript's tail
-spacer grows by it (so the frame never covers the last rows), and the column
-carries `data-floating-panel` while any frame is mounted so the recap hint
-hides instead of landing over the transcript. Unmounting clears the offset
-and the marker; resizing or collapsing the frame updates it.
+spacer and the end fade band grow by it (so the frame never covers the last
+rows), and the column carries `data-floating-panel` while any frame is
+mounted so the recap hint hides instead of landing over the transcript.
+Unmounting clears the offset and the marker; resizing or collapsing the frame
+updates it.
 
 ## Floating composer
 
 In a normal session view the composer slot is an absolute layer over the
 bottom of the transcript (`ChatContainer`), and the input box is glass
 (`oc-glass-composer`). The draft screen and the expanded editor keep the slot
-in flow. A `ResizeObserver` on the slot writes its height into the chat
-column's `--chat-composer-inset`, and the timeline's tail spacer height into
-`--chat-composer-tail-inset`: the resting composer (the smallest height the
+in flow. A `ResizeObserver` on the slot publishes its height as
+`--chat-composer-inset` and the timeline's tail spacer height as
+`--chat-composer-tail-inset`, written onto the elements that read them (the
+end fade band and the tail spacer, registered through
+`state/composerInsetReaders.ts`), never on the chat column: inherited from the
+column, every new composer line restyled the whole transcript. The tail
+spacer height is the resting composer (the smallest height the
 slot has measured) plus an 80px gap, or the current height minus an 8px
 overlap into the gap, whichever is larger. With the last turn's own bottom
 padding the visible band at rest is about 104px. A row appearing inside the
@@ -157,8 +177,11 @@ the same rule to announce how far the transcript's end moves, which is less
 than the slot's height change whenever part of it is taken from the gap. While the slot is taller than at rest
 the column carries `data-composer-grown`, and the recap hint, which rides the
 composer's top edge, hides until the composer is back at rest.
-The transcript's end fade reads `--chat-composer-inset` (plus the floating-panel
-clearance) through `--scroll-shadow-end-inset` in `index.css`, so a row that
+The transcript's end fade is a band in the chat background over the
+scroller's end (`.chat-scroll-fade--end` in `index.css`; a mask on the
+scroller made the GPU recomposite the whole transcript every frame). It reads
+`--chat-composer-inset` (plus the floating-panel clearance) through
+`--scroll-shadow-end-inset`, so a row that
 does reach the composer, as the newest lines of a live reply do while the
 follow glide is still catching up, dissolves above the box instead of being
 cut in half by its top edge. That inset applies only while a reply streams
@@ -181,13 +204,27 @@ glass child only blurs its parent's content. Popups therefore anchor to the
 wrapper outside the box, and the dictation overlay (`.oc-dictation-overlay`)
 never stacks glass on glass: a CSS rule in `design-system.css` hides the
 composer's own contents while it is up, leaving the box as the single glass
-surface on desktop and the overlay itself on mobile.
+surface on desktop and the overlay itself on mobile. On desktop the footer's
+dictation reports its state and the box carries `data-dictating`; the
+elements between the box and the overlay carry `data-dictation-chain`, so the
+rule only targets their other children. A `:has()` over the box was
+re-evaluated for every descendant on each editor mutation.
+
+Typing re-renders `ChatInput` and its editor, nothing else. The children that
+do not depend on the draft text (footer, autocomplete popups, docks, BTW
+panel, draft target selectors and preset chips) are memoized, and the props
+`ChatInput` passes them keep their identity while the user types: callbacks
+read the text through `messageRef` or `useStableHandler`, derived objects are
+memoized, and `useBtwPanelState` and `useMobileComposerShell` return stable
+objects. `useBtwPanelState` reads the parent and fork sessions as primitives,
+so a streaming turn's `session.updated` events do not re-render the composer.
+`__tests__/ChatInput.keystroke.test.tsx` counts the renders per keystroke.
 
 A glass surface never carries its own shadow: the shadow sits on a wrapper
 (or the glass moves to an inner layer). Chromium grows a backdrop-filter
 layer by the shadow's blur, and that band painted a flat grey strip over
-whatever was stacked above: the goal row, the status pill, the queue panel.
-This holds for the box, the mobile pill and its queue button, the floating
+whatever was stacked above: the status pill, the floating panels.
+This holds for the box, the mobile pill, the floating
 panels, the context-chip preview and the mobile dictation overlay.
 
 Context chips (review comments, quotes, annotations, terminal selections, PR
@@ -282,7 +319,9 @@ copy.
   active, with precedence `command > skill > snippet > mention`. Commands open
   only on a `/` in the first column; skills open on `$` at any word boundary,
   the start of the text included. The two never share a list: the `/` palette
-  holds commands only.
+  holds commands only. Only typing and pasting open a picker: text the app sets
+  through the editor's `value` prop (a restored draft, a git conflict prompt)
+  arrives with `ComposerChange.fromValueProp` and closes any open picker.
 - `tokenize.ts` — one pass producing every highlight range. Adding a construct
   to the language means adding it here, once.
 
@@ -497,7 +536,7 @@ and the send path reading the same grammar.
   addressed to the fork's runtime, directory, and session. The hook consumes
   them after loading that identity's draft. Selection alone is not enough:
   the deferred chat column can still show the source composer. Ordinary
-  pending text insertions keep their existing path in `ChatInput`.
+  pending text insertions go through `state/usePendingComposerText.ts`.
   The hook also selects the attachment draft before paint. `input-store.ts`
   owns its in-memory files and scoped send recovery, documented in
   `packages/ui/src/sync/DOCUMENTATION.md`.
@@ -619,7 +658,12 @@ one app-wide composer state is split per column:
   which every app-wide source writes to (plugins, git dialogs, file
   selections, todo sends); a session id addresses the pinned composer on that
   session, which is what text quoted inside that chat and the composer's own
-  restores use. A composer consumes only what is addressed to it. Preset
+  restores use. A composer consumes only what is addressed to it. The main
+  chat's composer also waits until its deferred column shows the live
+  selection (`state/usePendingComposerText.ts`): a new-session draft opened
+  with a prompt, such as "resolve in new session" from a git conflict, leaves
+  the prompt while the column still shows the previous session, and taking it
+  then would save it into that session's draft. Preset
   submits, guest-issue attaches and pending composer references are main-chat
   only.
 - **Focus.** `focusChatInput()` focuses the main chat's composer and skips
@@ -627,6 +671,20 @@ one app-wide composer state is split per column:
   A pinned composer takes focus on session entry only when the focus is
   already inside its column, so opening a subtask in the panel never pulls
   keystrokes away from the main chat.
+- **Typing with nothing focused.** `editor/inputRedirect.ts` sends input that
+  has no text field to land in to a composer, on desktop only: a printable key
+  without Cmd, Ctrl or Alt is inserted at the end of the draft, a paste is
+  replayed on the editor so attachments and large-text handling still apply,
+  and coming back to the window puts the caret in the composer. The receiving
+  composer is the pinned chat's when the user last clicked or focused into
+  that column and it is still on screen, the main chat's otherwise. Input
+  stays where it is when its target takes text or is a button, link, tab,
+  list or menu item, while a dialog, menu, open select, settings or the BTW
+  composer is on screen, during IME composition, and while text is selected, because typing
+  over a selection starts a comment on it. The window-focus refocus skips a
+  focused field, terminal, editor or embedded page and keeps a selection.
+  `useKeyboardShortcuts` calls it after the shortcut dispatcher, so a
+  bare-key binding or sequence still wins.
 - **Stop prompt.** `armAbortPrompt` arms for a given session. A composer
   clears the prompt of the session it leaves, never another column's.
 
@@ -886,7 +944,7 @@ and its search entry are hidden on mobile without changing the desktop preferenc
 The expanded desktop composer always inserts a newline with Enter, including
 Shift+Enter, and sends with Ctrl/Cmd+Enter; it ignores the Enter-to-send preference.
 
-Outside mobile and expanded mode, desktop Enter sends by default, and
-Shift-modified Enter does not send until the Chat setting is changed.
-An explicit choice controls Enter and Shift+Enter there;
-Ctrl/Cmd+Enter sends in either configured mode.
+Outside mobile and expanded mode, desktop Enter sends by default. The Chat
+setting controls plain Enter there: "Send with Enter" sends on Enter, "Send with
+Ctrl/Cmd+Enter" inserts a newline. Shift+Enter always inserts a newline, and
+Ctrl/Cmd+Enter always sends.

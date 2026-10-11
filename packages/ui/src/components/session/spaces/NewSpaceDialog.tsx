@@ -20,7 +20,7 @@ import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { getGitStatus } from '@/lib/gitApi';
 import { generateBranchSlug } from '@/lib/git/branchNameGenerator';
 import { useI18n } from '@/lib/i18n';
-import { SPACE_MODEL_PROVIDERS } from '@/lib/spaces/model-access';
+import { SPACE_LOGIN_ONLY_PROVIDERS, SPACE_MODEL_PROVIDERS } from '@/lib/spaces/model-access';
 import { isDomainName } from '@/lib/spaces/space-access';
 import { listSpacePlaces, type SpaceFailure, type SpacePlace, type SpaceStart } from '@/lib/spaces/spaces-api';
 import { startSpaceCreation, type SpaceModelAccess } from '@/lib/spaces/space-creation';
@@ -29,11 +29,14 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { failureOfError, spaceFailureText } from './spaceFailureText';
 import { ModelKeySource } from './ModelKeySource';
-import { isKeySourceComplete, modelGrantOf, useSpaceModelProviders, type KeySourceChoice } from './spaceModelKeys';
+import { isAccessChoiceComplete, modelGrantOf, usableHostLoginOf, useSpaceHostLogins, useSpaceModelProviders, type KeySourceChoice } from './spaceModelKeys';
 
 type PlaceState = { kind: 'checking' } | { kind: 'ready'; place: Extract<SpacePlace, { available: true }> } | { kind: 'unavailable'; failure: SpaceFailure };
 type ChangesState = { kind: 'loading' } | { kind: 'ready'; files: string[] } | { kind: 'unknown' };
-type AccessChoice = KeySourceChoice & { selected: boolean };
+// `sourceChosen` once the user touched where the key comes from, the name or the key included, so
+// the host's logins arriving later never move the radio under their cursor; until then the host's
+// login, when it has one to offer, is the choice, since it asks for nothing.
+type AccessChoice = KeySourceChoice & { selected: boolean; sourceChosen: boolean };
 
 type NewSpaceDialogProps = {
   open: boolean;
@@ -93,7 +96,10 @@ export const NewSpaceDialog: React.FC<NewSpaceDialogProps> = ({ open, onOpenChan
   const [submitting, setSubmitting] = React.useState(false);
   const [submitError, setSubmitError] = React.useState<string | null>(null);
 
-  const providers = useSpaceModelProviders();
+  const hostLogins = useSpaceHostLogins(open);
+  // A login-only provider has a row only while the host has a login the space can be given.
+  const loginOnly = SPACE_LOGIN_ONLY_PROVIDERS.filter((id) => usableHostLoginOf(hostLogins.logins, id) !== null);
+  const providers = useSpaceModelProviders(undefined, loginOnly);
 
   React.useEffect(() => {
     if (!open) return;
@@ -105,13 +111,32 @@ export const NewSpaceDialog: React.FC<NewSpaceDialogProps> = ({ open, onOpenChan
     setDomainInput('');
     setDomainError(false);
     setSubmitError(null);
-    setAccess(Object.fromEntries(SPACE_MODEL_PROVIDERS.map((provider) => [provider.id, {
-      selected: provider.id === useConfigStore.getState().currentProviderId,
-      source: 'env' as const,
-      envName: provider.envName,
-      value: '',
-    }])));
+    setAccess(Object.fromEntries([
+      ...SPACE_MODEL_PROVIDERS.map((provider): [string, AccessChoice] => [provider.id, {
+        selected: provider.id === useConfigStore.getState().currentProviderId,
+        source: 'env',
+        sourceChosen: false,
+        envName: provider.envName,
+        value: '',
+      }]),
+      ...SPACE_LOGIN_ONLY_PROVIDERS.map((id): [string, AccessChoice] => [id, {
+        selected: id === useConfigStore.getState().currentProviderId,
+        source: 'login',
+        sourceChosen: false,
+        envName: '',
+        value: '',
+      }]),
+    ]));
   }, [open]);
+
+  const logins = hostLogins.logins;
+  React.useEffect(() => {
+    setAccess((current) => Object.fromEntries(Object.entries(current).map(([providerId, choice]) => {
+      if (choice.sourceChosen || SPACE_LOGIN_ONLY_PROVIDERS.includes(providerId)) return [providerId, choice];
+      const offered = usableHostLoginOf(logins, providerId) !== null;
+      return [providerId, { ...choice, source: offered ? 'login' : choice.source === 'login' ? 'env' : choice.source }];
+    })));
+  }, [logins]);
 
   const changedFiles = changes.kind === 'ready' ? changes.files : [];
   const hasChanges = changedFiles.length > 0;
@@ -122,7 +147,7 @@ export const NewSpaceDialog: React.FC<NewSpaceDialogProps> = ({ open, onOpenChan
   // A choice the place turned out not to support falls back to the one it does.
   const effectiveMode = mode === 'allowlist' && !canRestrict ? 'open' : mode ?? (canRestrict ? 'allowlist' : 'open');
   const chosenAccess = providers.filter((provider) => access[provider.id]?.selected);
-  const accessIncomplete = chosenAccess.some((provider) => !isKeySourceComplete(access[provider.id]));
+  const accessIncomplete = chosenAccess.some((provider) => !isAccessChoiceComplete(provider, access[provider.id]));
   const canCreate = place.kind === 'ready' && name.trim() !== '' && changes.kind !== 'loading' && !accessIncomplete && !submitting;
 
   const addDomain = () => {
@@ -179,7 +204,7 @@ export const NewSpaceDialog: React.FC<NewSpaceDialogProps> = ({ open, onOpenChan
   const body = (
     <div className="space-y-5 pr-3">
       {section(t('spaces.create.name.label'), (
-        <Input value={name} onChange={(event) => setName(event.target.value)} className="h-9 max-w-sm" aria-label={t('spaces.create.name.label')} />
+        <Input value={name} onChange={(event) => setName(event.target.value)} className="max-w-sm" aria-label={t('spaces.create.name.label')} />
       ))}
 
       {section(t('spaces.create.place.label'), (
@@ -242,7 +267,7 @@ export const NewSpaceDialog: React.FC<NewSpaceDialogProps> = ({ open, onOpenChan
                 onBlur={addDomain}
                 placeholder={t('spaces.create.network.domainPlaceholder')}
                 aria-label={t('spaces.create.network.domainPlaceholder')}
-                className="h-9 max-w-sm"
+                className="max-w-sm"
               />
               {domainError ? <p className="typography-meta text-status-error">{t('spaces.create.network.domainInvalid')}</p> : null}
               <p className="typography-meta text-muted-foreground">{t('spaces.create.network.modelNeedsNoDomain')}</p>
@@ -270,7 +295,7 @@ export const NewSpaceDialog: React.FC<NewSpaceDialogProps> = ({ open, onOpenChan
                 </label>
                 {choice.selected ? (
                   <div className="pl-6">
-                    <ModelKeySource providerName={provider.name} choice={choice} onChange={(change) => updateAccess(provider.id, change)} />
+                    <ModelKeySource provider={provider} login={usableHostLoginOf(logins, provider.id)} choice={choice} onChange={(change) => updateAccess(provider.id, { ...change, sourceChosen: true })} />
                   </div>
                 ) : null}
               </div>

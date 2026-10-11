@@ -4,7 +4,7 @@ import { useChatColumnActions } from './chatColumnSession';
 import { MobileModelButton } from './MobileModelButton';
 import type { EditPermissionMode } from '@/stores/types/sessionTypes';
 import type { ModelMetadata } from '@/types';
-import type { Agent, PermissionRuleset } from '@/lib/opencode/model';
+import type { Agent, Message, PermissionRuleset, Session } from '@/lib/opencode/model';
 import type { PermissionEffect } from '@opencode/client';
 import {
     DropdownMenu,
@@ -38,7 +38,8 @@ import { useContextStore } from '@/stores/contextStore';
 import { useConfigStore, isStaleAutoSelection, selectKnownAgent, selectKnownCatalogModel } from '@/stores/useConfigStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
-import { useSession, useSessionMessages, useSessionRenderable } from '@/sync/sync-context';
+import { useSessionMessagesSelector, useSessionRenderable, useSessionSelector } from '@/sync/sync-context';
+import type { State } from '@/sync/types';
 import { useSync } from '@/sync/use-sync';
 import { useUIStore } from '@/stores/useUIStore';
 import { useModelLists } from '@/hooks/useModelLists';
@@ -51,10 +52,11 @@ import { markStartupTrace } from '@/lib/startupTrace';
 import { AUTO_MODEL_ID, AUTO_PROVIDER_ID, isAutoModel } from '@/lib/routing/autoModel';
 import { selectAutoReady, useRoutingStore } from '@/stores/useRoutingStore';
 import {
+    areModelChoicesEqual,
+    extractSessionRecordModelChoice,
     findLatestUserModelChoice,
     shouldPreserveManualModelOverride,
 } from '@/lib/messages/userModelChoice';
-import { getSyncParts } from '@/sync/sync-refs';
 import type { BtwSelection } from '@/stores/useBtwStore';
 import { listModelVariantIds, type ModelVariantSource } from '@/lib/modelVariants';
 
@@ -65,6 +67,12 @@ type ProviderModel = Record<string, unknown> & { id?: string; name?: string };
 type MobileVariantTarget = { providerId: string; modelId: string };
 
 const buildModelRefKey = (providerID: string, modelID: string) => `${providerID}:${modelID}`;
+
+const selectSessionRecordAgent = (session: Session | undefined): string | undefined => session?.agent?.trim() || undefined;
+const selectLatestReplyModelChoice = (messages: Message[], state: State) => findLatestUserModelChoice(
+    messages,
+    (messageId) => state.part[messageId],
+);
 const MAX_INLINE_MOBILE_VARIANT_OPTIONS = 6;
 
 const AgentDescriptionTooltip: React.FC<{
@@ -752,35 +760,38 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         currentSessionId ?? '',
         currentSessionDirectory ?? undefined,
     );
-    const currentSessionMessagesFromSync = useSessionMessages(currentSessionId ?? '', currentSessionDirectory ?? undefined);
-    const currentSessionRecord = useSession(currentSessionId ?? undefined, currentSessionDirectory ?? undefined);
     // OpenCode 2 keeps the selection on the session record itself (`model`
     // with its variant, and `agent`), and that is what the next prompt runs
     // on, so it is the authority when a session opens. The last assistant
     // reply is the fallback for a record that has no model yet. The record's
     // agent is followed by its own effect below, so a choice carries an agent
     // only when the record has none.
-    const sessionRecordAgent = currentSessionRecord?.agent?.trim() || undefined;
-    const sessionRecordChoice = React.useMemo(() => {
-        const model = currentSessionRecord?.model;
-        if (!currentSessionRecord || !model?.providerID || !model.id) return null;
-        return {
-            id: `session:${currentSessionRecord.id}`,
-            agent: undefined,
-            providerID: model.providerID,
-            modelID: model.id,
-            variant: model.variant?.trim() || undefined,
-        };
-    }, [currentSessionRecord]);
+    // Both are read as derived choices: the record and the message list are
+    // replaced on every streamed step while the choice stays the same.
+    const sessionRecordAgent = useSessionSelector(
+        currentSessionId ?? undefined,
+        currentSessionDirectory ?? undefined,
+        selectSessionRecordAgent,
+    );
+    const sessionRecordChoice = useSessionSelector(
+        currentSessionId ?? undefined,
+        currentSessionDirectory ?? undefined,
+        extractSessionRecordModelChoice,
+        areModelChoicesEqual,
+    );
+    const latestReplyChoice = useSessionMessagesSelector(
+        currentSessionId ?? '',
+        currentSessionDirectory ?? undefined,
+        selectLatestReplyModelChoice,
+        areModelChoicesEqual,
+        // The choice is read from the reply's parts, which can load after it.
+        true,
+    );
     const latestLoadedUserChoice = React.useMemo(() => {
         if (selection) return null;
         if (sessionRecordChoice) return sessionRecordChoice;
-        const replyChoice = findLatestUserModelChoice(
-            currentSessionMessagesFromSync,
-            (messageId) => getSyncParts(messageId, currentSessionDirectory ?? undefined),
-        );
-        return replyChoice && sessionRecordAgent ? { ...replyChoice, agent: undefined } : replyChoice;
-    }, [currentSessionDirectory, currentSessionMessagesFromSync, selection, sessionRecordAgent, sessionRecordChoice]);
+        return latestReplyChoice && sessionRecordAgent ? { ...latestReplyChoice, agent: undefined } : latestReplyChoice;
+    }, [latestReplyChoice, selection, sessionRecordAgent, sessionRecordChoice]);
 
     const tryApplyModelSelection = React.useCallback(
         (providerId: string, modelId: string, agentName?: string): ModelApplyResult => {
@@ -1273,8 +1284,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         }
 
         if (!hasRenderableCurrentSessionSnapshot) {
-            if (!sync.isLoading(currentSessionId)) {
-                void sync.ensureSessionRenderable(currentSessionId);
+            // The session's own directory: falling back to the sync directory
+            // loads a worktree session into the wrong store and races the
+            // chat's own load under a different dedupe key.
+            const sessionDirectory = currentSessionDirectory ?? undefined;
+            if (!sync.isLoading(currentSessionId, sessionDirectory)) {
+                void sync.ensureSessionRenderable(currentSessionId, false, sessionDirectory);
             }
             return;
         }
@@ -1287,6 +1302,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         restoredSessionSelectionRef.current = currentSessionId;
     }, [
         currentSessionId,
+        currentSessionDirectory,
         hasRenderableCurrentSessionSnapshot,
         latestLoadedUserChoice,
         agents,

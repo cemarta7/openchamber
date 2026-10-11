@@ -33,9 +33,13 @@ function useIsDarkTheme() {
 // box-shadow that erases our custom elevation on click. We pin every toast's
 // box-shadow as an !important inline style and strip tabIndex so the element
 // can't receive focus-induced style swaps.
-function usePinnedToastStyles(shadow: string) {
+//
+// Only the toaster's own section is observed: toasts render inside it, and
+// observing the whole document ran a query on every DOM change in the app,
+// including every streamed token.
+function usePinnedToastStyles(container: HTMLElement | null, shadow: string) {
   React.useEffect(() => {
-    if (typeof document === "undefined") return
+    if (!container) return
 
     const apply = (el: HTMLElement) => {
       el.style.setProperty("box-shadow", shadow, "important")
@@ -43,29 +47,18 @@ function usePinnedToastStyles(shadow: string) {
       if (el.getAttribute("tabindex") === "0") el.setAttribute("tabindex", "-1")
     }
 
+    // Re-pins everything, in case sonner mutates style.cssText on interactions.
     const applyToAll = () => {
-      document
+      container
         .querySelectorAll<HTMLElement>("[data-sonner-toast]")
         .forEach(apply)
     }
 
     applyToAll()
 
-    const observer = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        m.addedNodes.forEach((node) => {
-          if (!(node instanceof HTMLElement)) return
-          if (node.matches?.("[data-sonner-toast]")) apply(node)
-          node
-            .querySelectorAll?.<HTMLElement>("[data-sonner-toast]")
-            .forEach(apply)
-        })
-      }
-      // Re-pin in case sonner mutates style.cssText on interactions.
-      applyToAll()
-    })
+    const observer = new MutationObserver(applyToAll)
 
-    observer.observe(document.body, {
+    observer.observe(container, {
       childList: true,
       subtree: true,
       attributes: true,
@@ -73,16 +66,19 @@ function usePinnedToastStyles(shadow: string) {
     })
 
     return () => observer.disconnect()
-  }, [shadow])
+  }, [container, shadow])
 }
 
 const Toaster = ({ ...props }: ToasterProps) => {
   const isDark = useIsDarkTheme()
   const shadow = isDark ? SHADOW_DARK : SHADOW_LIGHT
-  usePinnedToastStyles(shadow)
+  // State, not a ref: the observer attaches once sonner's section mounts.
+  const [container, setContainer] = React.useState<HTMLElement | null>(null)
+  usePinnedToastStyles(container, shadow)
 
   return (
     <Sonner
+      ref={setContainer}
       theme={isDark ? "dark" : "light"}
       className="toaster group"
       closeButton={false}

@@ -47,6 +47,10 @@ create, update and delete project notes and plans. It can list, create, update
 and delete todos, including completing or reopening an item. Changes appear in
 the open project panel through the existing event stream.
 
+See the [tool request and response reference](#tool-request-and-response-reference),
+[HTTP CRUD reference](#http-crud-reference), and
+[2-session conflict example](#2-session-conflict-example) for exact inputs.
+
 Actions use the calling session's project by default. An agent can supply a
 configured `projectId` or a `directory`, but cannot supply both. Worktrees use
 their project owner. Managed Chats share their Chats owner.
@@ -63,6 +67,353 @@ conflict. Without this optional precondition, an agent update replaces the body.
 Todo item changes preserve other items. Reordering or clearing completed items
 from the UI checks the last confirmed list. A concurrent change rejects that
 bulk save. Existing note and plan attachments remain specific to each session.
+
+## Tool request and response reference
+
+Use these actions through the existing managed `openchamber` tool. They require
+the control tool to be enabled and OpenCode to be managed by OpenChamber.
+External OpenCode and VS Code do not receive this injected tool. Mobile clients
+use the tool on their connected server when that server manages OpenCode.
+There is no separate notes, todos, or plans MCP server.
+
+These are the current OpenChamber contracts. This reference adds no public API
+stability or cross-version compatibility guarantee.
+
+Each call has `action` and `parameters`:
+
+```json
+{"action":"notes.read","parameters":{"noteId":"note-1"}}
+```
+
+Use the full action name. Bare `update` and `delete` are ambiguous.
+Each action accepts one optional scope selector:
+
+| Selector | Meaning |
+| --- | --- |
+| neither selector | use the calling session's directory |
+| `projectId` | use an `id` returned by `projects.list`; resolve its configured directory first |
+| `directory` | use an absolute directory on the server's machine |
+
+Supplying both selectors fails. Worktrees resolve to their registered project
+owner. Managed Chats resolve to the shared Chats owner. An unregistered
+directory with no owner fails. Failed owner or worktree discovery fails before
+storage access. Each result's `projectId` is the resolved storage owner ID. It
+can differ from the configured ID used as input.
+
+Worktree discovery follows the panel's published list. That list omits
+registered checkouts and checkouts that contain a registered project subfolder.
+An omitted checkout uses normal registered-ancestor resolution.
+
+### Actions and results
+
+The result column gives the fields inside successful `data`. Every result also
+contains the resolved `projectId`.
+
+| Action | Required inputs | Optional mutation inputs | Result fields |
+| --- | --- | --- | --- |
+| `notes.list` | none | none | `notes` |
+| `notes.read` | `noteId` | none | `note` |
+| `notes.create` | `body` | none | `note`, `context` |
+| `notes.update` | `noteId`, `body` | `expectedBody` | `note`, `context` |
+| `notes.delete` | `noteId` | none | `deleted: true`, `context` |
+| `todos.list` | none | none | `todos` |
+| `todos.create` | `text` | none | `context` |
+| `todos.update` | `todoId`, at least one of `text` or `completed` | the other patch field | `context` |
+| `todos.delete` | `todoId` | none | `deleted: true`, `context` |
+| `plans.list` | none | none | `plans` |
+| `plans.read` | `planId` | none | `plan` |
+| `plans.create` | `title`, `body` | none | `plan`, `context` |
+| `plans.update` | `planId`, `raw` | `expectedRaw` | `plan`, `context`, `title`, `body`, `raw` |
+| `plans.delete` | `planId` | none | `deleted: true`, `context` |
+
+Note bodies must be nonblank and at most 3000 characters. Todo text must be
+nonblank and at most 1000 characters. Plan titles must be nonblank and at most
+160 characters. Plan `body` and `raw` can be empty and accept at most 200000
+characters through the tool. The store caps notes at 200, todos at 500, and
+personal plans at 500 per owner.
+
+Notes include `id`, `body`, `createdAt`, `updatedAt`, `source`, `pinned`, and
+optional `origin`. The tool creates notes with `source: "agent"` and the
+calling session in `origin.sessionId`. An update keeps that provenance.
+Model inputs cannot set provenance or session attachments.
+
+Todos include `id`, `text`, `completed`, and `createdAt`. Creation generates an
+ID and sets `completed: false`. Use the returned context to find the new item;
+the tool does not return a separate `todo`. Item updates preserve other items.
+Completing moves an item to the end. Reopening and creation insert before the
+first completed item. Text-only edits and repeated completion values keep order.
+
+Plan lists contain links with `id`, `file`, `title`, `createdAt`, `pinned`, and
+`source`. A read returns `body`, the complete `raw` Markdown, and its server
+`path` as well. Treat `path` as information; CRUD uses IDs. A shared plan can
+have an ID such as `shared:team.md`. The same read, update, and delete actions
+accept that ID. These actions do not share plans or attach items to sessions.
+Legacy `pinned` fields do not define the current session's attachments.
+
+`context` contains `version: 2`, `notes`, `todos`, and `plans`. Full context
+reads and plan mutations also include shared plan discovery and
+`sharedPlansDir`. Note and todo mutation snapshots contain stored context;
+re-read the list when shared plan discovery is needed.
+
+Successful tool responses use this envelope. This synthetic note read shows
+the shape; IDs and timestamps come from storage:
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "action": "notes.read",
+  "data": {
+    "projectId": "path_L3JlcG8",
+    "note": {
+      "id": "note-1",
+      "body": "v1",
+      "createdAt": 1700000000000,
+      "updatedAt": 1700000000000,
+      "source": "agent",
+      "pinned": false,
+      "origin": {"sessionId": "ses_A"}
+    }
+  }
+}
+```
+
+### Synthetic tool CRUD calls
+
+These calls assume one project owner. Substitute IDs returned by creation or
+listing. Each object is a separate tool call:
+
+```json
+{"action":"notes.create","parameters":{"body":"v1"}}
+{"action":"notes.list","parameters":{}}
+{"action":"notes.read","parameters":{"noteId":"note-1"}}
+{"action":"notes.update","parameters":{"noteId":"note-1","body":"v2","expectedBody":"v1"}}
+{"action":"notes.delete","parameters":{"noteId":"note-1"}}
+```
+
+```json
+{"action":"todos.create","parameters":{"text":"Check tests"}}
+{"action":"todos.list","parameters":{}}
+{"action":"todos.update","parameters":{"todoId":"todo-1","text":"Check focused tests"}}
+{"action":"todos.update","parameters":{"todoId":"todo-1","completed":true}}
+{"action":"todos.update","parameters":{"todoId":"todo-1","completed":false}}
+{"action":"todos.delete","parameters":{"todoId":"todo-1"}}
+```
+
+```json
+{"action":"plans.create","parameters":{"title":"Checks","body":"Run tests."}}
+{"action":"plans.list","parameters":{}}
+{"action":"plans.read","parameters":{"planId":"plan-1"}}
+{"action":"plans.update","parameters":{"planId":"plan-1","raw":"# Checks\n\nRun focused tests.\n","expectedRaw":"# Checks\n\nRun tests."}}
+{"action":"plans.delete","parameters":{"planId":"plan-1"}}
+```
+
+Copy `expectedRaw` from the actual read. Plan creation formats the Markdown;
+do not reconstruct the expected document from its title and body.
+
+## HTTP CRUD reference
+
+The existing server routes use the normal OpenChamber API authentication gates.
+Use your authenticated app session or an existing authorized remote-client
+connection. Password-protected direct access accepts its UI session or remote
+client credential. Tunnel access uses the tunnel session gate. Local access
+can be ungated when authentication is disabled. These routes introduce no new
+credential or bearer-token scheme. See [Remote instances](/remote-instances/).
+
+The managed tool callback at `POST /api/openchamber/agent-tool` has separate
+same-machine checks and a per-child credential. It is an internal trusted
+callback. Do not use it as a normal HTTP CRUD endpoint or copy its credential.
+
+Use the resolved storage owner ID returned by a knowledge action as the
+`:projectId` path segment. The UI derives the same ID from the resolved owner
+path as `path_` plus its UTF-8 base64url encoding, after slash normalization and
+removal of trailing slashes. `/repo` gives `path_L3JlcG8`. Resolve worktrees and
+Chats to their owner first. A configured project ID is not necessarily a
+storage ID. Encode each path segment, including IDs such as `shared:team.md`.
+
+In the table, `base` means `/api/project-context/:projectId`. JSON writes use
+`Content-Type: application/json`. Successful reads, updates, and deletes return
+200; creation returns 201.
+
+| Method and path | JSON body | Success response |
+| --- | --- | --- |
+| `GET base` | none | full context; read individual notes and todos from their lists |
+| `POST base/notes` | `body`, optional `source` and `origin` | `note`, `context` |
+| `PATCH base/notes/:noteId` | `body`, optional `expectedBody` | `note`, `context` |
+| `DELETE base/notes/:noteId` | none | context directly |
+| `POST base/todos` | `text` | `todo`, `context` from the same commit |
+| `PATCH base/todos/:todoId` | `text` and/or `completed` | context directly |
+| `DELETE base/todos/:todoId` | none | context directly |
+| `PUT base/todos` | `todos`, optional `expectedTodos` | context directly; replaces the whole list |
+| `POST base/plans` | `body`, optional `title` | `plan`, `context` |
+| `GET base/plans/:planId` | none | plan content directly, including `raw` and `path` |
+| `PUT base/plans/:planId` | `raw`, optional `expectedRaw` | `plan`, `context`, `title`, `body`, `raw` |
+| `DELETE base/plans/:planId` | none | context directly |
+
+There are no separate note or todo GET routes. `GET base` returns an empty
+context when storage is missing. Malformed storage fails. HTTP note writes
+trim and clamp bodies to 3000 characters; tool writes reject oversized input
+before storage. HTTP plan bodies clamp to 200000 characters and titles to 160;
+an omitted or blank title becomes `Plan`. HTTP note creation accepts `source`
+as `manual`, `selection`, or `agent`, and `origin` as an object with
+`sessionId` and optional `messageId`.
+
+Existing HTTP share and unshare operations use
+`POST base/plans/:planId/share` and `POST base/plans/:planId/unshare`. They
+return `plan` and `context`. Legacy pin patches also exist, but current
+attachments belong to session metadata. Knowledge tool CRUD does not expose
+pin, share, or whole-list todo replacement actions.
+
+### Synthetic HTTP CRUD requests
+
+Use the actual owner and created IDs. Send these requests through your existing
+authenticated connection:
+
+```http
+POST /api/project-context/path_L3JlcG8/notes
+Content-Type: application/json
+
+{"body":"v1"}
+```
+
+```http
+GET /api/project-context/path_L3JlcG8
+```
+
+```http
+PATCH /api/project-context/path_L3JlcG8/notes/note-1
+Content-Type: application/json
+
+{"body":"v2","expectedBody":"v1"}
+```
+
+```http
+DELETE /api/project-context/path_L3JlcG8/notes/note-1
+```
+
+```http
+POST /api/project-context/path_L3JlcG8/todos
+Content-Type: application/json
+
+{"text":"Check tests"}
+```
+
+Read the created todo from the response's `todo` field or from `GET` context.
+Complete, reopen, and delete that item:
+
+```http
+PATCH /api/project-context/path_L3JlcG8/todos/todo-1
+Content-Type: application/json
+
+{"completed":true}
+```
+
+```http
+PATCH /api/project-context/path_L3JlcG8/todos/todo-1
+Content-Type: application/json
+
+{"completed":false,"text":"Check focused tests"}
+```
+
+```http
+DELETE /api/project-context/path_L3JlcG8/todos/todo-1
+```
+
+```http
+POST /api/project-context/path_L3JlcG8/plans
+Content-Type: application/json
+
+{"title":"Checks","body":"Run tests."}
+```
+
+```http
+GET /api/project-context/path_L3JlcG8/plans/plan-1
+```
+
+```http
+PUT /api/project-context/path_L3JlcG8/plans/plan-1
+Content-Type: application/json
+
+{"raw":"# Checks\n\nRun focused tests.\n","expectedRaw":"# Checks\n\nRun tests."}
+```
+
+```http
+DELETE /api/project-context/path_L3JlcG8/plans/plan-1
+```
+
+For a whole-list todo save, send the complete last-read list as `expectedTodos`.
+This example clears a list that was confirmed empty:
+
+```http
+PUT /api/project-context/path_L3JlcG8/todos
+Content-Type: application/json
+
+{"todos":[],"expectedTodos":[]}
+```
+
+## Conditional saves and errors
+
+`expectedBody`, `expectedRaw`, and `expectedTodos` are optional last-read content
+checks. They are not revision numbers. Note and plan checks compare exact text,
+including whitespace and line endings. The todo check compares the complete
+list, including item fields and order. Copy the values from the last successful
+read without conversion.
+
+The server checks under its per-owner write lock before replacement. A mismatch
+fails with 409 and produces no write or change event. Omitting the check keeps
+replacement behavior and permits stale content to overwrite newer content.
+These checks do not detect an ABA change, where content changes and then returns
+to the exact last-read value. External tools that write shared plan files do
+not participate in this in-process lock.
+
+| Failure | HTTP status |
+| --- | --- |
+| invalid selector, missing input, invalid field type, invalid text, item cap | 400 |
+| authentication required | 401 |
+| unknown configured project, unresolved owner, missing item or plan file | 404 |
+| last-read content mismatch | 409 |
+| malformed storage or I/O failure | 500 |
+| unavailable control-service dependencies | 503 through the control service |
+
+Domain HTTP errors contain `error` as a string. For a stale note:
+
+```json
+{"error":"Project note changed; reload before saving"}
+```
+
+Authentication and body-parser failures can have different response shapes.
+The managed tool returns operational failures in its JSON envelope, usually
+over HTTP 200 after callback authentication. It does not include the domain
+status number in `error`. A domain 409 becomes `kind: "usage"`:
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "action": "notes.update",
+  "error": {
+    "message": "Project note changed; reload before saving",
+    "kind": "usage"
+  }
+}
+```
+
+### 2-session conflict example
+
+`v1`, `v2`, and `v3` here are literal note bodies. Both sessions resolve to
+the same owner and read `note-1` with body `v1`.
+
+1. Session A sends `notes.update` with `body: "v2"` and `expectedBody: "v1"`.
+   The write succeeds.
+2. Session B sends `notes.update` with `body: "v3"` and `expectedBody: "v1"`.
+   The server rejects the stale replacement with the domain 409 conflict above.
+   The saved body stays `v2`. No write or change event occurs for B's request.
+3. Session B reads the note again. It receives `v2`. B can prepare a new edit
+   and use `expectedBody: "v2"` for the next conditional save.
+
+The same sequence applies to 2 authenticated HTTP clients using the note PATCH
+route. The HTTP client receives status 409; the tool receives `ok: false`.
+Re-read before retrying. Removing the precondition would permit replacement.
 
 ## Related
 

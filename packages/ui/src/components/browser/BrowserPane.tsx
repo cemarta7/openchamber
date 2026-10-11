@@ -65,6 +65,8 @@ export type BrowserPaneProps = {
   initialUrl: string;
   directory: string;
   tabID: string;
+  /** The session whose agent opened this tab; null for the user's own tab. */
+  ownerSessionId: string | null;
 };
 
 /**
@@ -137,7 +139,7 @@ const revealStageForCapture = (stage: HTMLElement | null): (() => void) => {
   return () => { stage.style.cssText = previousStyle; };
 };
 
-const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tabID }) => {
+const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tabID, ownerSessionId }) => {
   const { t } = useI18n();
   const { currentTheme } = useThemeSystem();
   const webviewRef = React.useRef<WebviewElement | null>(null);
@@ -548,6 +550,11 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
     if (!script) throw new Error(`Unsupported browser action: ${action}`);
 
     if (action === 'browser.click' || action === 'browser.type') {
+      // Focus goes back to the user when the action ends; without this the
+      // page sees that as a blur and closes the picker the click just opened.
+      await invokeDesktopCommand('desktop_browser_keep_page_focused', {
+        webContentsId: webview.getWebContentsId(),
+      }).catch(() => undefined);
       webview.focus({ preventScroll: true });
     }
     const result = await webview.executeJavaScript(script, true);
@@ -597,8 +604,14 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
   }, []);
 
   React.useEffect(
-    () => registerBrowserController({ tabId: tabID, describe: describeTab, run: runControlAction }),
-    [describeTab, runControlAction, tabID],
+    () => registerBrowserController({
+      tabId: tabID,
+      directory: tabDirectory,
+      ownerSessionId,
+      describe: describeTab,
+      run: runControlAction,
+    }),
+    [describeTab, ownerSessionId, runControlAction, tabDirectory, tabID],
   );
 
   // Leaving the tab must not strand an overlay or live style overrides on the page.
