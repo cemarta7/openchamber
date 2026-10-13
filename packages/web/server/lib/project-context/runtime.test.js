@@ -33,37 +33,42 @@ describe('atomic todo mutations', () => {
     });
     await announcing.saveTodos(PROJECT_ID, [{ id: 'completed', text: 'same', completed: true, createdAt: 1 }]);
     changes.length = 0;
-    const [first, legacy, third] = await Promise.all([
-      announcing.createTodoWithResult(PROJECT_ID, { text: ' same ' }),
+    const [first, second, third] = await Promise.all([
+      announcing.createTodo(PROJECT_ID, { text: ' same ' }),
       announcing.createTodo(PROJECT_ID, { text: 'same' }),
-      announcing.createTodoWithResult(PROJECT_ID, { text: 'same' }),
+      announcing.createTodo(PROJECT_ID, { text: 'same' }),
     ]);
-    expect(first.todo.id).toBe('todo-1');
-    expect(third.todo.id).toBe('todo-3');
     expect(first.todo).toEqual({ id: 'todo-1', text: 'same', completed: false, createdAt: expect.any(Number) });
     expect(first.context.todos).toEqual([first.todo, { id: 'completed', text: 'same', completed: true, createdAt: 1 }]);
-    expect(legacy.todos.map((todo) => todo.id)).toEqual(['todo-1', 'todo-2', 'completed']);
-    expect(legacy.todo).toBeUndefined();
-    expect(legacy.context).toBeUndefined();
+    expect(second.context.todos.map((todo) => todo.id)).toEqual(['todo-1', 'todo-2', 'completed']);
+    expect(third.todo.id).toBe('todo-3');
     expect(third.context.todos.map((todo) => todo.id)).toEqual(['todo-1', 'todo-2', 'todo-3', 'completed']);
     expect(third.context.todos.find((todo) => todo.id === third.todo.id)).toEqual(third.todo);
     expect((await announcing.readContext(PROJECT_ID)).todos).toEqual(third.context.todos);
     expect(changes).toEqual([PROJECT_ID, PROJECT_ID, PROJECT_ID]);
   });
 
-  test('both create result contracts reject failed writes without returning or notifying', async () => {
+  test('a todo created as done goes to the end', async () => {
+    await runtime.createTodo(PROJECT_ID, { text: 'open' });
+    const { todo, context } = await runtime.createTodo(PROJECT_ID, { text: 'logged', completed: true });
+    await runtime.createTodo(PROJECT_ID, { text: 'next' });
+    expect(todo.completed).toBe(true);
+    expect(context.todos.at(-1)).toEqual(todo);
+    expect((await runtime.readContext(PROJECT_ID)).todos.map((entry) => entry.text)).toEqual(['open', 'next', 'logged']);
+  });
+
+  test('a failed or refused create writes nothing and announces nothing', async () => {
     const changes = [];
     const guarded = createProjectContextRuntime({
       fsPromises: { ...fsPromises, rename: async () => { throw new Error('commit failed'); } },
       path, projectsDirPath, createId: () => `todo-${++idCounter}`, onChanged: (id) => changes.push(id),
     });
-    await expect(guarded.createTodoWithResult(PROJECT_ID, { text: 'new' })).rejects.toThrow('commit failed');
-    await expect(guarded.createTodo(PROJECT_ID, { text: 'legacy' })).rejects.toThrow('commit failed');
+    await expect(guarded.createTodo(PROJECT_ID, { text: 'new' })).rejects.toThrow('commit failed');
     expect((await guarded.readContext(PROJECT_ID)).todos).toEqual([]);
     expect(changes).toEqual([]);
-    await expect(guarded.createTodoWithResult(PROJECT_ID, { text: '' })).rejects.toMatchObject({ status: 400 });
+    await expect(guarded.createTodo(PROJECT_ID, { text: '' })).rejects.toMatchObject({ status: 400 });
     await runtime.saveTodos(PROJECT_ID, Array.from({ length: 500 }, (_, index) => ({ id: `t${index}`, text: 'todo', createdAt: 1 })));
-    await expect(guarded.createTodoWithResult(PROJECT_ID, { text: 'overflow' })).rejects.toMatchObject({ status: 400 });
+    await expect(guarded.createTodo(PROJECT_ID, { text: 'overflow' })).rejects.toMatchObject({ status: 400 });
   });
 
   test('stores original completion, reopening and creation order while preserving peers', async () => {
@@ -93,8 +98,7 @@ describe('atomic todo mutations', () => {
     expect((await runtime.updateTodo(PROJECT_ID, 'b', { completed: false })).todos.at(-1).id).toBe('b');
   });
   test('creates stable server ids, patches fields, reopens and deletes one item', async () => {
-    const first = await runtime.createTodo(PROJECT_ID, { text: ' one ' });
-    const item = first.todos[0];
+    const { todo: item } = await runtime.createTodo(PROJECT_ID, { text: ' one ' });
     await runtime.createTodo(PROJECT_ID, { text: 'two' });
     await runtime.updateTodo(PROJECT_ID, item.id, { completed: true });
     const edited = await runtime.updateTodo(PROJECT_ID, item.id, { text: 'edited' });
@@ -123,25 +127,6 @@ describe('atomic todo mutations', () => {
     expect(after.notes).toEqual(before.notes);
   });
 
-  test('rejects stale bulk writes in either ordering and preserves legacy replacement', async () => {
-    const initial = await runtime.createTodo(PROJECT_ID, { text: 'one' });
-    const id = initial.todos[0].id;
-    const results = await Promise.allSettled([
-      runtime.createTodo(PROJECT_ID, { text: 'agent' }),
-      runtime.saveTodos(PROJECT_ID, [], { expectedTodos: initial.todos }),
-    ]);
-    expect(results[1]).toMatchObject({ status: 'rejected', reason: { status: 409 } });
-    expect((await runtime.readContext(PROJECT_ID)).todos).toHaveLength(2);
-    const confirmed = (await runtime.readContext(PROJECT_ID)).todos;
-    await Promise.all([
-      runtime.saveTodos(PROJECT_ID, [...confirmed].reverse(), { expectedTodos: confirmed }),
-      runtime.updateTodo(PROJECT_ID, id, { completed: true }),
-    ]);
-    expect((await runtime.readContext(PROJECT_ID)).todos.find((todo) => todo.id === id).completed).toBe(true);
-    await runtime.saveTodos(PROJECT_ID, []);
-    expect((await runtime.readContext(PROJECT_ID)).todos).toEqual([]);
-  });
-
   test('rejects invalid items and capacity overflow', async () => {
     for (const text of ['', '   ', 12, 'x'.repeat(1001)]) {
       await expect(runtime.createTodo(PROJECT_ID, { text })).rejects.toMatchObject({ status: 400 });
@@ -153,7 +138,7 @@ describe('atomic todo mutations', () => {
     expect((await runtime.readContext(PROJECT_ID)).todos).toHaveLength(500);
   });
 
-  test('failed commits, malformed reads and stale writes emit no change', async () => {
+  test('failed commits and malformed reads emit no change', async () => {
     const changes = [];
     let failRename = false;
     const guarded = createProjectContextRuntime({
@@ -163,12 +148,11 @@ describe('atomic todo mutations', () => {
       } },
       path, projectsDirPath, createId: () => 'todo-1', onChanged: (id) => changes.push(id),
     });
-    const initial = await guarded.createTodo(PROJECT_ID, { text: 'keep' });
+    const { context: initial } = await guarded.createTodo(PROJECT_ID, { text: 'keep' });
     changes.length = 0;
     failRename = true;
     await expect(guarded.updateTodo(PROJECT_ID, 'todo-1', { completed: true })).rejects.toThrow('commit failed');
     expect((await guarded.readContext(PROJECT_ID)).todos).toEqual(initial.todos);
-    await expect(guarded.saveTodos(PROJECT_ID, [], { expectedTodos: [] })).rejects.toMatchObject({ status: 409 });
     await fsPromises.writeFile(contextPath(), '{ malformed', 'utf8');
     await expect(guarded.createTodo(PROJECT_ID, { text: 'new' })).rejects.toThrow('malformed');
     expect(changes).toEqual([]);

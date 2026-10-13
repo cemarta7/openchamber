@@ -3,7 +3,10 @@ import { resolveProjectContextId, type ProjectRef } from './projectContextApi';
 import { getRuntimeKey } from './runtime-switch';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 
-/** Refresh one visible owner through the existing control stream, never a poller. */
+/**
+ * Refresh one visible owner through the existing control stream, never a
+ * poller. `read` is what a refresh does; by default it reloads the store.
+ */
 export const observeProjectContext = (
   project: ProjectRef,
   read: () => Promise<void> = () => useProjectContextStore.getState().load(project, { force: true }),

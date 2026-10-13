@@ -14,7 +14,6 @@
 
 import { asNonEmptyString, isRecord as isObjectRecord } from '../shared/guards.js';
 import { projectConfigFileStemOf } from '../projects/project-id.js';
-import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 
 const optionalTextInput = z.string().optional();
@@ -491,37 +490,37 @@ export const createProjectContextRuntime = (deps) => {
     onChanged?.(sanitizeProjectId(projectId));
   };
 
-  const saveTodos = async (projectId, todos, options = {}) => {
-    if (options.expectedTodos !== undefined && !Array.isArray(options.expectedTodos)) {
-      throw mutationError('expectedTodos must be an array', 400);
-    }
+  const saveTodos = async (projectId, todos) => {
     return withWriteLock(projectId, async () => {
       const now = Date.now();
       const current = await readStoredContext(projectId);
-      if (options.expectedTodos !== undefined && !isDeepStrictEqual(options.expectedTodos, current.todos)) {
-        throw mutationError('Project todos changed; reload before saving', 409);
-      }
       const next = { ...current, todos: sanitizeTodos(todos, now) };
       await writeContext(projectId, next);
       return next;
     });
   };
 
-  const createTodoWithResult = async (projectId, value) => {
+  /**
+   * Adds one todo, an open one ahead of the completed ones and a done one at
+   * the end; answers with it and the committed context. The panel names the id it already shows, so a check
+   * made before this answer arrives addresses the same todo; a taken or
+   * missing id gets a fresh one.
+   */
+  const createTodo = async (projectId, value) => {
     const text = todoText(value?.text);
+    const requestedId = asNonEmptyString(value?.id);
     return withWriteLock(projectId, async () => {
       const current = await readStoredContext(projectId);
       if (current.todos.length >= PROJECT_TODO_MAX_ITEMS) {
         throw mutationError(`A project can hold at most ${PROJECT_TODO_MAX_ITEMS} todos`, 400);
       }
-      const todo = { id: idFactory(), text, completed: false, createdAt: Date.now() };
-      const next = { ...current, todos: insertTodoBeforeCompleted(current.todos, todo) };
+      const id = requestedId && !current.todos.some((todo) => todo.id === requestedId) ? requestedId : idFactory();
+      const todo = { id, text, completed: value?.completed === true, createdAt: Date.now() };
+      const next = { ...current, todos: todo.completed ? [...current.todos, todo] : insertTodoBeforeCompleted(current.todos, todo) };
       await writeContext(projectId, next);
       return { todo, context: next };
     });
   };
-
-  const createTodo = async (projectId, value) => (await createTodoWithResult(projectId, value)).context;
 
   const updateTodo = async (projectId, todoId, patch) => {
     const id = asNonEmptyString(todoId);
@@ -995,7 +994,6 @@ export const createProjectContextRuntime = (deps) => {
     readContext,
     saveTodos,
     createTodo,
-    createTodoWithResult,
     updateTodo,
     deleteTodo,
     createNote,

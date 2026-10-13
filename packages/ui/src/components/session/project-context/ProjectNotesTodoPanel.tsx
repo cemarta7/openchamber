@@ -5,7 +5,7 @@ import { Icon } from '@/components/icon/Icon';
 import type { IconName } from '@/components/icon/icons';
 import { Input } from '@/components/ui/input';
 import { isRightToLeft, useI18n } from '@/lib/i18n';
-import { resolveProjectContextId, type ProjectRef, type ProjectTodoItem } from '@/lib/projectContextApi';
+import { resolveProjectContextId, type ProjectRef, type ProjectTodoChange, type ProjectTodoItem } from '@/lib/projectContextApi';
 import { observeProjectContext } from '@/lib/projectContextSync';
 import { cn } from '@/lib/utils';
 import { selectProjectMemoryForPath, useAgentMemoryStore } from '@/stores/useAgentMemoryStore';
@@ -22,7 +22,6 @@ import { useInContextPanelHeader } from '@/components/layout/contextPanelHeaderS
 import { useProjectTodoSend } from './useProjectTodoSend';
 import { fetchSessionKnowledgeSummary, setSessionProjectContextPin, type SessionProjectContextPins } from '@/lib/sessionKnowledgeApi';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 
 /** Lazy: the plan editor is a large view, and most panel visits never open it. */
 const PlanView = React.lazy(() => import('@/components/views/PlanView').then((module) => ({ default: module.PlanView })));
@@ -43,7 +42,6 @@ interface ProjectNotesTodoPanelProps {
 type ProjectContextTab = 'notes' | 'todos' | 'plans' | 'memory';
 
 const TAB_ORDER: ProjectContextTab[] = ['notes', 'todos', 'plans', 'memory'];
-const subscribeRuntime = (onChange: () => void) => subscribeRuntimeEndpointChanged(onChange);
 
 /** Wide enough for the longest section label, narrow enough to leave the
     content column usable in a half-width panel. */
@@ -89,45 +87,34 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
 }) => {
   const inPanelHeader = useInContextPanelHeader();
   const { t } = useI18n();
-  const activeRuntimeKey = React.useSyncExternalStore(subscribeRuntime, getRuntimeKey, getRuntimeKey);
 
   const projectContextId = React.useMemo(() => resolveProjectContextId(projectRef), [projectRef]);
   const contextEntry = useProjectContextStore(
     (state) => (projectContextId ? state.entries[projectContextId] : undefined) ?? EMPTY_PROJECT_CONTEXT_ENTRY,
   );
   const saveTodos = useProjectContextStore((state) => state.saveTodos);
-  const createTodo = useProjectContextStore((state) => state.createTodo);
-  const updateTodo = useProjectContextStore((state) => state.updateTodo);
-  const deleteTodo = useProjectContextStore((state) => state.deleteTodo);
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const currentSessionDirectory = useSessionUIStore((state) => state.currentSessionDirectory);
   const newSessionDraft = useSessionUIStore((state) => state.newSessionDraft);
   const setDraftProjectContextPin = useSessionUIStore((state) => state.setDraftProjectContextPin);
-  const pinScope = JSON.stringify([activeRuntimeKey, currentSessionDirectory, currentSessionId, projectContextId]);
-  const currentPinScopeRef = React.useRef(pinScope);
-  currentPinScopeRef.current = pinScope;
-  const [sessionPins, setSessionPins] = React.useState<SessionProjectContextPins & { scope: string }>({ notes: [], plans: [], scope: '' });
+  const [sessionPins, setSessionPins] = React.useState<SessionProjectContextPins>({ notes: [], plans: [] });
 
   React.useEffect(() => {
     if (newSessionDraft.open) {
+      setSessionPins(newSessionDraft.projectContextPins ?? { notes: [], plans: [] });
       return;
     }
     let cancelled = false;
-    const runtimeKey = getRuntimeKey();
-    const read = async () => {
-      const summary = await fetchSessionKnowledgeSummary(currentSessionDirectory, currentSessionId, { fresh: true });
-      if (!cancelled && summary && runtimeKey === getRuntimeKey()) {
+    void fetchSessionKnowledgeSummary(currentSessionDirectory, currentSessionId).then((summary) => {
+      if (!cancelled) {
         setSessionPins({
-          scope: pinScope,
           notes: summary.notes.map((note) => note.id),
           plans: summary.plans.map((plan) => plan.id),
         });
       }
-    };
-    const release = projectRef && visible ? observeProjectContext(projectRef, read) : () => {};
-    if (!projectRef && visible) void read();
-    return () => { cancelled = true; release(); };
-  }, [activeRuntimeKey, currentSessionDirectory, currentSessionId, newSessionDraft.open, pinScope, projectRef, visible]);
+    });
+    return () => { cancelled = true; };
+  }, [currentSessionDirectory, currentSessionId, newSessionDraft.open, newSessionDraft.projectContextPins]);
 
   const toggleSessionPin = React.useCallback(async (kind: 'note' | 'plan', id: string, pinned: boolean) => {
     if (newSessionDraft.open) {
@@ -136,15 +123,13 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
     }
     if (!currentSessionId || !currentSessionDirectory) return false;
     const next = await setSessionProjectContextPin(currentSessionDirectory, currentSessionId, kind, id, pinned);
-    if (!next || currentPinScopeRef.current !== pinScope) return false;
-    setSessionPins({ ...next, scope: pinScope });
+    if (!next) return false;
+    setSessionPins(next);
     return true;
-  }, [currentSessionDirectory, currentSessionId, newSessionDraft.open, pinScope, setDraftProjectContextPin]);
+  }, [currentSessionDirectory, currentSessionId, newSessionDraft.open, setDraftProjectContextPin]);
 
-  const visiblePins = newSessionDraft.open ? newSessionDraft.projectContextPins
-    : sessionPins.scope === pinScope ? sessionPins : null;
-  const pinnedNoteIds = React.useMemo(() => new Set(visiblePins?.notes), [visiblePins?.notes]);
-  const pinnedPlanIds = React.useMemo(() => new Set(visiblePins?.plans), [visiblePins?.plans]);
+  const pinnedNoteIds = React.useMemo(() => new Set(sessionPins.notes), [sessionPins.notes]);
+  const pinnedPlanIds = React.useMemo(() => new Set(sessionPins.plans), [sessionPins.plans]);
 
   // The whole feature is one switch: with memory off there is nothing for the
   // agent to manage, so showing the user what is stored would be pointless.
@@ -271,7 +256,7 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
       return;
     }
     return observeProjectContext(projectRef);
-  }, [activeRuntimeKey, projectRef, visible]);
+  }, [projectRef, visible]);
 
   // Surface a load failure once. The store keeps whatever it already had, so
   // the panel never blanks out over an unreachable server.
@@ -322,35 +307,20 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
   }, [activeTab, counts, setStoredTab, trimmedQuery]);
 
   const handlePersistTodos = React.useCallback(
-    (nextTodos: ProjectTodoItem[]) => {
+    (nextTodos: ProjectTodoItem[], change?: ProjectTodoChange) => {
       if (!projectRef) {
         return;
       }
       // The store owns per-project write serialization and rollback; the panel
       // only decides what to persist and how to report a failure.
-      void saveTodos(projectRef, nextTodos, contextEntry.todos).then((saved) => {
+      void saveTodos(projectRef, nextTodos, change).then((saved) => {
         if (!saved) {
           toast.error(t('rightSidebar.contextNotesTodo.toast.saveNotesFailed'));
         }
       });
     },
-    [contextEntry.todos, projectRef, saveTodos, t]
+    [projectRef, saveTodos, t]
   );
-
-  const reportTodoWrite = React.useCallback(async (writing: Promise<boolean>) => {
-    const saved = await writing;
-    if (!saved) toast.error(t('rightSidebar.contextNotesTodo.toast.saveNotesFailed'));
-    return saved;
-  }, [t]);
-  const handleCreateTodo = React.useCallback((text: string) => (
-    projectRef ? reportTodoWrite(createTodo(projectRef, text)) : Promise.resolve(false)
-  ), [createTodo, projectRef, reportTodoWrite]);
-  const handleUpdateTodo = React.useCallback((id: string, completed: boolean) => {
-    if (projectRef) void reportTodoWrite(updateTodo(projectRef, id, { completed }));
-  }, [projectRef, reportTodoWrite, updateTodo]);
-  const handleDeleteTodo = React.useCallback((id: string) => {
-    if (projectRef) void reportTodoWrite(deleteTodo(projectRef, id));
-  }, [deleteTodo, projectRef, reportTodoWrite]);
 
   /**
    * The sidebar entries. Icons are worth their width here: a vertical list has
@@ -529,9 +499,6 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
             canCreateWorktree={canCreateWorktree}
             sendingTodoId={send.sendingTodoId}
             onPersistTodos={handlePersistTodos}
-            onCreateTodo={handleCreateTodo}
-            onUpdateTodo={handleUpdateTodo}
-            onDeleteTodo={handleDeleteTodo}
             onSendToCurrentSession={send.sendToCurrentSession}
             onSendToNewSession={send.sendToNewSession}
             onSendToNewWorktreeSession={send.sendToNewWorktreeSession}

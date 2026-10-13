@@ -28,7 +28,7 @@ const NoteRow: React.FC<{
   pinned: boolean;
   expanded: boolean;
   onToggleExpanded: () => void;
-  onSaveBody: (noteId: string, body: string, expectedBody: string) => Promise<boolean>;
+  onSaveBody: (noteId: string, body: string) => void;
   onTogglePinned: () => void;
   onDelete: () => void;
 }> = ({ note, pinned, expanded, onToggleExpanded, onSaveBody, onTogglePinned, onDelete }) => {
@@ -36,29 +36,6 @@ const NoteRow: React.FC<{
   const [draft, setDraft] = React.useState(note.body);
   const lastSavedRef = React.useRef(note.body);
   const debounceRef = React.useRef<number | null>(null);
-  const saveChainRef = React.useRef(Promise.resolve());
-  const requestedBodyRef = React.useRef<string | null>(null);
-  const draftRef = React.useRef(draft);
-  draftRef.current = draft;
-
-  const saveBody = React.useCallback((body: string) => {
-    if (requestedBodyRef.current === body) return;
-    requestedBodyRef.current = body;
-    saveChainRef.current = saveChainRef.current.then(async () => {
-      if (body.trim() === lastSavedRef.current) {
-        if (requestedBodyRef.current === body) requestedBodyRef.current = null;
-        return;
-      }
-      const saved = await onSaveBody(note.id, body, lastSavedRef.current);
-      if (saved) {
-        lastSavedRef.current = body.trim();
-        if (draftRef.current === body) setDraft(body.trim());
-      }
-      if (requestedBodyRef.current === body) {
-        requestedBodyRef.current = null;
-      }
-    });
-  }, [note.id, onSaveBody]);
 
   const cancelDebounce = React.useCallback(() => {
     if (debounceRef.current !== null) {
@@ -89,11 +66,12 @@ const NoteRow: React.FC<{
       if (!draft.trim()) {
         return;
       }
-      saveBody(draft);
+      lastSavedRef.current = draft;
+      onSaveBody(note.id, draft);
     }, NOTE_SAVE_DEBOUNCE_MS);
 
     return cancelDebounce;
-  }, [cancelDebounce, draft, saveBody]);
+  }, [cancelDebounce, draft, note.id, onSaveBody]);
 
   React.useEffect(() => cancelDebounce, [cancelDebounce]);
 
@@ -107,8 +85,9 @@ const NoteRow: React.FC<{
       setDraft(lastSavedRef.current);
       return;
     }
-    saveBody(draft);
-  }, [cancelDebounce, draft, saveBody]);
+    lastSavedRef.current = draft;
+    onSaveBody(note.id, draft);
+  }, [cancelDebounce, draft, note.id, onSaveBody]);
 
   const sourceLabel = note.source === 'selection'
     ? t('rightSidebar.contextNotesTodo.notes.source.selection')
@@ -255,12 +234,12 @@ export const NotesSection: React.FC<{
   );
 
   const handleSaveBody = React.useCallback(
-    async (noteId: string, body: string, expectedBody: string) => {
-      const ok = await saveNoteBody(projectRef, noteId, body, expectedBody);
-      if (!ok) {
-        reportFailure(t('rightSidebar.contextNotesTodo.toast.saveNotesFailed'));
-      }
-      return ok;
+    (noteId: string, body: string) => {
+      void saveNoteBody(projectRef, noteId, body).then((ok: boolean) => {
+        if (!ok) {
+          reportFailure(t('rightSidebar.contextNotesTodo.toast.saveNotesFailed'));
+        }
+      });
     },
     [projectRef, reportFailure, saveNoteBody, t]
   );

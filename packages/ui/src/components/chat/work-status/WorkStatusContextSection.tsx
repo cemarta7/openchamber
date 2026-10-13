@@ -26,16 +26,12 @@ import { resolveDraftPinnedKnowledge } from './draftKnowledge';
 import { changeRequestCopy } from '@/lib/source-control/changeRequestCopy';
 import { refTintStyle } from '@/lib/source-control/prVisualState';
 import { cn } from '@/lib/utils';
-import { useProjectContextOwner } from '@/hooks/useProjectContextOwner';
-import { observeProjectContext } from '@/lib/projectContextSync';
-import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 
 
 type Props = {
   sessionId: string | null;
   directory: string | null;
 };
-const subscribeRuntime = (onChange: () => void) => subscribeRuntimeEndpointChanged(onChange);
 
 /**
  * What is loaded into the agent's context: the GitHub threads this session was
@@ -48,7 +44,6 @@ const subscribeRuntime = (onChange: () => void) => subscribeRuntimeEndpointChang
  */
 export const WorkStatusContextSection: React.FC<Props> = ({ sessionId, directory }) => {
   const { t } = useI18n();
-  const activeRuntimeKey = React.useSyncExternalStore(subscribeRuntime, getRuntimeKey, getRuntimeKey);
 
   const session = useSession(sessionId ?? '', directory ?? undefined);
   const newSessionDraft = useSessionUIStore((state) => state.newSessionDraft);
@@ -84,10 +79,8 @@ export const WorkStatusContextSection: React.FC<Props> = ({ sessionId, directory
    * rather than from the notes panel's store, because this must be right
    * whether or not that panel has ever been opened.
    */
-  const knowledgeOwner = useProjectContextOwner(directory);
-  const knowledgeScope = JSON.stringify([activeRuntimeKey, directory, sessionId, knowledgeOwner?.path]);
-  const [knowledge, setKnowledge] = React.useState<SessionKnowledgeSummary & { scope: string }>(
-    { notes: [], plans: [], memory: { global: 0, project: 0 }, scope: '' },
+  const [knowledge, setKnowledge] = React.useState<SessionKnowledgeSummary>(
+    { notes: [], plans: [], memory: { global: 0, project: 0 } },
   );
 
   // Re-read when source content or memory changes, not only when the session does.
@@ -119,26 +112,21 @@ export const WorkStatusContextSection: React.FC<Props> = ({ sessionId, directory
 
   React.useEffect(() => {
     let cancelled = false;
-    const runtimeKey = getRuntimeKey();
-    const read = async () => {
-      const summary = await fetchSessionKnowledgeSummary(directory, sessionId, { fresh: true });
-      if (!cancelled && summary && runtimeKey === getRuntimeKey()) setKnowledge({ ...summary, scope: knowledgeScope });
-    };
-    const release = knowledgeOwner ? observeProjectContext(knowledgeOwner, read) : () => {};
-    if (!knowledgeOwner) void read();
-    return () => { cancelled = true; release(); };
-  }, [activeRuntimeKey, directory, sessionId, session, contextEntries, memoryProject, memoryGlobal, knowledgeOwner, knowledgeScope]);
+    void fetchSessionKnowledgeSummary(directory, sessionId).then((summary) => {
+      if (!cancelled) setKnowledge(summary);
+    });
+    return () => { cancelled = true; };
+  }, [directory, sessionId, session, contextEntries, memoryProject, memoryGlobal]);
 
   const visibleKnowledge = React.useMemo<SessionKnowledgeSummary>(() => {
-    const current = knowledge.scope === knowledgeScope ? knowledge : { notes: [], plans: [], memory: { global: 0, project: 0 } };
-    if (!isDraft) return current;
+    if (!isDraft) return knowledge;
     const pinned = resolveDraftPinnedKnowledge(
       draftContextEntry?.notes ?? [],
       draftContextEntry?.plans ?? [],
       newSessionDraft.projectContextPins ?? { notes: [], plans: [] },
     );
-    return { ...current, ...pinned };
-  }, [draftContextEntry?.notes, draftContextEntry?.plans, isDraft, knowledge, knowledgeScope, newSessionDraft.projectContextPins]);
+    return { ...knowledge, ...pinned };
+  }, [draftContextEntry?.notes, draftContextEntry?.plans, isDraft, knowledge, newSessionDraft.projectContextPins]);
 
   // Unpinning from here, like the pinned-messages section: a panel that says
   // what is attached should be able to detach it, or the user has to go find
@@ -150,9 +138,9 @@ export const WorkStatusContextSection: React.FC<Props> = ({ sessionId, directory
     }
     if (!directory || !sessionId) return;
     void setSessionProjectContextPin(directory, sessionId, 'note', noteId, false).then((pins) => {
-      if (pins) setKnowledge((current) => current.scope === knowledgeScope ? { ...current, notes: current.notes.filter((note) => note.id !== noteId) } : current);
+      if (pins) setKnowledge((current) => ({ ...current, notes: current.notes.filter((note) => note.id !== noteId) }));
     });
-  }, [directory, isDraft, knowledgeScope, sessionId, setDraftProjectContextPin]);
+  }, [directory, isDraft, sessionId, setDraftProjectContextPin]);
   const unpinPlan = React.useCallback((planId: string) => {
     if (isDraft) {
       setDraftProjectContextPin('plan', planId, false);
@@ -160,9 +148,9 @@ export const WorkStatusContextSection: React.FC<Props> = ({ sessionId, directory
     }
     if (!directory || !sessionId) return;
     void setSessionProjectContextPin(directory, sessionId, 'plan', planId, false).then((pins) => {
-      if (pins) setKnowledge((current) => current.scope === knowledgeScope ? { ...current, plans: current.plans.filter((plan) => plan.id !== planId) } : current);
+      if (pins) setKnowledge((current) => ({ ...current, plans: current.plans.filter((plan) => plan.id !== planId) }));
     });
-  }, [directory, isDraft, knowledgeScope, sessionId, setDraftProjectContextPin]);
+  }, [directory, isDraft, sessionId, setDraftProjectContextPin]);
 
   const memoryCount = visibleKnowledge.memory.global + visibleKnowledge.memory.project;
   const pinnedCount = visibleKnowledge.notes.length + visibleKnowledge.plans.length;

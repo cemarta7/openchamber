@@ -124,7 +124,6 @@ import { createProjectContextRuntime } from './lib/project-context/runtime.js';
 import { createAgentMemoryRuntime } from './lib/agent-memory/runtime.js';
 import { createAgentMemoryActions } from './lib/agent-memory/actions.js';
 import { createMemoryProjectResolver } from './lib/agent-memory/project-resolution.js';
-import { createKnowledgeOwnerResolver } from './lib/openchamber-control/knowledge-owner.js';
 import { isAgentMemoryFeatureAvailable } from './lib/agent-memory/feature-flag.js';
 import { createSpacesHost } from './lib/spaces/host.js';
 import { createSpaceArchive } from './lib/spaces/space-archive.js';
@@ -132,7 +131,7 @@ import { readIdleStopSetting, startIdleStop } from './lib/spaces/idle-stop.js';
 import { dockerHostOf } from './lib/spaces/places/ssh-host.js';
 import { SPACE_IDLE_EXIT_CODE } from './lib/spaces/layout.js';
 import { createSwitchController, registerSpaceRoutes } from './lib/spaces/routes.js';
-import { configureGitEnvironment, getWorktrees, isGitRepository, resolvePrimaryWorktreeRoot } from './lib/git/service.js';
+import { configureGitEnvironment, resolvePrimaryWorktreeRoot } from './lib/git/service.js';
 import { createEnvironmentStore } from './lib/environment/store.js';
 import { createEnvironmentRuntime } from './lib/environment/runtime.js';
 import { readOpenCodeServiceEnv } from './lib/environment/opencode-service-env.js';
@@ -1640,17 +1639,6 @@ const resolveMemoryProjectId = createMemoryProjectResolver({
   managedProjectRoots: [...new Set([path.join(OPENCHAMBER_USER_CONFIG_ROOT, 'chats'), OPENCHAMBER_CHATS_DIR])],
 });
 
-const resolveKnowledgeProjectId = createKnowledgeOwnerResolver({
-  listProjectPaths: async () => {
-    const settings = await readSettingsFromDiskMigrated();
-    return sanitizeProjects(settings?.projects || []).map((project) => project.path);
-  },
-  getWorktrees,
-  resolvePrimaryWorktreeRoot,
-  isGitRepository,
-  managedProjectRoots: [...new Set([OPENCHAMBER_CHATS_DIR, path.join(OPENCHAMBER_DEFAULT_CONFIG_ROOT, 'chats')])],
-});
-
 /**
  * Tells open panels that the service changed what it remembers, so what it just
  * stored is visible without reopening anything.
@@ -1797,7 +1785,29 @@ const openChamberControlService = createOpenChamberControlService({
   browserControl: browserControlRouter,
   fileOpen: fileOpenRequester,
   projectContextRuntime,
-  resolveProjectContextId: resolveKnowledgeProjectId,
+  // The resolver session knowledge reads pinned notes and plans through, so
+  // what an agent writes is what the next session is given.
+  resolveProjectContextId: resolveMemoryProjectId,
+  // On by default; a plugin generated before it was switched off must not
+  // keep writing.
+  // Like file.open: every connected window hears it, the ones showing that
+  // project open the plan.
+  showPlan: (request) => {
+    let delivered = 0;
+    for (const client of uiOpenChamberEventClients) {
+      try {
+        writeSseEvent(client, { type: 'openchamber:plan-open-request', properties: request });
+        delivered += 1;
+      } catch {
+        uiOpenChamberEventClients.delete(client);
+      }
+    }
+    return delivered;
+  },
+  isKnowledgeToolEnabled: async () => {
+    const settings = await readSettingsFromDiskMigrated().catch(() => null);
+    return settings?.agentKnowledgeToolEnabled !== false;
+  },
   // The tool is off by default; a plugin generated before it was switched off
   // must not keep paging the user.
   notifyUser: async (input) => {

@@ -12,7 +12,6 @@
  */
 
 import { runtimeFetch } from './runtime-fetch';
-import { getRuntimeKey } from './runtime-switch';
 import { z } from 'zod';
 
 interface SessionKnowledge {
@@ -24,7 +23,11 @@ interface SessionKnowledge {
 
 const EMPTY: SessionKnowledge = { text: '', signature: '' };
 
-/** Pending delivery reports keep the next send from repeating the same block. */
+/**
+ * Delivery reports still on their way to the server, by session. Until one
+ * lands the server still says the session owes the block, so a send right
+ * behind the one that carried it would carry it a second time.
+ */
 const deliveryReports = new Map<string, Promise<void>>();
 
 export const fetchSessionKnowledge = async (
@@ -102,28 +105,27 @@ const EMPTY_SUMMARY: SessionKnowledgeSummary = { notes: [], plans: [], memory: {
 // session opens. One request serves all of them, and its answer stays good for
 // a few seconds; local pin changes drop it immediately.
 const SUMMARY_FRESH_MS = 5_000;
-const summaryCache = new Map<string, { at: number; request: Promise<SessionKnowledgeSummary | null> }>();
+const summaryCache = new Map<string, { at: number; request: Promise<SessionKnowledgeSummary> }>();
 const summaryCacheKey = (directory: string, sessionId: string | null | undefined): string => (
-  `${getRuntimeKey()}\0${directory}\0${sessionId ?? ''}`
+  `${directory}\u0000${sessionId ?? ''}`
 );
 
 const invalidateSummary = (directory: string, sessionId: string | null | undefined): void => {
   summaryCache.delete(summaryCacheKey(directory, sessionId));
 };
 
-/** What the session is carrying, for display. Null means a failed read. */
+/** What the session is carrying, for display. Never throws; shows nothing instead. */
 export const fetchSessionKnowledgeSummary = (
   directory: string | null,
   sessionId?: string | null,
-  options: { fresh?: boolean } = {},
-): Promise<SessionKnowledgeSummary | null> => {
+): Promise<SessionKnowledgeSummary> => {
   if (!directory) {
     return Promise.resolve(EMPTY_SUMMARY);
   }
   const key = summaryCacheKey(directory, sessionId);
   const cached = summaryCache.get(key);
   const now = Date.now();
-  if (!options.fresh && cached && now - cached.at < SUMMARY_FRESH_MS) {
+  if (cached && now - cached.at < SUMMARY_FRESH_MS) {
     return cached.request;
   }
   const request = requestSessionKnowledgeSummary(directory, sessionId);
@@ -134,7 +136,7 @@ export const fetchSessionKnowledgeSummary = (
 const requestSessionKnowledgeSummary = async (
   directory: string,
   sessionId?: string | null,
-): Promise<SessionKnowledgeSummary | null> => {
+): Promise<SessionKnowledgeSummary> => {
   try {
     const params = new URLSearchParams({ directory });
     if (sessionId) params.set('sessionId', sessionId);
@@ -143,15 +145,19 @@ const requestSessionKnowledgeSummary = async (
       { cache: 'no-store' },
     );
     if (!response.ok) {
-      return null;
+      return EMPTY_SUMMARY;
     }
-    return z.object({
-      notes: z.array(z.object({ id: z.string(), body: z.string() })),
-      plans: z.array(z.object({ id: z.string(), title: z.string() })),
-      memory: z.object({ global: z.number(), project: z.number() }),
-    }).parse(await response.json());
+    const payload = await response.json() as Partial<SessionKnowledgeSummary> | null;
+    return {
+      notes: Array.isArray(payload?.notes) ? payload.notes : [],
+      plans: Array.isArray(payload?.plans) ? payload.plans : [],
+      memory: {
+        global: typeof payload?.memory?.global === 'number' ? payload.memory.global : 0,
+        project: typeof payload?.memory?.project === 'number' ? payload.memory.project : 0,
+      },
+    };
   } catch {
-    return null;
+    return EMPTY_SUMMARY;
   }
 };
 

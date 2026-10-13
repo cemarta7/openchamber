@@ -10,20 +10,6 @@
 export const OPENCHAMBER_CONTROL_ACTION_DEFINITIONS = Object.freeze([
   { action: 'projects.list', title: 'List configured projects', description: 'List configured projects; no parameters' },
   { action: 'models.list', title: 'Show model preferences', description: 'Show default, favorite, and recent model preferences; no parameters' },
-  { action: 'notes.list', title: 'List project notes', description: 'List project notes; scope with projectId or directory, default current session' },
-  { action: 'notes.read', title: 'Read a project note', description: 'Read noteId from notes.list' },
-  { action: 'notes.create', title: 'Create a project note', description: 'Create a project note; requires body, at most 3000 characters; records the calling session as origin' },
-  { action: 'notes.update', title: 'Update a project note', description: 'Replace noteId body, at most 3000 characters; keeps its id and origin; read first and pass its body as expectedBody to reject stale writes' },
-  { action: 'notes.delete', title: 'Delete a project note', description: 'Delete noteId' },
-  { action: 'todos.list', title: 'List project todos', description: 'List project todos with stable ids and completed state; scope with projectId or directory, default current session' },
-  { action: 'todos.create', title: 'Create a project todo', description: 'Create a project todo; requires text, at most 1000 characters; starts incomplete' },
-  { action: 'todos.update', title: 'Update a project todo', description: 'Update todoId; supply text, completed, or both; completed false reopens it' },
-  { action: 'todos.delete', title: 'Delete a project todo', description: 'Delete todoId without changing other todos' },
-  { action: 'plans.list', title: 'List project plans', description: 'List personal and shared plans; scope with projectId or directory, default current session' },
-  { action: 'plans.read', title: 'Read a project plan', description: 'Read planId from plans.list; returns the raw markdown document' },
-  { action: 'plans.create', title: 'Create a project plan', description: 'Create a personal plan; requires title and body; returns a server-generated id' },
-  { action: 'plans.update', title: 'Update a project plan', description: 'Replace planId raw markdown, at most 200000 characters; read first and pass its raw as expectedRaw to reject stale writes' },
-  { action: 'plans.delete', title: 'Delete a project plan', description: 'Delete planId and its markdown; supports personal and shared plans' },
   { action: 'session.list', title: 'List sessions', description: 'List sessions; optional projectId or directory, limit (default 10), all, or withStatus' },
   { action: 'session.create', title: 'Create a session', description: 'Create a session in the current directory by default; prompt is optional' },
   { action: 'session.send', title: 'Send a prompt', description: 'Send a new prompt to sessionId; scope with projectId or directory' },
@@ -94,6 +80,25 @@ export const OPENCHAMBER_MEMORY_ACTIONS = Object.freeze(
 );
 
 /**
+ * Project knowledge is its own tool: keeping the Notes, Todos and Plans the
+ * user sees in the panel is a distinct intent from running sessions, and the
+ * user switches it off on its own without losing session control. One small
+ * vocabulary with `kind` keeps the bare verbs unambiguous, the way memory's are.
+ * Plans are markdown files, so reading one and small edits use the agent's
+ * own file tools on the path list gives.
+ */
+export const OPENCHAMBER_KNOWLEDGE_ACTION_DEFINITIONS = Object.freeze([
+  { action: 'knowledge.list', title: 'List project knowledge', description: 'Everything the project keeps in one answer: notes with their text, todos with their state, plans by title with the path of their markdown file. List before you add something, so you do not add it twice' },
+  { action: 'knowledge.save', title: 'Save project knowledge', description: 'Create (no id) or replace (with id) a note, todo or plan; requires kind and body. A plan body is the whole markdown document and starts with a # title line; the answer gives its path. A todo takes completed too, and a todo update may send completed alone. Pass expected when replacing a note or plan' },
+  { action: 'knowledge.delete', title: 'Delete project knowledge', description: 'Delete one note, todo or plan; requires kind and id' },
+  { action: 'knowledge.show', title: 'Show a plan to the user', description: 'Open a plan in front of the user in OpenChamber, where they read it, comment on lines and send it to a session; requires kind plan and id' },
+]);
+
+export const OPENCHAMBER_KNOWLEDGE_ACTIONS = Object.freeze(
+  OPENCHAMBER_KNOWLEDGE_ACTION_DEFINITIONS.map(({ action }) => action),
+);
+
+/**
  * Notify is its own tool so it can stay off by default and disappear
  * completely: an agent that can page the user is a choice the user makes.
  */
@@ -111,14 +116,15 @@ export const OPENCHAMBER_NOTIFY_ACTIONS = Object.freeze(
  * The callback needs this because models routinely drop the namespace: asked
  * for `memory.read` from a tool already called `openchamber_memory`, they send
  * `read`, since the tool's own name appears to have said "memory" already. The
- * name can be unique inside one tool's action set even when several tools
- * accept it, so resolution starts from the tool that asked. Knowledge CRUD
- * shares bare names within openchamber and requires the full action name.
+ * name is unambiguous inside one tool's action set even when it is not across
+ * all of them (`delete` belongs to both schedule and memory), so resolution
+ * starts from the tool that asked.
  */
 const ACTIONS_BY_TOOL = Object.freeze({
   openchamber: OPENCHAMBER_AGENT_TOOL_ACTIONS,
   openchamber_web: OPENCHAMBER_WEB_ACTIONS,
   openchamber_memory: OPENCHAMBER_MEMORY_ACTIONS,
+  openchamber_knowledge: OPENCHAMBER_KNOWLEDGE_ACTIONS,
   openchamber_notify: OPENCHAMBER_NOTIFY_ACTIONS,
 });
 
@@ -166,5 +172,6 @@ export const OPENCHAMBER_ALL_ACTIONS = Object.freeze([
   ...OPENCHAMBER_CONTROL_ACTIONS,
   ...OPENCHAMBER_WEB_ACTIONS,
   ...OPENCHAMBER_MEMORY_ACTIONS,
+  ...OPENCHAMBER_KNOWLEDGE_ACTIONS,
   ...OPENCHAMBER_NOTIFY_ACTIONS,
 ]);

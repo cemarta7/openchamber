@@ -2,8 +2,9 @@ import React, { act } from 'react';
 import { expect, test } from 'bun:test';
 import { Window } from 'happy-dom';
 import { EditorView } from '@codemirror/view';
+import { z } from 'zod';
 
-test('mounted conflicted A survives unmount, B, and return with its error and peer body intact', async () => {
+test('an open plan takes agent saves and file edits while clean and keeps unsaved typing over them', async () => {
   const dom = new Window({ url: 'http://runtime.test' });
   const originals = new Map<string, PropertyDescriptor | undefined>();
   for (const [name, value] of Object.entries({
@@ -20,29 +21,24 @@ test('mounted conflicted A survives unmount, B, and return with its error and pe
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   }
   const previousFetch = globalThis.fetch;
-  const plans = new Map([['A', '# Plan A\n\nOriginal A'], ['B', '# Plan B\n\nOriginal B']]);
-  const link = (id: string) => ({ id, file: `${id}.md`, title: `Plan ${id}`, createdAt: 1, pinned: false });
-  const writes: Array<{ raw: string; expectedRaw: string }> = [];
-  let failPlanRead = false;
+  let stored = '# Plan A\n\nOriginal';
+  const link = { id: 'A', file: 'A.md', title: 'Plan A', createdAt: 1, pinned: false };
+  const writes: string[] = [];
   globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input), 'http://runtime.test');
     if (url.pathname === '/api/fs/home') return Response.json({ home: '/fixture' });
     if (url.pathname === '/api/config/settings') return Response.json({});
     if (url.pathname.endsWith('/event')) return new Response(new ReadableStream(), { headers: { 'Content-Type': 'text/event-stream' } });
-    const id = url.pathname.split('/plans/')[1];
-    if (id) {
+    if (url.pathname.endsWith('/plans/A')) {
       if (init?.method === 'PUT') {
-        const body: { raw: string; expectedRaw: string } = JSON.parse(String(init.body));
-        writes.push(body);
-        if (body.expectedRaw !== plans.get(id)) return Response.json({ error: 'Plan changed; reload before saving' }, { status: 409 });
-        plans.set(id, body.raw);
-        return Response.json({ plan: link(id), raw: body.raw });
+        const { raw } = z.object({ raw: z.string() }).parse(JSON.parse(String(init.body)));
+        writes.push(raw);
+        stored = raw;
+        return Response.json({ plan: link, raw });
       }
-      if (failPlanRead) return Response.json({ error: 'Plan read offline' }, { status: 503 });
-      if (!plans.has(id)) return Response.json({ error: 'Plan not found' }, { status: 404 });
-      return Response.json({ ...link(id), raw: plans.get(id), body: plans.get(id), path: null });
+      return Response.json({ ...link, raw: stored, body: stored, path: null });
     }
-    if (url.pathname.startsWith('/api/project-context/')) return Response.json({ notes: [], todos: [], plans: [...plans.keys()].map(link), sharedPlansDir: null });
+    if (url.pathname.startsWith('/api/project-context/')) return Response.json({ notes: [], todos: [], plans: [link], sharedPlansDir: null });
     return Response.json({ error: 'Unavailable in fixture' }, { status: 503 });
   }, previousFetch);
   const { createRoot } = await import('react-dom/client');
@@ -53,25 +49,13 @@ test('mounted conflicted A survives unmount, B, and return with its error and pe
   const { SyncProvider } = await import('@/sync/sync-context');
   const { opencodeClient } = await import('@/lib/opencode/client');
   const { useProjectContextStore } = await import('@/stores/useProjectContextStore');
-  const { resolveProjectContextId } = await import('@/lib/projectContextApi');
-  const { getSavedPlanDrafts } = await import('@/lib/savedPlanDrafts');
-  const { getRuntimeKey } = await import('@/lib/runtime-switch');
-  const { switchRuntimeEndpoint, getRuntimeApiBaseUrl } = await import('@/lib/runtime-switch');
   const { PlanView } = await import('./PlanView');
   const projectRef = { id: 'plan-fixture', path: '/plan-fixture' };
   const host = document.createElement('div');
   document.body.append(host);
   const root = createRoot(host);
   const apis = createWebAPIs();
-  const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
-  const render = async (id: string | null, owner = projectRef) => {
-    await act(async () => root.render(<I18nProvider><ThemeSystemProvider><RuntimeAPIContext.Provider value={apis}>
-      <SyncProvider sdk={opencodeClient.getSdkClient()} directory="/plan-fixture">
-        {id && <PlanView key={id} savedProjectPlan={{ projectRef: owner, planId: id }} />}
-      </SyncProvider>
-    </RuntimeAPIContext.Provider></ThemeSystemProvider></I18nProvider>));
-    await settle();
-  };
+  const wait = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
   const editor = () => {
     const element = host.querySelector('.cm-editor');
     if (!(element instanceof HTMLElement)) throw new Error(`Editor missing: ${host.textContent}`);
@@ -79,65 +63,39 @@ test('mounted conflicted A survives unmount, B, and return with its error and pe
     if (!view) throw new Error('Editor view missing');
     return view;
   };
-  const draftKey = (id: string) => JSON.stringify(['saved-plan', getRuntimeKey(), resolveProjectContextId(projectRef), id]);
+  // The observer refreshes on focus as it does on a change announcement.
+  const agentWrites = async (raw: string) => {
+    stored = raw;
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await wait(30);
+  };
   try {
     useProjectContextStore.getState().reset();
-    // The plan list is authoritative and contains both existing plans.
-    await useProjectContextStore.getState().load(projectRef);
-    await render('A');
-    expect(editor().state.doc.toString()).toBe(plans.get('A'));
-    const original = plans.get('A');
-    await act(async () => editor().dispatch({ changes: { from: 0, to: editor().state.doc.length, insert: '# Plan A\n\nDIRTY KEEPME' } }));
-    plans.set('A', '# Plan A\n\nPEER CHANGED A');
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 450)); });
-    expect(host.textContent).toContain('Save failed');
-    expect(writes.at(-1)?.expectedRaw).toBe(original);
-    await render(null);
-    await render('B');
-    expect(editor().state.doc.toString()).toBe(plans.get('B'));
-    expect(host.textContent).not.toContain('Save failed');
-    await act(async () => editor().dispatch({ changes: { from: 0, to: editor().state.doc.length, insert: '# Plan B\n\nSaved B' } }));
-    await render(null);
-    await getSavedPlanDrafts().queue.pendingFor(draftKey('B'));
-    expect(plans.get('B')).toBe('# Plan B\n\nSaved B');
-    expect(getSavedPlanDrafts().restore(draftKey('B'))).toBeUndefined();
-    await render('A');
-    expect(editor().state.doc.toString()).toContain('DIRTY KEEPME');
-    expect(host.textContent).toContain('Save failed');
-    expect(host.querySelector('[title="Plan changed; reload before saving"]')).not.toBeNull();
-    expect(plans.get('A')).toBe('# Plan A\n\nPEER CHANGED A');
-    await render(null);
-    failPlanRead = true;
-    await render('A');
-    expect(host.textContent).toContain('Could not load this plan');
-    expect(getSavedPlanDrafts().restore(draftKey('A'))?.content).toContain('DIRTY KEEPME');
-    await render(null);
-    failPlanRead = false;
-    await render('A', { id: 'other-owner', path: '/other-owner' });
-    expect(editor().state.doc.toString()).toBe(plans.get('A'));
-    expect(host.textContent).not.toContain('Save failed');
-    await render(null);
-    const originalRuntime = { apiBaseUrl: getRuntimeApiBaseUrl(), runtimeKey: getRuntimeKey() };
-    await act(async () => switchRuntimeEndpoint({ apiBaseUrl: 'http://other-runtime.test', runtimeKey: 'other-runtime' }));
-    await render('A');
-    expect(editor().state.doc.toString()).toBe(plans.get('A'));
-    expect(host.textContent).not.toContain('Save failed');
-    await render(null);
-    await act(async () => switchRuntimeEndpoint(originalRuntime));
-    await render('A');
-    expect(editor().state.doc.toString()).toContain('DIRTY KEEPME');
-    expect(host.textContent).toContain('Save failed');
-    await render(null);
-    plans.delete('A');
-    const writeCount = writes.length;
-    await render('A');
-    expect(host.textContent).toContain('Could not load this plan');
-    expect(editor().state.doc.toString()).toBe('');
-    expect(host.querySelector('.cm-content')?.getAttribute('contenteditable')).toBe('false');
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 450)); });
-    expect(writes.length).toBe(writeCount);
-    expect(getSavedPlanDrafts().restore(draftKey('A'))).toBeUndefined();
-    expect(plans.has('A')).toBe(false);
+    await act(async () => root.render(<I18nProvider><ThemeSystemProvider><RuntimeAPIContext.Provider value={apis}>
+      <SyncProvider sdk={opencodeClient.getSdkClient()} directory="/plan-fixture">
+        <PlanView savedProjectPlan={{ projectRef, planId: 'A' }} />
+      </SyncProvider>
+    </RuntimeAPIContext.Provider></ThemeSystemProvider></I18nProvider>));
+    await wait(30);
+    expect(editor().state.doc.toString()).toBe('# Plan A\n\nOriginal');
+
+    await agentWrites('# Plan A\n\nAgent edit');
+    expect(editor().state.doc.toString()).toBe('# Plan A\n\nAgent edit');
+    // A file edit sends no announcement; the open plan finds it by checking.
+    stored = '# Plan A\n\n- [x] Agent edit';
+    await wait(2200);
+    expect(editor().state.doc.toString()).toBe('# Plan A\n\n- [x] Agent edit');
+    await agentWrites('# Plan A\n\nAgent edit');
+    // Opening and adopting are reads; neither writes the text back.
+    await wait(450);
+    expect(writes).toEqual([]);
+
+    await act(async () => editor().dispatch({ changes: { from: editor().state.doc.length, insert: '\nMine' } }));
+    await agentWrites('# Plan A\n\nSecond agent edit');
+    expect(editor().state.doc.toString()).toBe('# Plan A\n\nAgent edit\nMine');
+    await wait(450);
+    expect(writes).toEqual(['# Plan A\n\nAgent edit\nMine']);
+    expect(stored).toBe('# Plan A\n\nAgent edit\nMine');
   } finally {
     await act(async () => root.unmount());
     useProjectContextStore.getState().reset();

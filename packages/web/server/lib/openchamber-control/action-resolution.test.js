@@ -13,14 +13,18 @@ describe('a namespace the tool name already implies', () => {
     expect(resolveAgentToolAction('save', 'openchamber_memory')).toEqual({ action: 'memory.save' });
   });
 
-  test('resolves unique bare names and rejects ambiguous knowledge mutations', () => {
+  test('resolves a bare name that is ambiguous only across tools', () => {
+    // `delete` belongs to schedule and to memory; inside one tool it is plain.
     expect(resolveAgentToolAction('delete', 'openchamber_memory')).toEqual({ action: 'memory.delete' });
-    expect(resolveAgentToolAction('delete', 'openchamber').action).toBeUndefined();
-    expect(resolveAgentToolAction('update', 'openchamber').action).toBeUndefined();
-    expect(resolveAgentToolAction('read', 'openchamber').action).toBeUndefined();
-    for (const action of ['schedule.delete', 'notes.delete', 'todos.delete', 'plans.delete', 'schedule.update', 'notes.update', 'todos.update', 'plans.update']) {
-      expect(resolveAgentToolAction(action, 'openchamber')).toEqual({ action });
-    }
+    expect(resolveAgentToolAction('delete', 'openchamber')).toEqual({ action: 'schedule.delete' });
+  });
+
+  test('resolves the knowledge verbs inside their own tool only', () => {
+    expect(resolveAgentToolAction('save', 'openchamber_knowledge')).toEqual({ action: 'knowledge.save' });
+    expect(resolveAgentToolAction('show', 'openchamber_knowledge')).toEqual({ action: 'knowledge.show' });
+    // `delete` is also a memory and schedule verb; inside this tool it is plain.
+    expect(resolveAgentToolAction('delete', 'openchamber_knowledge')).toEqual({ action: 'knowledge.delete' });
+    expect(resolveAgentToolAction('knowledge.list', 'openchamber').error).toBeDefined();
   });
 
   test('keeps a fully qualified action as it is', () => {

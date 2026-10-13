@@ -2,7 +2,7 @@ import { asNonEmptyString } from '../shared/guards.js';
 import path from 'node:path';
 import { OpenCode } from '@opencode/client';
 import { OpenChamberControlError, asControlError } from './error.js';
-import { OPENCHAMBER_ALL_ACTIONS } from './actions.js';
+import { OPENCHAMBER_ALL_ACTIONS, OPENCHAMBER_KNOWLEDGE_ACTIONS } from './actions.js';
 import { writeScreenshot } from './screenshots.js';
 import { createProjectKnowledgeActions } from './project-knowledge.js';
 
@@ -221,6 +221,9 @@ export const createOpenChamberControlService = (dependencies) => {
     sessionLinks = null,
     projectContextRuntime = null,
     resolveProjectContextId = null,
+    isKnowledgeToolEnabled = async () => true,
+    // Puts a plan in front of the user; answers how many windows it reached.
+    showPlan = null,
     // Delivers a dispatched session's result back to the session that asked
     // (`returnResult`); absent means the server cannot offer it.
     dispatchResults = null,
@@ -301,6 +304,8 @@ export const createOpenChamberControlService = (dependencies) => {
   const knowledgeActions = createProjectKnowledgeActions({
     projectContextRuntime,
     resolveProjectContextId,
+    isEnabled: isKnowledgeToolEnabled,
+    showPlan,
     resolveDirectory: (input) => sessionService.resolveDirectory(input),
   });
 
@@ -695,7 +700,7 @@ export const createOpenChamberControlService = (dependencies) => {
       if (!CONTROL_ACTIONS.has(action)) {
         throw new OpenChamberControlError(`Unsupported OpenChamber action: ${action || 'missing'}`, 400);
       }
-      if (/^(notes|todos|plans)\./.test(action)) {
+      if (OPENCHAMBER_KNOWLEDGE_ACTIONS.includes(action)) {
         return await knowledgeActions.execute(action, input, contextDirectory, options.contextSessionId);
       }
       if (action.startsWith('memory.')) {

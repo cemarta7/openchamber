@@ -29,7 +29,7 @@ const isValidationError = (error) => {
 
 const respondWithError = (res, error, fallbackMessage) => {
   const message = error instanceof Error ? error.message : fallbackMessage;
-  if (error?.status === 400 || error?.status === 404 || error?.status === 409) {
+  if (error?.status === 400 || error?.status === 404) {
     return res.status(error.status).json({ error: message });
   }
   if (isValidationError(error)) {
@@ -40,7 +40,7 @@ const respondWithError = (res, error, fallbackMessage) => {
 
 const isValidNoteSource = (value) => value === 'manual' || value === 'selection' || value === 'agent';
 
-const areValidTodos = (value) => (
+const hasValidTodosShape = (value) => (
   Array.isArray(value)
   && value.every((todo) => (
     isObjectRecord(todo)
@@ -67,17 +67,12 @@ export const registerProjectContextRoutes = (app, dependencies) => {
     if (!isObjectRecord(body)) {
       return res.status(400).json({ error: 'Body must be an object' });
     }
-    if (!areValidTodos(body.todos)) {
+    if (!hasValidTodosShape(body.todos)) {
       return res.status(400).json({ error: 'todos must be an array of todo items' });
-    }
-    if (body.expectedTodos !== undefined && !areValidTodos(body.expectedTodos)) {
-      return res.status(400).json({ error: 'expectedTodos must be an array of todo items' });
     }
 
     try {
-      return res.json(await projectContextRuntime.saveTodos(req.params.projectId, body.todos, {
-        expectedTodos: body.expectedTodos,
-      }));
+      return res.json(await projectContextRuntime.saveTodos(req.params.projectId, body.todos));
     } catch (error) {
       return respondWithError(res, error, 'Failed to save project todos');
     }
@@ -88,8 +83,13 @@ export const registerProjectContextRoutes = (app, dependencies) => {
     if (!text.success) {
       return res.status(400).json({ error: 'text must be a string' });
     }
+    const id = optionalTextInput.safeParse(req.body.id);
+    if (!id.success) {
+      return res.status(400).json({ error: 'id must be a string' });
+    }
     try {
-      return res.status(201).json(await projectContextRuntime.createTodoWithResult(req.params.projectId, { text: text.data }));
+      const { context } = await projectContextRuntime.createTodo(req.params.projectId, { text: text.data, id: id.data });
+      return res.status(201).json(context);
     } catch (error) {
       return respondWithError(res, error, 'Failed to create todo');
     }
@@ -162,16 +162,12 @@ export const registerProjectContextRoutes = (app, dependencies) => {
     if (body.pinned !== undefined && typeof body.pinned !== 'boolean') {
       return res.status(400).json({ error: 'pinned must be a boolean' });
     }
-    const expectedBody = optionalTextInput.safeParse(body.expectedBody);
-    if (!expectedBody.success) {
-      return res.status(400).json({ error: 'expectedBody must be a string' });
-    }
 
     try {
       const result = await projectContextRuntime.updateNote(req.params.projectId, req.params.noteId, {
         ...(body.body !== undefined ? { body: body.body } : {}),
         ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
-      }, { expectedBody: expectedBody.data });
+      });
       if (!result) {
         return res.status(404).json({ error: 'Note not found' });
       }
@@ -237,17 +233,12 @@ export const registerProjectContextRoutes = (app, dependencies) => {
     if (typeof body.raw !== 'string') {
       return res.status(400).json({ error: 'raw must be a string' });
     }
-    const expectedRaw = optionalTextInput.safeParse(body.expectedRaw);
-    if (!expectedRaw.success) {
-      return res.status(400).json({ error: 'expectedRaw must be a string' });
-    }
 
     try {
       const result = await projectContextRuntime.updatePlan(
         req.params.projectId,
         req.params.planId,
         { raw: body.raw },
-        { expectedRaw: expectedRaw.data },
       );
       if (!result) {
         return res.status(404).json({ error: 'Plan not found' });

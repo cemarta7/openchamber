@@ -15,10 +15,8 @@ import { getRuntimeKey } from '@/lib/runtime-switch';
 import {
   createProjectNote,
   createProjectPlan,
-  createProjectTodo,
   deleteProjectNote,
   deleteProjectPlan,
-  deleteProjectTodo,
   fetchProjectContext,
   shareProjectPlan,
   unshareProjectPlan,
@@ -27,11 +25,12 @@ import {
   setProjectPlanPinned,
   updateProjectNote,
   updateProjectPlan,
-  updateProjectTodo,
+  writeProjectTodo,
   type ProjectNote,
   type ProjectNoteSource,
   type ProjectPlanLink,
   type ProjectRef,
+  type ProjectTodoChange,
   type ProjectTodoItem,
 } from '@/lib/projectContextApi';
 
@@ -65,19 +64,16 @@ interface ProjectContextState {
 interface ProjectContextActions {
   getEntry: (project: ProjectRef | null | undefined) => ProjectContextEntry;
   load: (project: ProjectRef, options?: { force?: boolean }) => Promise<void>;
-  saveTodos: (project: ProjectRef, todos: ProjectTodoItem[], expectedTodos?: ProjectTodoItem[]) => Promise<boolean>;
-  createTodo: (project: ProjectRef, text: string) => Promise<boolean>;
-  updateTodo: (project: ProjectRef, todoId: string, patch: { text?: string; completed?: boolean }) => Promise<boolean>;
-  deleteTodo: (project: ProjectRef, todoId: string) => Promise<boolean>;
+  saveTodos: (project: ProjectRef, todos: ProjectTodoItem[], change?: ProjectTodoChange) => Promise<boolean>;
   createNote: (
     project: ProjectRef,
     value: { body: string; source?: ProjectNoteSource; origin?: { sessionId: string; messageId?: string } },
   ) => Promise<ProjectNote | null>;
-  saveNoteBody: (project: ProjectRef, noteId: string, body: string, expectedBody?: string) => Promise<boolean>;
+  saveNoteBody: (project: ProjectRef, noteId: string, body: string) => Promise<boolean>;
   setNotePinned: (project: ProjectRef, noteId: string, pinned: boolean) => Promise<boolean>;
   deleteNote: (project: ProjectRef, noteId: string) => Promise<boolean>;
   createPlan: (project: ProjectRef, value: { title: string; body: string }) => Promise<ProjectPlanLink | null>;
-  savePlan: (project: ProjectRef, planId: string, raw: string, options?: { expectedRaw?: string }) => Promise<boolean>;
+  savePlan: (project: ProjectRef, planId: string, raw: string) => Promise<boolean>;
   setPlanPinned: (project: ProjectRef, planId: string, pinned: boolean) => Promise<boolean>;
   deletePlan: (project: ProjectRef, planId: string) => Promise<boolean>;
   /** Move a plan into the team's shared folder, or back; the plan gets a new id. */
@@ -86,38 +82,6 @@ interface ProjectContextActions {
 }
 
 type ProjectContextStore = ProjectContextState & ProjectContextActions;
-
-type NoteChange = { kind: 'pin'; id: string; pinned: boolean } | { kind: 'delete'; id: string };
-
-type TodoChange =
-  | { kind: 'create'; item: ProjectTodoItem }
-  | { kind: 'update'; id: string; patch: { text?: string; completed?: boolean } }
-  | { kind: 'delete'; id: string }
-  | { kind: 'bulk'; todos: ProjectTodoItem[]; expectedTodos: ProjectTodoItem[] };
-
-const insertOpenTodo = (todos: ProjectTodoItem[], item: ProjectTodoItem): ProjectTodoItem[] => {
-  const index = todos.findIndex((todo) => todo.completed);
-  return index < 0 ? [...todos, item] : [...todos.slice(0, index), item, ...todos.slice(index)];
-};
-
-const applyTodoChange = (todos: ProjectTodoItem[], change: TodoChange): ProjectTodoItem[] => {
-  if (change.kind === 'bulk') return todos;
-  if (change.kind === 'create') return insertOpenTodo(todos, change.item);
-  if (change.kind === 'delete') return todos.filter((todo) => todo.id !== change.id);
-  const item = todos.find((todo) => todo.id === change.id);
-  if (!item) return todos;
-  const updated = { ...item, ...change.patch };
-  if (item.completed === updated.completed) return todos.map((todo) => todo === item ? updated : todo);
-  const remaining = todos.filter((todo) => todo.id !== change.id);
-  return updated.completed ? [...remaining, updated] : insertOpenTodo(remaining, updated);
-};
-
-const sameTodos = (left: ProjectTodoItem[], right: ProjectTodoItem[] | undefined): boolean => (
-  right !== undefined && left.length === right.length && left.every((item, index) => {
-    const other = right[index];
-    return item.id === other.id && item.text === other.text && item.completed === other.completed && item.createdAt === other.createdAt;
-  })
-);
 
 export const EMPTY_PROJECT_CONTEXT_ENTRY: ProjectContextEntry = {
   notes: [],
@@ -168,10 +132,6 @@ const errorMessage = (error: unknown, fallback: string): string => (
 
 export const useProjectContextStore = create<ProjectContextStore>((set, get) => {
   let generation = 0;
-  const confirmedNotes = new Map<string, ProjectNote[]>();
-  const pendingNotes = new Map<string, NoteChange[]>();
-  const confirmedTodos = new Map<string, ProjectTodoItem[]>();
-  const pendingTodos = new Map<string, TodoChange[]>();
   const loads = new Map<string, { promise: Promise<void>; refresh: () => void }>();
   const patchEntry = (projectId: string, patch: Partial<ProjectContextEntry>) => {
     set((state) => ({
@@ -185,117 +145,6 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
   const currentEntry = (projectId: string): ProjectContextEntry => (
     get().entries[projectId] ?? EMPTY_PROJECT_CONTEXT_ENTRY
   );
-
-  const projectedTodos = (projectId: string): ProjectTodoItem[] => (
-    (pendingTodos.get(projectId) ?? []).reduce(applyTodoChange, confirmedTodos.get(projectId) ?? [])
-  );
-
-  const notesFor = (projectId: string): ProjectNote[] => confirmedNotes.get(projectId) ?? [];
-  const projectedNotes = (projectId: string): ProjectNote[] => (
-    (pendingNotes.get(projectId) ?? []).reduce((items, change) => (
-      change.kind === 'delete'
-        ? items.filter((note) => note.id !== change.id)
-        : items.map((note) => note.id === change.id ? { ...note, pinned: change.pinned } : note)
-    ), notesFor(projectId))
-  );
-  const publishNotes = (projectId: string, patch: Partial<ProjectContextEntry> = {}) => {
-    patchEntry(projectId, { ...patch, notes: projectedNotes(projectId) });
-  };
-
-  const mutateNote = async (
-    project: ProjectRef,
-    change: NoteChange,
-    operation: () => Promise<ProjectNote[]>,
-    fallback: string,
-  ): Promise<boolean> => {
-    const projectId = resolveProjectContextId(project);
-    if (!projectId) return false;
-    const startedGeneration = generation;
-    const runtimeKey = getRuntimeKey();
-    const current = () => startedGeneration === generation && runtimeKey === getRuntimeKey();
-    const pending = pendingNotes.get(projectId) ?? [];
-    pendingNotes.set(projectId, pending);
-    pending.push(change);
-    publishNotes(projectId, { error: null });
-    const removePending = () => {
-      const index = pending.indexOf(change);
-      if (index >= 0) pending.splice(index, 1);
-      if (!pending.length) pendingNotes.delete(projectId);
-    };
-    try {
-      return await enqueueWrite(projectId, 'notes', async () => {
-        if (!current()) return false;
-        const flags = flagsFor(projectId);
-        flags.notes = true;
-        try {
-          const notes = await operation();
-          if (!current()) return false;
-          confirmedNotes.set(projectId, notes);
-          removePending();
-          publishNotes(projectId);
-          return true;
-        } catch (error) {
-          if (current()) {
-            removePending();
-            publishNotes(projectId, { error: errorMessage(error, fallback) });
-          }
-          throw error;
-        } finally {
-          flags.notes = false;
-        }
-      });
-    } catch {
-      return false;
-    }
-  };
-
-  // Todo responses are committed snapshots. Item writes never send a cached
-  // list, and bulk writes carry the snapshot the user actually saw.
-  const mutateTodos = async (
-    project: ProjectRef,
-    operation: () => Promise<{ todos: ProjectTodoItem[] }>,
-    change: TodoChange,
-  ): Promise<boolean> => {
-    const projectId = resolveProjectContextId(project);
-    if (!projectId) return false;
-    const startedGeneration = generation;
-    const runtimeKey = getRuntimeKey();
-    const current = () => startedGeneration === generation && runtimeKey === getRuntimeKey();
-    const pending = pendingTodos.get(projectId) ?? [];
-    pendingTodos.set(projectId, pending);
-    pending.push(change);
-    if (change.kind !== 'bulk') patchEntry(projectId, { todos: projectedTodos(projectId), error: null });
-    const removePending = () => {
-      const index = pending.indexOf(change);
-      if (index >= 0) pending.splice(index, 1);
-      if (!pending.length) pendingTodos.delete(projectId);
-    };
-    try {
-      return await enqueueWrite(projectId, 'todos', async () => {
-        if (!current()) return false;
-        const flags = flagsFor(projectId);
-        flags.todos = true;
-        try {
-          const committed = await operation();
-          if (!current()) return false;
-          confirmedTodos.set(projectId, committed.todos);
-          removePending();
-          patchEntry(projectId, { todos: projectedTodos(projectId), error: null });
-          return true;
-        } catch (error) {
-          if (current()) {
-            removePending();
-            patchEntry(projectId, { todos: projectedTodos(projectId), error: errorMessage(error, 'Failed to save project todos') });
-          }
-          throw error;
-        } finally {
-          flags.todos = false;
-        }
-      });
-    } catch {
-      return false;
-    }
-  };
 
   return {
     entries: {},
@@ -355,17 +204,11 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
               continue;
             }
             const committed = currentEntry(projectId);
-            if (!flags.notes && flags.revisions.notes === revisions.notes) {
-              confirmedNotes.set(projectId, data.notes);
-            }
-            if (flags.revisions.todos === revisions.todos) {
-              confirmedTodos.set(projectId, data.todos);
-            }
 
             // Completed writes still outrank a snapshot requested before them.
             patchEntry(projectId, {
-              notes: projectedNotes(projectId),
-              todos: flags.revisions.todos !== revisions.todos ? committed.todos : projectedTodos(projectId),
+              notes: flags.notes || flags.revisions.notes !== revisions.notes ? committed.notes : data.notes,
+              todos: flags.todos || flags.revisions.todos !== revisions.todos ? committed.todos : data.todos,
               plans: flags.plans || flags.revisions.plans !== revisions.plans ? committed.plans : data.plans,
               sharedPlansDir: data.sharedPlansDir,
               loaded: true,
@@ -388,60 +231,48 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
       return promise;
     },
 
-    /** A reorder or bulk clear must compare the last confirmed list. */
-    saveTodos: async (project, todos, snapshot) => {
+    /**
+     * Optimistically apply todos, then persist.
+     *
+     * With `change` only that one todo is sent, so a todo an agent added since
+     * the last read is not overwritten by this list; without it (reorder,
+     * clearing completed) the whole list is. On failure the previous list is
+     * restored, so the panel never shows a state that is not on disk without
+     * also showing the error.
+     */
+    saveTodos: async (project, todos, change) => {
       const projectId = resolveProjectContextId(project);
       if (!projectId) return false;
-      const expectedTodos = snapshot ?? confirmedTodos.get(projectId);
-      if (!expectedTodos || !confirmedTodos.has(projectId)) {
-        patchEntry(projectId, { error: 'Project todos have not loaded' });
-        return false;
-      }
-      const change: TodoChange = { kind: 'bulk', todos, expectedTodos };
-      const hasPendingItems = (pendingTodos.get(projectId) ?? []).some(item => item.kind !== 'bulk');
-      return mutateTodos(project, () => {
-        const confirmed = confirmedTodos.get(projectId);
-        if (hasPendingItems && !sameTodos(change.expectedTodos, confirmed)) {
-          throw new Error('Failed to save project todos');
-        }
-        return saveProjectTodos(project, change.todos, change.expectedTodos);
-      }, change);
-    },
 
-    createTodo: (project, text) => {
-      const projectId = resolveProjectContextId(project);
-      const change: TodoChange = { kind: 'create', item: {
-        id: `pending:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`}`,
-        text, completed: false, createdAt: Date.now(),
-      } };
-      return mutateTodos(project, async () => {
-        const { todo, context } = await createProjectTodo(project, text);
-        // Rebind queued actions by the explicit server identity, even when a
-        // peer added an indistinguishable item in the same committed snapshot.
-        for (const pending of pendingTodos.get(projectId) ?? []) {
-          if ((pending.kind === 'update' || pending.kind === 'delete') && pending.id === change.item.id) pending.id = todo.id;
-          if (pending.kind === 'bulk') {
-            const reconcile = (item: ProjectTodoItem) => item.id === change.item.id ? { ...item, id: todo.id, createdAt: todo.createdAt } : item;
-            pending.todos = pending.todos.map(reconcile);
-            pending.expectedTodos = pending.expectedTodos.map(reconcile);
-          }
+      const previous = currentEntry(projectId).todos;
+      patchEntry(projectId, { todos, error: null });
+
+      const flags = flagsFor(projectId);
+      flags.todos = true;
+      let refreshAfterWrite = false;
+
+      try {
+        const committed = await enqueueWrite(projectId, 'todos', () => (
+          change ? writeProjectTodo(project, change) : saveProjectTodos(project, todos)
+        ));
+        if (committed) {
+          patchEntry(projectId, { todos: committed.todos, loaded: true });
+        } else {
+          // Someone, usually an agent, removed the todo first: nothing failed,
+          // the list on screen is just behind.
+          refreshAfterWrite = true;
         }
-        return context;
-      }, change);
-    },
-    updateTodo: (project, todoId, patch) => {
-      const change: TodoChange = { kind: 'update', id: todoId, patch };
-      return mutateTodos(project, () => {
-        if (change.id.startsWith('pending:')) throw new Error('Failed to save project todos');
-        return updateProjectTodo(project, change.id, patch);
-      }, change);
-    },
-    deleteTodo: (project, todoId) => {
-      const change: TodoChange = { kind: 'delete', id: todoId };
-      return mutateTodos(project, () => {
-        if (change.id.startsWith('pending:')) throw new Error('Failed to save project todos');
-        return deleteProjectTodo(project, change.id);
-      }, change);
+        return true;
+      } catch (error) {
+        patchEntry(projectId, {
+          todos: previous,
+          error: errorMessage(error, 'Failed to save project todos'),
+        });
+        return false;
+      } finally {
+        flags.todos = false;
+        if (refreshAfterWrite) void get().load(project, { force: true });
+      }
     },
 
     /**
@@ -460,87 +291,107 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
 
       const flags = flagsFor(projectId);
       flags.notes = true;
-      const startedGeneration = generation;
-      const runtimeKey = getRuntimeKey();
-      const current = () => startedGeneration === generation && runtimeKey === getRuntimeKey();
 
       try {
-        return await enqueueWrite(
+        const { note, context } = await enqueueWrite(
           projectId,
           'notes',
-          async () => {
-            if (!current()) return null;
-            const { note, context } = await createProjectNote(project, { ...value, body });
-            if (!current()) return null;
-            confirmedNotes.set(projectId, context.notes);
-            publishNotes(projectId, { loaded: true, error: null });
-            return note;
-          },
+          () => createProjectNote(project, { ...value, body }),
         );
+        patchEntry(projectId, { notes: context.notes, loaded: true, error: null });
+        return note;
       } catch (error) {
-        if (current()) patchEntry(projectId, { error: errorMessage(error, 'Failed to create note') });
+        patchEntry(projectId, { error: errorMessage(error, 'Failed to create note') });
         return null;
       } finally {
         flags.notes = false;
       }
     },
 
-    saveNoteBody: async (project, noteId, body, expectedBody) => {
+    saveNoteBody: async (project, noteId, body) => {
       const projectId = resolveProjectContextId(project);
       const trimmed = body.trim();
       if (!projectId || !trimmed) return false;
 
-      const confirmedBody = expectedBody ?? notesFor(projectId).find((note) => note.id === noteId)?.body;
-      if (confirmedBody === undefined) return false;
-      const startedGeneration = generation;
-      const runtimeKey = getRuntimeKey();
-      const current = () => startedGeneration === generation && runtimeKey === getRuntimeKey();
+      const previous = currentEntry(projectId).notes;
+      patchEntry(projectId, {
+        notes: previous.map((note) => (note.id === noteId ? { ...note, body: trimmed } : note)),
+        error: null,
+      });
+
+      const flags = flagsFor(projectId);
+      flags.notes = true;
+
       try {
-        return await enqueueWrite(projectId, 'notes', async () => {
-          if (!current()) return false;
-          const flags = flagsFor(projectId);
-          flags.notes = true;
-          try {
-            const saved = await updateProjectNote(project, noteId, { body: trimmed }, { expectedBody: confirmedBody });
-            if (!current()) return false;
-            confirmedNotes.set(projectId, saved
-              ? notesFor(projectId).map((note) => note.id === noteId ? saved : note)
-              : notesFor(projectId).filter((note) => note.id !== noteId));
-            publishNotes(projectId, saved ? { error: null } : {});
-            return saved !== null;
-          } finally {
-            flags.notes = false;
-          }
+        const saved = await enqueueWrite(projectId, 'notes', () => updateProjectNote(project, noteId, { body: trimmed }));
+        if (!saved) {
+          patchEntry(projectId, { notes: currentEntry(projectId).notes.filter((note) => note.id !== noteId) });
+          return false;
+        }
+        patchEntry(projectId, {
+          notes: currentEntry(projectId).notes.map((note) => (note.id === noteId ? saved : note)),
         });
+        return true;
       } catch (error) {
-        if (current()) patchEntry(projectId, { error: errorMessage(error, 'Failed to save note') });
+        patchEntry(projectId, { notes: previous, error: errorMessage(error, 'Failed to save note') });
         return false;
+      } finally {
+        flags.notes = false;
       }
     },
 
-    /** Pending pins affect only the flag; rollback keeps the confirmed body. */
+    /** Sends `pinned` alone, so it cannot roll back a concurrent body edit. */
     setNotePinned: async (project, noteId, pinned) => {
       const projectId = resolveProjectContextId(project);
       if (!projectId) return false;
-      let found = false;
-      const result = await mutateNote(project, { kind: 'pin', id: noteId, pinned }, async () => {
-        const saved = await updateProjectNote(project, noteId, { pinned });
-        found = saved !== null;
-        return saved
-          ? notesFor(projectId).map((note) => note.id === noteId ? saved : note)
-          : notesFor(projectId).filter((note) => note.id !== noteId);
-      }, 'Failed to save note');
-      return result && found;
+
+      const previous = currentEntry(projectId).notes;
+      patchEntry(projectId, {
+        notes: previous.map((note) => (note.id === noteId ? { ...note, pinned } : note)),
+        error: null,
+      });
+
+      const flags = flagsFor(projectId);
+      flags.notes = true;
+
+      try {
+        const saved = await enqueueWrite(projectId, 'notes', () => updateProjectNote(project, noteId, { pinned }));
+        if (!saved) {
+          patchEntry(projectId, { notes: currentEntry(projectId).notes.filter((note) => note.id !== noteId) });
+          return false;
+        }
+        patchEntry(projectId, {
+          notes: currentEntry(projectId).notes.map((note) => (note.id === noteId ? saved : note)),
+        });
+        return true;
+      } catch (error) {
+        patchEntry(projectId, { notes: previous, error: errorMessage(error, 'Failed to save note') });
+        return false;
+      } finally {
+        flags.notes = false;
+      }
     },
 
     deleteNote: async (project, noteId) => {
       const projectId = resolveProjectContextId(project);
       if (!projectId) return false;
 
-      return mutateNote(project, { kind: 'delete', id: noteId }, async () => {
-        const context = await deleteProjectNote(project, noteId);
-        return context.notes;
-      }, 'Failed to delete note');
+      const previous = currentEntry(projectId).notes;
+      patchEntry(projectId, { notes: previous.filter((note) => note.id !== noteId), error: null });
+
+      const flags = flagsFor(projectId);
+      flags.notes = true;
+
+      try {
+        const context = await enqueueWrite(projectId, 'notes', () => deleteProjectNote(project, noteId));
+        patchEntry(projectId, { notes: context.notes });
+        return true;
+      } catch (error) {
+        patchEntry(projectId, { notes: previous, error: errorMessage(error, 'Failed to delete note') });
+        return false;
+      } finally {
+        flags.notes = false;
+      }
     },
 
     /**
@@ -572,22 +423,15 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
      * so renaming a plan's heading in the editor is reflected in the panel
      * without a reload. Resolves false when the plan is gone.
      */
-    savePlan: async (project, planId, raw, options) => {
+    savePlan: async (project, planId, raw) => {
       const projectId = resolveProjectContextId(project);
       if (!projectId) return false;
 
       const flags = flagsFor(projectId);
       flags.plans = true;
-      const startedGeneration = generation;
-      const runtimeKey = getRuntimeKey();
-      const current = () => startedGeneration === generation && runtimeKey === getRuntimeKey();
 
       try {
-        const result = await enqueueWrite(projectId, 'plans', async () => {
-          if (!current()) return null;
-          return updateProjectPlan(project, planId, raw, options);
-        });
-        if (!current()) return false;
+        const result = await enqueueWrite(projectId, 'plans', () => updateProjectPlan(project, planId, raw));
         if (!result) {
           patchEntry(projectId, {
             plans: currentEntry(projectId).plans.filter((plan) => plan.id !== planId),
@@ -600,7 +444,7 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
         });
         return true;
       } catch (error) {
-        if (current()) patchEntry(projectId, { error: errorMessage(error, 'Failed to save plan') });
+        patchEntry(projectId, { error: errorMessage(error, 'Failed to save plan') });
         return false;
       } finally {
         flags.plans = false;
@@ -691,10 +535,6 @@ export const useProjectContextStore = create<ProjectContextStore>((set, get) => 
     /** Drop every cached project. Used when the active runtime changes. */
     reset: () => {
       generation += 1;
-      confirmedNotes.clear();
-      pendingNotes.clear();
-      confirmedTodos.clear();
-      pendingTodos.clear();
       loads.clear();
       writeChains.clear();
       mutationFlags.clear();
