@@ -398,10 +398,18 @@ export const createOpenChamberControlService = (dependencies) => {
   const resolveSessionDirectory = async (sessionID) => {
     try {
       const client = await getClient();
-      const response = await client.session.list({});
-      const sessions = Array.isArray(response?.data) ? response.data : [];
-      const session = sessions.find((item) => item?.id === sessionID);
-      return asNonEmptyString(session?.location?.directory) || null;
+      const seenCursors = new Set();
+      let cursor;
+      for (;;) {
+        const response = await client.session.list(cursor ? { cursor } : {});
+        const sessions = Array.isArray(response?.data) ? response.data : [];
+        const session = sessions.find((item) => item?.id === sessionID);
+        if (session) return asNonEmptyString(session?.location?.directory) || null;
+        const next = asNonEmptyString(response?.cursor?.next);
+        if (!next || seenCursors.has(next)) return null;
+        seenCursors.add(next);
+        cursor = next;
+      }
     } catch {
       return null;
     }
@@ -790,6 +798,25 @@ export const createOpenChamberControlService = (dependencies) => {
         const link = input.link ?? { url: input.url, title: input.title, kind: input.kind, identifier: input.identifier };
         return sessionLinks.link({ sessionId: sessionID, directory, link });
       }
+      if (action === 'session.moveToWorktree') {
+        assertSingleScope(input);
+        // The calling session by default: the agent moves its own work.
+        const explicitSessionID = asNonEmptyString(input.sessionId);
+        const sessionID = explicitSessionID || asNonEmptyString(options.contextSessionId);
+        if (!sessionID) throw new OpenChamberControlError('sessionId is required', 400);
+        // Where the session lives now, which is where the changes are taken
+        // from; never a directory of the caller's choosing, so the action
+        // cannot carry away another checkout's changes.
+        const directory = (await resolveSessionDirectory(sessionID)) || asNonEmptyString(contextDirectory);
+        const worktree = { name: asNonEmptyString(input.worktree)?.trim() };
+        const branch = asNonEmptyString(input.branch);
+        if (branch) worktree.branchName = branch.trim();
+        const startRef = asNonEmptyString(input.startRef);
+        if (startRef) worktree.startRef = startRef.trim();
+        const payload = { worktree };
+        if (directory) payload.directory = directory;
+        return sessionService.moveToWorktree(sessionID, payload);
+      }
       if (action.startsWith('session.')) {
         const sessionID = asNonEmptyString(input.sessionId);
         if (action !== 'session.list' && !sessionID) throw new OpenChamberControlError('sessionId is required', 400);
@@ -797,15 +824,42 @@ export const createOpenChamberControlService = (dependencies) => {
         const client = await getClient(directory);
         if (action === 'session.list') {
           const limit = positiveInteger(input.limit, 10, 'limit');
-          const response = await client.session.list(directory ? { directory } : {});
-          // Archive is OpenChamber state; overlay it so callers keep reading
-          // it off the session the way OpenCode used to report it.
-          let sessions = await Promise.all((Array.isArray(response?.data) ? response.data : []).map(async (session) => {
-            const archived = await archivedAt(session?.id);
-            return archived ? { ...session, time: { ...session.time, archived } } : session;
-          }));
-          if (input.all !== true) sessions = sessions.filter((session) => !session?.time?.archived);
-          sessions = sessions.slice(0, limit);
+          // Session reads are cursor-paginated: one upstream page is not the
+          // collection. Collect only until the limit is satisfied, skip ids a
+          // repeated page already contributed, and stop on a cursor seen twice
+          // so a pathological server cannot spin the walk.
+          const collected = [];
+          const seenCursors = new Set();
+          const seenSessionIds = new Set();
+          let cursor;
+          for (;;) {
+            const listInput = {};
+            if (directory) listInput.directory = directory;
+            if (cursor) listInput.cursor = cursor;
+            const response = await client.session.list(listInput);
+            // Archive is OpenChamber state; overlay it so callers keep reading
+            // it off the session the way OpenCode used to report it.
+            const page = await Promise.all((Array.isArray(response?.data) ? response.data : []).map(async (session) => {
+              const archived = await archivedAt(session?.id);
+              return archived ? { ...session, time: { ...session.time, archived } } : session;
+            }));
+            for (const session of page) {
+              const id = asNonEmptyString(session?.id);
+              if (id) {
+                if (seenSessionIds.has(id)) continue;
+                seenSessionIds.add(id);
+              }
+              if (input.all !== true && session?.time?.archived) continue;
+              collected.push(session);
+              if (collected.length >= limit) break;
+            }
+            if (collected.length >= limit) break;
+            const next = asNonEmptyString(response?.cursor?.next);
+            if (!next || page.length === 0 || seenCursors.has(next)) break;
+            seenCursors.add(next);
+            cursor = next;
+          }
+          let sessions = collected.slice(0, limit);
           if (input.withStatus === true) {
             // One global call now: v2 reports active sessions across directories.
             const statuses = await activeSessions(client).catch(() => null);

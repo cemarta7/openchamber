@@ -30,11 +30,14 @@ import { describeIdentityApplicability, type IdentityApplicability } from '@/lib
 import { useDeviceInfo } from '@/lib/device';
 import { useIsContributorWorktree } from '@/hooks/useIsContributorWorktree';
 import { changeRequestCopy } from '@/lib/source-control/changeRequestCopy';
-import { formatChangeRequestReference } from '@/lib/source-control/identity';
+import { formatChangeRequestReference, getSourceControlProviderLabel } from '@/lib/source-control/identity';
 import type { SourceControlProvider } from '@/lib/source-control/types';
 import { prVisualStateOf } from '@/lib/source-control/prVisualState';
 import { ContextPanelHeaderToolbar } from '@/components/layout/contextPanelHeaderSlot';
 import { useInContextPanelHeader } from '@/components/layout/contextPanelHeaderSlotContext';
+import { repositoryLinkFromRemotes } from '@/lib/source-control/repositoryUrl';
+import { useSourceControlAuthStore } from '@/stores/useSourceControlAuthStore';
+import { openExternalUrl } from '@/lib/url';
 
 type SyncAction = 'fetch' | 'pull' | 'sync' | 'publish' | null;
 
@@ -204,7 +207,7 @@ export const IdentityDropdown: React.FC<IdentityDropdownProps> = ({
                 />
               )}
               {!iconOnly && (
-                <span className="git-identity-label min-w-0 flex-1 truncate text-left">
+                <span className="git-identity-label min-w-0 flex-1 truncate text-start">
                   {activeProfile ? identityDisplayName(activeProfile, t) : t('gitView.header.noIdentity')}
                 </span>
               )}
@@ -251,7 +254,7 @@ export const IdentityDropdown: React.FC<IdentityDropdownProps> = ({
                     </span>
                   </span>
                   {isSelected ? (
-                    <Icon name="check" className="ml-auto size-4 text-foreground" />
+                    <Icon name="check" className="ms-auto size-4 text-foreground" />
                   ) : null}
                 </span>
               </DropdownMenuItem>
@@ -361,15 +364,21 @@ export const GitHeader: React.FC<GitHeaderProps> = ({
   const { t } = useI18n();
   const { isMobile } = useDeviceInfo();
   const choosesPushDestination = useIsContributorWorktree(directory);
+  const knownIdentities = useSourceControlAuthStore((state) => state.identities);
   if (!status) {
     return null;
   }
 
   const repositoryOptionsForPicker = (repositoryOptions ?? []).filter(Boolean);
 
+  const repositoryLink = repositoryLinkFromRemotes(remotes, knownIdentities);
+  const hasRepositoryViewItems = Boolean(
+    onOpenHistory || onOpenGraph || onOpenStashes || onOpenUpdateBranch || onOpenReintegrateCommits
+  );
+
   const managementButtons = (
     <div className="flex items-center gap-1 shrink-0">
-      {onOpenHistory || onOpenGraph || onOpenStashes || onOpenUpdateBranch ? (
+      {hasRepositoryViewItems || repositoryLink ? (
         <DropdownMenu>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -416,6 +425,15 @@ export const GitHeader: React.FC<GitHeaderProps> = ({
                 <Icon name="split-cells-horizontal" className="size-4" />
                 {t('gitView.integrate.title')}
               </DropdownMenuItem>
+            ) : null}
+            {repositoryLink ? (
+              <>
+                {hasRepositoryViewItems ? <DropdownMenuSeparator /> : null}
+                <DropdownMenuItem onSelect={() => { void openExternalUrl(repositoryLink.url); }}>
+                  <Icon name={repositoryLink.provider === 'gitlab' ? 'gitlab' : 'github'} className="size-4" />
+                  {t('gitView.header.openRepository', { provider: getSourceControlProviderLabel(repositoryLink.provider) })}
+                </DropdownMenuItem>
+              </>
             ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
@@ -555,7 +573,7 @@ export const GitHeader: React.FC<GitHeaderProps> = ({
     return (
       <>
         <ContextPanelHeaderToolbar>
-          <div className="flex min-w-0 flex-1 items-center gap-2 pr-1">
+          <div className="flex min-w-0 flex-1 items-center gap-2 pe-1">
             {branchControls}
             {managementButtons}
             <div className="shrink-0">{syncButtons}</div>

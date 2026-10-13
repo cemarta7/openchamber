@@ -88,7 +88,6 @@ export const UsagePage: React.FC = () => {
       : null;
   const showInDropdown = selectedProviderId ? dropdownProviderIds.includes(selectedProviderId) : false;
   const credentialProviderId = selectedProviderId === 'exe-dev'
-    || selectedProviderId === 'ollama-cloud'
     || selectedProviderId === 'cursor'
     || selectedProviderId === 'zenmux'
     ? selectedProviderId
@@ -263,7 +262,7 @@ export const UsagePage: React.FC = () => {
                   onOpenChange={() => toggleFamilyCollapsed(family.id)}
                 >
                   <CollapsibleTrigger className="flex w-full items-center justify-between py-0.5 group">
-                    <div className="flex items-center gap-1.5 text-left">
+                    <div className="flex items-center gap-1.5 text-start">
                       <span className="typography-ui-label font-normal text-foreground">{family.label}</span>
                       <span className="typography-micro text-muted-foreground">
                         ({familyModels.length})
@@ -315,7 +314,7 @@ export const UsagePage: React.FC = () => {
                   onOpenChange={() => toggleFamilyCollapsed('other')}
                 >
                   <CollapsibleTrigger className="flex w-full items-center justify-between py-0.5 group">
-                    <div className="flex items-center gap-1.5 text-left">
+                    <div className="flex items-center gap-1.5 text-start">
                       <span className="typography-ui-label font-normal text-foreground">{t('settings.usage.page.section.otherModels')}</span>
                       <span className="typography-micro text-muted-foreground">
                         ({otherModels.length})

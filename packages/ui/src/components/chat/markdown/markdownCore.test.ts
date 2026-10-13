@@ -22,10 +22,10 @@ const sanitizeHooks: {
 // Mirrors DOMPurify's default URI policy: approved schemes plus relative URLs.
 const DOMPURIFY_ALLOWED_URI_RE =
   // Keep this byte-aligned with DOMPurify's default IS_ALLOWED_URI expression.
-  // eslint-disable-next-line no-useless-escape
+  // oxlint-disable-next-line no-useless-escape
   /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
 const URI_ATTRIBUTE_WHITESPACE_RE =
-  // eslint-disable-next-line no-control-regex
+  // oxlint-disable-next-line no-control-regex
   /[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g;
 
 Object.assign(globalThis, {
@@ -524,6 +524,20 @@ describe('Long paragraphs', () => {
     expect(hrefOf(html)).toBe('https://example.com/docs');
     expect(html).toContain('class="katex"');
     expect(settled.map((block) => block.html).join('')).toContain('item_1799');
+  });
+
+  test('a paragraph without `:`, `/` or `@` skips the linkify search', () => {
+    // Every bold and emphasis span is an inline token, and linkify searched the
+    // rest of the paragraph at each one (openchamber/openchamber#4648).
+    const prose = 'A simple sentence with **bold** and _emphasis_. '.repeat(80);
+    expect(prose.length).toBeLessThan(LIMIT);
+    resetScanStatsForTests();
+    expect(renderMarkdownSync(prose)).toContain('<strong>bold</strong>');
+    expect(__scanStatsForTests().linkify).toBe(0);
+
+    resetScanStatsForTests();
+    expect(hrefOf(renderMarkdownSync(`${prose}${cjkLink}`))).toBe('https://example.com');
+    expect(__scanStatsForTests().linkify).toBeGreaterThan(0);
   });
 });
 

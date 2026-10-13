@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test"
 import { z } from "zod"
 import { isAmbiguousSendFailure } from '@/sync/send-failure-classification'
+import { adoptRelayTunnel, deactivateRelayTunnel } from "@/lib/relay/runtime-tunnel"
+import type { RelayTunnelClient } from "@/lib/relay/tunnel-client"
 
 // The generated `@opencode/client` runs for real here; only the runtime
 // transport (`runtimeFetch`) and runtime identity are replaced. That keeps
@@ -181,6 +183,14 @@ describe("request fidelity", () => {
     expect(request.headers.get("x-opencode-directory")).toBe(encodeURIComponent("/repo/app dir"))
     expect(page.sessions[0]).toMatchObject({ id: "ses_1", directory: "/repo/app", title: "First" })
     expect(page.cursor).toEqual({ next: "c2" })
+  })
+
+  test("a session created on an explicit Default thinking level is created without a variant", async () => {
+    responses.push(json({ data: sessionInfo }))
+    await opencodeClient.createSession({ model: { id: "gpt-5.6-luna", providerID: "openai", variant: null } }, "/repo/app")
+    expect(requests[0].url.pathname).toBe("/api/session")
+    const { model } = z.object({ model: z.record(z.string(), z.string()) }).parse(requests[0].body)
+    expect(model).toEqual({ id: "gpt-5.6-luna", providerID: "openai" })
   })
 
   test("releasing a location names its directory, never OpenCode's own", async () => {
@@ -423,6 +433,36 @@ describe("sendMessage", () => {
       text: "look",
       files: [{ uri: "data:text/plain;base64,QQ==", name: "notes.md" }],
     })
+  })
+
+  // OpenCode's `ModelRef.variant` is an optional string: a `null` is a 400
+  // ("Expected string at [model][variant]") and the prompt never goes out.
+  test("an explicit Default thinking level switches the model without a variant, never as null", async () => {
+    responses.push(noContent(), json({ id: "msg_3" }))
+    await opencodeClient.sendMessage({
+      id: "ses_1",
+      providerID: "openai",
+      model: { id: "gpt-5.6-luna", providerID: "openai", variant: null },
+      text: "hello",
+      messageId: "msg_3",
+    })
+    expect(requests.map((r) => `${r.method} ${r.url.pathname}`)).toEqual([
+      "POST /api/session/ses_1/model",
+      "POST /api/session/ses_1/prompt",
+    ])
+    expect(requests[0].body).toEqual({ model: { id: "gpt-5.6-luna", providerID: "openai" } })
+  })
+
+  test("a chosen thinking level travels with the model switch", async () => {
+    responses.push(noContent(), json({ id: "msg_4" }))
+    await opencodeClient.sendMessage({
+      id: "ses_1",
+      providerID: "openai",
+      model: { id: "gpt-5.6-luna", providerID: "openai", variant: "high" },
+      text: "hello",
+      messageId: "msg_4",
+    })
+    expect(requests[0].body).toEqual({ model: { id: "gpt-5.6-luna", providerID: "openai", variant: "high" } })
   })
 
   test("refuses to send when the runtime changed underneath the caller", async () => {
@@ -669,6 +709,55 @@ describe("messages and config", () => {
     expect(full.cursor).toEqual({ previous: "p1", next: "n1" })
   })
 
+  test("asks for shelled pages only from a server that lists the capability, and stops when the header is refused", async () => {
+    const pageRequests = () => requests.filter((request) => request.url.pathname === "/api/session/ses_1/message")
+    const learnCapability = async (capabilities: string[]) => {
+      responses.push(json({ compatibility: { capabilities } }))
+      opencodeClient.learnMessagePageShellsSupport()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    runtimeKey = "shells-old-server"
+    await learnCapability(["api.health.v1"])
+    responses.push(json({ data: [], cursor: {} }))
+    await opencodeClient.getSessionMessages("ses_1", { limit: 20, partShells: true })
+    expect(pageRequests().map((request) => request.headers.get("x-openchamber-part-shells"))).toEqual([null])
+
+    requests.length = 0
+    runtimeKey = "shells-refused-header"
+    await learnCapability(["api.message-part-shells.v1"])
+    // The first page's header is refused on the way (CORS, a proxy); the
+    // plain page works, so later pages are plain too.
+    responses.push(new TypeError("Failed to fetch"), json({ data: [], cursor: {} }), json({ data: [], cursor: {} }))
+    await opencodeClient.getSessionMessages("ses_1", { limit: 20, partShells: true })
+    await opencodeClient.getSessionMessages("ses_1", { limit: 20, partShells: true })
+    expect(pageRequests().map((request) => request.headers.get("x-openchamber-part-shells"))).toEqual(["v1", null, null])
+  })
+
+  test("a page lost to a relay tunnel drop keeps asking for shelled pages", async () => {
+    const pageRequests = () => requests.filter((request) => request.url.pathname === "/api/session/ses_1/message")
+    runtimeKey = "shells-relay"
+    responses.push(json({ compatibility: { capabilities: ["api.message-part-shells.v1"] } }))
+    opencodeClient.learnMessagePageShellsSupport()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const tunnel: RelayTunnelClient = {
+      async fetch() { throw new Error("the client routes through runtimeFetch") },
+      openWebSocket() { throw new Error("no sockets here") },
+      getStatus: () => ({ state: "connected" }),
+      subscribeStatus: () => () => undefined,
+      close: () => undefined,
+    }
+    adoptRelayTunnel({ relayUrl: "wss://relay.test", serverId: "fixture", hostEncPubJwk: {} }, tunnel)
+    try {
+      responses.push(new Error("relay tunnel reset: relay keepalive timeout"), json({ data: [], cursor: {} }))
+      await expect(opencodeClient.getSessionMessages("ses_1", { limit: 20, partShells: true })).rejects.toThrow("transport failure")
+      await opencodeClient.getSessionMessages("ses_1", { limit: 20, partShells: true })
+      expect(pageRequests().map((request) => request.headers.get("x-openchamber-part-shells"))).toEqual(["v1", "v1"])
+    } finally {
+      deactivateRelayTunnel()
+    }
+  })
+
   test("a cursor is never combined with an order", async () => {
     responses.push(json({ data: [], cursor: {} }))
     await opencodeClient.getSessionMessages("ses_1", { cursor: "abc", order: "asc" })
@@ -741,15 +830,37 @@ describe("messages and config", () => {
   test("a live model catalog keeps variant ids and settings from valid arrays", async () => {
     const variants = [{ id: "high", settings: { reasoningEffort: "high" } }, { id: "low", settings: {} }]
     const model = { id: "opencode-go/glm-5.3-flash", modelID: "glm-5.3-flash", providerID: "opencode-go", variants }
-    responses.push(
-      json({ location: {}, data: [] }),
-      json({ location: {}, data: [model] }),
-      json({ location: {}, data: model }),
-    )
+    const answer = (request: CapturedRequest) =>
+      request.url.pathname === "/api/provider"
+        ? json({ location: {}, data: [] })
+        : request.url.pathname === "/api/model"
+          ? json({ location: {}, data: [model] })
+          : json({ location: {}, data: model })
+    responses.push(answer, answer, answer)
 
     const catalog = await opencodeClient.getProvidersForConfig("/repo/app")
     expect(catalog.models[0]?.variants.map((variant: { id: string }) => variant.id)).toEqual(["high", "low"])
     expect(catalog.models[0]).toEqual(model)
+  })
+
+  test("providers are asked only after the models answered", async () => {
+    // OpenCode 2.0.27+ holds the model routes until the directory's plugins are
+    // active; a provider read sent alongside answers before them, empty.
+    const answer = (request: CapturedRequest) =>
+      request.url.pathname === "/api/provider"
+        ? json({ location: {}, data: [{ id: "openai", name: "OpenAI" }] })
+        : request.url.pathname === "/api/model"
+          ? json({ location: {}, data: [{ id: "openai/x", modelID: "x", providerID: "openai" }] })
+          : json({ location: {}, data: { id: "openai/x", modelID: "x", providerID: "openai" } })
+    responses.push(answer, answer, answer)
+    const before = requests.length
+
+    await opencodeClient.getProvidersForConfig("/repo/app")
+    expect(requests.slice(before).map((request) => request.url.pathname)).toEqual([
+      "/api/model",
+      "/api/model/default",
+      "/api/provider",
+    ])
   })
 
   test("a fresh provider read waits out the one in flight and reads again", async () => {
@@ -841,5 +952,63 @@ describe("sendCommand context", () => {
     expect(paths.at(-1)).toBe("/api/session/ses_1/command")
     expect(requests.at(-2)?.body).toMatchObject({ text: "quoted selection", resume: false })
     expect(requests.at(-1)?.body).toMatchObject({ name: "review", text: "src" })
+  })
+})
+
+describe("directory availability batching", () => {
+  const answerPaths = (request: CapturedRequest) => {
+    const paths = (request.body as { paths: string[] }).paths
+    return json({
+      results: paths.map((path) => path.endsWith("/gone")
+        ? { path, isDirectory: false, reason: "not-found" }
+        : { path, isDirectory: true }),
+    })
+  }
+  const availabilityCalls = () =>
+    requests.filter((request) => request.url.pathname === "/api/fs/directory-stats")
+
+  test("coalesces probes admitted in one window into a single request", async () => {
+    responses.push(answerPaths)
+    const results = await Promise.all([
+      opencodeClient.getDirectoryAvailability("/repo/one"),
+      opencodeClient.getDirectoryAvailability("/repo/two"),
+      opencodeClient.getDirectoryAvailability("/repo/gone"),
+    ])
+    expect(results).toEqual(["available", "available", "missing"])
+    expect(availabilityCalls().length).toBe(1)
+  })
+
+  test("chunks more paths than the server accepts into multiple requests", async () => {
+    responses.push(answerPaths, answerPaths)
+    const directories = Array.from({ length: 250 }, (_, index) => `/repo/chunk-${index}`)
+    const results = await Promise.all(
+      directories.map((directory) => opencodeClient.getDirectoryAvailability(directory)),
+    )
+    expect(results.every((value) => value === "available")).toBe(true)
+    const calls = availabilityCalls()
+    expect(calls.length).toBe(2)
+    for (const call of calls) {
+      expect((call.body as { paths: string[] }).paths.length).toBeLessThanOrEqual(200)
+    }
+  })
+
+  test("reports unknown without a request when the runtime changed before flush", async () => {
+    const pending = [
+      opencodeClient.getDirectoryAvailability("/repo/one"),
+      opencodeClient.getDirectoryAvailability("/repo/two"),
+    ]
+    runtimeKey = "other"
+    const results = await Promise.all(pending)
+    expect(results).toEqual(["unknown", "unknown"])
+    expect(availabilityCalls().length).toBe(0)
+  })
+
+  test("reports unknown when the runtime refuses the probe (VS Code 501)", async () => {
+    responses.push(json({ error: "Directory availability probes are not supported in the VS Code runtime" }, 501))
+    const results = await Promise.all([
+      opencodeClient.getDirectoryAvailability("/repo/one"),
+      opencodeClient.getDirectoryAvailability("/repo/two"),
+    ])
+    expect(results).toEqual(["unknown", "unknown"])
   })
 })

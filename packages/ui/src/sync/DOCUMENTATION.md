@@ -51,7 +51,10 @@ the app without another version request and without waiting for server health.
 The verdict is scoped to the current API endpoint and is never persisted.
 All other cases use the OpenChamber-owned `/api/opencode/compatibility` endpoint;
 it does not depend on a healthy OpenCode server or successful session bootstrap.
-Native mobile connection selection remains outside the gate until a server is selected.
+Native mobile keeps the gate disabled (`enabled={false}`) until a server is
+selected. The gate stays in the tree either way: switching it on or off never
+remounts the application, because a remount on every connect re-runs the
+mobile cold-launch re-probe.
 
 A confirmed incompatible version unmounts the application, removes the HTML
 splash, and shows recovery. There is no session/event polling behind that
@@ -72,6 +75,12 @@ use manual installation. Host-side rules enforce the capability independently
 of button visibility.
 
 ## Ownership map
+
+Queue delivery uses `hasActiveSubagent` with an explicit parent resolver over
+the cached sync session index. This keeps the 8-level ancestor walk shared
+with display activity while leaving the global display resolver unchanged.
+The VS Code queue gate and its live inputs are documented in
+`../stores/DOCUMENTATION.md`.
 
 | Layer / Store | Owns | Scope |
 |---|---|---|
@@ -392,10 +401,34 @@ journey entry (`state`, `damage`), the mark, and the one action this window has
 under way or saw fail on the space, which `spaces-store.ts` keeps per space and
 clears on a runtime switch. After a start or restart that went through it marks
 the space reachable, because the host answers those only once the server inside
-is ready, and it reads the journey list again whatever the outcome. After a
-removal that went through it also reloads the global session list: the mark of
-the removed space goes only with the host's next complete list, and until then
-the sidebar kept an empty group for the space, about forty seconds measured.
+is ready, and it reads the journey list again whatever the outcome; the action
+stays the line's word until that read lands, and for a start or a restart until
+the global session list is read again too, because its mark is what the host
+set stale when the space did not answer during its own restart. Shown as they
+came, the lists of before said "stopped" with a Start at the end of a start, or
+"not answering" with a restart after a restart, for about two seconds. After a
+removal that went through it also reloads the global session list, saying
+"deleting" meanwhile: the mark of the removed space goes only with the host's
+next complete list, and until then the sidebar kept an empty group for the
+space, about forty seconds measured.
+A deleted space's chats are on the Archive page under the archive's own
+directory, so what this browser cached for the space's directory is a lie
+from then on: a store seeded from it listed the chat under the project and
+addressed it through the prefix of a space the host answers with 404
+("Session could not be loaded"). Two rules close that. A store of a space
+directory seeds its session list from the persisted cache only while this
+window knows the space, by its mark or its journey entry (`seedsSessions`, given
+to `ChildStoreManager` at construction so no store escapes it,
+`isDirectoryOfKnownSpace`); at start-up, before
+the first lists, a space's chats wait for the authoritative list instead of
+painting from the cache. And when a space leaves both lists, deleted here or
+from another window, `sync-context.tsx` forgets every store of its
+directories (`ChildStoreManager.forgetDirectory`: the list emptied, the cache
+dropped, the store disposed once nothing holds it) and moves the open chat of
+that space to the archive directory once the global list names it, which may
+be a later page than the one that dropped the mark. A reset of the store, a
+runtime switch or the switch turned off, empties the lists without deleting
+anything and forgets nothing.
 
 The host also announces each step of a creation as
 `openchamber:space-progress`; the pipeline hands it to `sync-context.tsx`, which
@@ -469,7 +502,7 @@ Cross-directory selectors subscribe to the narrow child-store field they aggrega
 
 Directories that are not bootstrapped get their initial activity from the host instead: `host-session-status-seed.ts` fetches `/api/sessions/status`, the cross-project map the OpenChamber host keeps from its single upstream event stream, after each global session load. One request, no OpenCode instance creation. The seed is additive only. It adds busy entries (retry collapses to busy; the next live event restores details) for sessions the client has not observed itself, resolves each session's directory from the global session cache, skips entries the host last updated more than 30 minutes ago because nothing reconciles the host map after a stream gap, and never clears anything: the host payload carries no directory, so absence proves nothing. A live event that arrived first wins. In VS Code the webview shim answers the same route from the extension host's activity watcher, whose phases collapse busy and retry and settle themselves, so every entry it reports is current. The remaining gap is intentional and runtime-specific: on desktop with an external OpenCode, a turn that started before the OpenChamber host and has not emitted a status event since shows no dot until its next step.
 
-Pending permissions and forms get the same treatment in `global-blocking-requests.ts`: the dispatcher feeds it `permission.asked`/`permission.replied`, `form.created`/`form.settled`, and `session.deleted` for every directory, and the host seed adds the `pending` map the server keeps from its own stream (`getPendingBlockingRequestsSnapshot` in `session-runtime.js`; dropped on reply, deletion, and OpenCode restart, so it carries no age cutoff). The index keeps only the fields its consumers render (`id`/`sessionID`/`action`/`resources` for a permission, `id`/`sessionID`/`title` for a form), which is also everything the host can carry. It is additive from the seed and never cleared by absence. Directory stores stay the source for open directories and for row badges; the index serves the tray's approval list and any surface without a mounted row.
+Pending permissions and forms get the same treatment in `global-blocking-requests.ts`: the dispatcher feeds it `permission.asked`/`permission.replied`, `form.created`/`form.settled`, and `session.deleted` for every directory, and the host seed adds the `pending` map the server keeps from its own stream (`getPendingBlockingRequestsSnapshot` in `session-runtime.js`; dropped on reply, deletion, and OpenCode restart, so it carries no age cutoff). The index keeps only the fields its consumers render (`id`/`sessionID`/`action`/`resources`/`save` for a permission, `id`/`sessionID`/`title` for a form), which is also everything the host can carry. It is additive from the seed and never cleared by absence. Directory stores stay the source for open directories and for row badges; the index serves the tray's approval list and any surface without a mounted row.
 
 A `permission.asked` in a session whose permission mode answers without the user (`auto`, or `safety` while a classification provider can run) is held back in `handleEvent`: no card, no row badge, no toast, and no entry in the cross-directory blocking-request index (which feeds collapsed rows, the tray and run overviews), so a request the server accepts never flashes on screen. The replay for the user applies global effects, which adds it to the index then. The host seed is not filtered this way: a page loaded while the server is still classifying a request can show it until the server answers. The server reports a request it did not answer (the safety net held it, Jev failed, or the reply failed) as `openchamber.permission-left-for-user`; the held-back event is then replayed as an `ask` request, stored and announced, in a directory with or without a store. `permission.replied` drops a held-back request. A report that arrives before its request is remembered (bounded), and that request is shown at once. VS Code never holds back: its extension host answers in the webview. A request held back while the client disconnects reaches the store through reconnect reconciliation, which does not consult the mode.
 
@@ -477,7 +510,7 @@ In-app permission and form toasts for a directory without a store are shown from
 
 "Open session" on a permission or form toast opens the session and passes the request id to `request-reveal.ts`. The permission or form dock that holds that request expands, and the permission dock switches to it. Selecting the session alone would leave a dock the user collapsed collapsed when that session is already open. The id waits until a dock holds it, so a dock that mounts after the session switch still expands.
 
-An MCP elicitation arrives as a `form.created` whose `sessionID` is the `global` sentinel (`LOCATION_SCOPED_FORM_SESSION_ID`): no session record exists for it, so event routing does not treat it as a session address — it is filed by its own directory tag and never enters the session routing index, otherwise a second directory's elicitation would land in the first one's store. The directory store keeps it under `form["global"]`, bootstrap's directory-scoped `form.list` returns it like any pending form, `useScopedBlockingForms` surfaces it from every session of that directory, and reply/cancel resolve the directory from the store that holds it.
+An MCP elicitation arrives as a `form.created` whose `sessionID` is the `global` sentinel (`LOCATION_SCOPED_FORM_SESSION_ID` in `location-scoped-forms.ts`): no session record exists for it, so event routing does not treat it as a session address and it never enters the session routing index, otherwise a second directory's elicitation would land in the first one's store. OpenCode 2.0.27 publishes these forms, `form.created` and `form.cancelled` alike, without a location, so the event names no directory either. `routeUnlocatedLocationScopedForm` handles such an event before routing: a settled form is handed to every store that holds its id, and a created form makes the stores whose directory may have asked it (a running turn, since an MCP server asks while one of its tools runs, plus the active directory) re-read their `global` forms, because filing it by guess would send the reply to a directory that answers "form not found". An event that does carry a directory is filed by that directory. The directory store keeps the form under `form["global"]`, bootstrap's directory-scoped `form.list` returns it like any pending form, `useScopedBlockingForms` surfaces it from every session of that directory, and reply/cancel resolve the directory from the store that holds it.
 
 Turn-complete and error notifications are recorded before the directory-store lookup in `handleEvent`, so an unopened directory still gets its unread dot. The subtask check reads the directory store when the directory is open and the global session cache otherwise. Event routing likewise consults the global session cache: a session-addressed event with no directory is routed to the directory the cache records for that session before any active-session or single-store fallback, so another project's events cannot land in the one open store.
 
@@ -574,6 +607,27 @@ Rules:
 11. Session-scoped ArrowUp and ArrowDown recall merges the visible transcript's user prompts (`useUserMessageHistory`) with the persisted input-history bucket for runtime + normalized directory + session identity. Revert markers hide prompts from the transcript source only; the persisted bucket still recalls them. Global scope reads the persisted runtime bucket alone.
 12. Part arrays preserve authoritative response/event order. Part IDs are identity keys and have the same rollover limitation; identity lookup/removal must not require a part array to be lexically ID-sorted.
 
+Pages the loader reads ask for finished tool results as shells
+(`lib/opencode/toolContentShells.ts`, server side
+`packages/web/server/lib/opencode/message-shells.js`): a completed or failed
+call keeps its status, time, input, metadata and error, and its result text is
+replaced by an `openchamberContentShell` marker in its metadata. The adapter
+sends the request header only to a server that lists
+`api.message-part-shells.v1` among its `/api/version` capabilities, learned
+once per runtime when the sync provider starts; an older server on another
+origin would refuse the unknown header at CORS preflight and fail the page.
+Rows that need the result (an expanded tool, an extension header that reads
+`{output}`) complete the message by id through `tool-content-completion.ts`;
+a failed or empty completion shows a retry, never an empty result. A page's
+shell never replaces a whole call the store already holds
+(`mergeMaterializedPart`), so a tail refresh cannot undo a completion or a
+live call. Every tool row opens on a click, so the client keeps no tool whole;
+file edits and subagent calls are never shelled by the server. Single-message reads are
+always whole, and so are calls arriving by the event stream, except `read` and
+`skill`: their rows open the file in the app and never show the result, so the
+reducer drops it the moment the call finishes (`withoutUnshownResult`), with
+the same marker.
+
 A successful local session creation publishes its session record and calls `SessionMessageLoader.initializeCreatedSession` before selection starts navigation loading. The create response establishes an empty transcript only if no transcript has arrived yet. Initialization supersedes an earlier unresolved history load, preserves any messages or metadata received before the create response, and uses the server-returned directory. Opening that new session needs no history read; forced recovery and later eviction still use normal fetching. Creation responses from a previous runtime cannot select or initialize a session in the current runtime.
 
 Initial loads use smaller requests on constrained VS Code/mobile surfaces and publish the cursor-extended ten-turn window described above. The mounted chat timeline requests one history batch when its pinned viewport is underfilled, when the user scrolls toward history, or when load older is pressed; mobile uses the explicit button. Timeline caches, pending work, prepend snapshots, and stale checks use runtime + directory + session identity so equal session IDs in different worktrees cannot share lifecycle state. Older pages are fetched through the same loader and merged with optimistic records before publication. The same chronology contract applies in the VS Code webview because it consumes this shared loader and sync store; the extension bridge must transport OpenCode records without introducing its own ID-based ordering.
@@ -582,8 +636,11 @@ Initial loads use smaller requests on constrained VS Code/mobile surfaces and pu
 
 Successful HTML responses and the packaged protocol's `runtime-unavailable` response are definite routing failures. The SDK boundary rejects them before decoding and marks the normalized error through `lib/relay/transport-error.ts`. Send-failure classification uses that authority before HTTP timeout heuristics, so even the packaged `503` uses normal optimistic rollback. These failures do not count against a model provider's circuit. Requests whose outcome the transport cannot confirm remain ambiguous and are not retried as definite rejections.
 
-A `session.error` event is the only account of a turn OpenCode stopped, and
-it can arrive with no assistant message to attach to. `session-error-log.ts`
+A `session.error` event is the live account of a turn OpenCode stopped, and
+it can arrive with no assistant message to attach to. Since OpenCode 2.0.27
+the `idle` record that closes a failed turn keeps the same error, so after a
+reload `SessionErrorNotice` reads it from history (`findRecordedTurnError`)
+and shows it where the live event would have. `session-error-log.ts`
 keeps the last 20 of them in memory (`recordSessionError`, fed from the
 event pipeline next to the error notification) and `summarizeOpenCodeError`
 reads the `{ type, message }` structured error the event carries. The chat shows the newest
@@ -630,7 +687,7 @@ When `session.idle` or `session.error` settles a session but the trailing assist
 
 A completed assistant message is authoritative for its own tool parts. During materialization, a `pending` or `running` tool under `time.completed` becomes `error`/`Interrupted` with an end time. This handles stale persisted tool state during reload. The merge preserves a terminal part already observed live, and a later terminal server snapshot can replace the local interrupted marker.
 
-A turn is marked stopped only when OpenCode says it stopped: a `session.execution.interrupted` event (any reason but `shutdown`, which keeps the turn for resumption) or `session.execution.failed`, translated to `session.idle` with `outcome: "interrupted"` and to `session.error`, or, in loaded history, an `idle` record after the trailing assistant message whose outcome is `interrupted` or `failed` (`markRecordedInterruptedTurn`, run after every message load; the newest record after that message decides). The server does not always finalize the message and its parts before that record (anomalyco/opencode#19023), so with no pending form/permission and the session not running again, the unfinished assistant message is completed locally with an `aborted` structured error, including text-only turns and turns whose tools had already finished, and any active parts are finalized as `error`/`Interrupted` with an end time, so tool timers stop and cards render the error state. A later terminal event can supersede the mark, while a stale unfinished refresh cannot regress the locally finalized message or parts. Supersession is concrete: a `message.patched` that carries `time.completed` without an error drops the local `aborted` mark, and a server snapshot whose assistant record is completed replaces a record this client still holds open or marked. Nothing else marks a turn: not an idle status, a status snapshot that lowers or drops a session, a `session.idle` without outcome or with `succeeded`, nor an unfinished answer on its own. OpenCode keeps run state per process, so a turn another OpenCode process runs on the same database (the TUI, `opencode run`) reads exactly like that while it is still going (openchamber#4156). The cost is deliberate: a turn whose process was hard-killed (crash, force quit, power loss) has no record, because nothing ran to write it, and stays open until the session is stopped or continued. A plain `opencode serve`, which is what OpenChamber manages, does not sweep such turns on start; OpenCode's registered service mode does (`SessionRestart`).
+A turn is marked stopped only when OpenCode says it stopped: a `session.execution.interrupted` event (any reason but `shutdown`, which keeps the turn for resumption) or `session.execution.failed`, translated to `session.idle` with `outcome: "interrupted"` and to `session.error`, or, in loaded history, an `idle` record after the trailing assistant message whose outcome is `interrupted` or `failed` (`markRecordedInterruptedTurn`, run after every message load; the newest record after that message decides). The server does not always finalize the message and its parts before that record (anomalyco/opencode#19023), so with no pending form/permission and the session not running again, the unfinished assistant message is completed locally (`closedLocally`) with the error OpenCode reported for a failed turn (the live `session.error`, or since 2.0.27 the `idle` record's `error`) and with an `aborted` structured error for a stopped turn or a failure that came without one, including text-only turns and turns whose tools had already finished, and any active parts are finalized as `error`/`Interrupted` with an end time, so tool timers stop and cards render the error state. A later terminal event can supersede the mark, while a stale unfinished refresh cannot regress the locally finalized message or parts. Supersession is concrete: a `message.patched` that carries `time.completed` without an error drops the local mark and its error, and a server snapshot whose assistant record is completed replaces a record this client still holds open or marked. Nothing else marks a turn: not an idle status, a status snapshot that lowers or drops a session, a `session.idle` without outcome or with `succeeded`, nor an unfinished answer on its own. OpenCode keeps run state per process, so a turn another OpenCode process runs on the same database (the TUI, `opencode run`) reads exactly like that while it is still going (openchamber#4156). The cost is deliberate: a turn whose process was hard-killed (crash, force quit, power loss) has no record, because nothing ran to write it, and stays open until the session is stopped or continued. A plain `opencode serve`, which is what OpenChamber manages, does not sweep such turns on start; OpenCode's registered service mode does (`SessionRestart`).
 
 Directory stores also own session-keyed sidecar notification channels for permissions, forms, and message materialization. Collapsed sidebar rows group their hidden descendants by owning directory and subscribe to the exact permission and form buckets; expanded rows subscribe only to their own buckets. High-frequency realtime part events annotate the exact session/message before committing, so visible records, user history, renderability, and sidebar permission and question rows are not notified by unrelated sessions. Structural message replacements notify only changed subscribed session buckets; unannotated bulk part replacement conservatively resets active message subscribers so bootstrap, pagination, rollback, and legacy writers cannot leave stale projections.
 
@@ -729,6 +786,18 @@ Examples of global-store updates performed in `session-actions.ts`:
 Sending a message while forms are open cancels them through `dismissOpenFormsForSession`, which removes them from the store before the cancel request so the card disappears at once. A not-found answer keeps them removed. Any other failure puts each form back into the store and session it came from: the agent is still waiting, and no event will return it. The mounted chat's form-only recovery would refetch the open session's own form, but a subagent's form shown in the parent chat has no other path back. Open permissions follow the same rule through `dismissOpenPermissionsForSession`, which rejects them: a not-found answer keeps them removed, any other failure puts each one back. Permissions have no in-chat recovery at all, so without the restore even the open session's own prompt stays hidden until a reconnect. A restored card can belong to a request the server already settled (its response was lost, or another client answered it); any reply from the card then comes back not-found, and `respondToPermission` removes it. The same cleanup applies to its other callers, VS Code auto-accept and the desktop tray's approve action.
 
 ### Restore (unarchive) contract
+
+An explicitly user-initiated composer send restores an archived top-level
+session after OpenCode accepts the prompt or command. Queueing from the
+composer is the same intent: the session is restored once the queue accepts
+the message, so delivery itself never restores anything and the server queue
+has no archive logic. Opening the archive, typing, shell commands, scheduled
+tasks and automated continuations do not restore it. The send captures the
+session's archive timestamp and runtime; a newer archive, manual restore or
+runtime switch supersedes that intent. Restoration uses the existing tree
+action, so archived subsessions come back with the session, and reports
+failure separately from the accepted message, so a restore failure cannot
+cause a duplicate send.
 
 The OpenCode server cannot clear `time.archived` over HTTP: `session.update`
 only applies the field when the payload carries a finite number, so an omitted
@@ -920,7 +989,7 @@ read `useSyncRuntime()`. `useDirectoryStore(directory)` reads the current
 directory through `runtime.currentDirectory` with `useSyncExternalStore`, so a
 consumer that passes its own directory gets a constant snapshot and is not
 re-rendered by a cross-project switch. This is what keeps sidebar rows
-(permissions, form counts, session lookups) out of the switch commit: a
+(pending permissions and forms, session lookups) out of the switch commit: a
 row must not pay for the chat changing directory.
 
 ### Session switch commit

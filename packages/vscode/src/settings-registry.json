@@ -165,6 +165,9 @@
     "agentToolsCodeMode": {
       "scope": "instance"
     },
+    "agentWorktreeMoveWithoutAsking": {
+      "scope": "instance"
+    },
     "agentMemoryToolEnabled": {
       "scope": "instance"
     },
@@ -172,6 +175,9 @@
       "scope": "instance"
     },
     "isolatedSpacesIdleStop": {
+      "scope": "instance"
+    },
+    "isolatedSpacesSshHost": {
       "scope": "instance"
     },
     "agentMemoryFeatureAvailable": {
@@ -276,11 +282,11 @@
     "sidebarWorktreeSortOrder": {
       "scope": "profile"
     },
-    "sidebarShowRecentSection": {
+    "sidebarShowChatsSection": {
       "scope": "profile",
       "perSurface": true
     },
-    "sidebarShowChatsSection": {
+    "sidebarShowWorkSection": {
       "scope": "profile",
       "perSurface": true
     },
@@ -327,10 +333,6 @@
     "collapsibleUserMessages": {
       "scope": "profile"
     },
-    "stickyUserHeader": {
-      "scope": "profile",
-      "perSurface": true
-    },
     "promptNavigatorEnabled": {
       "scope": "profile",
       "perSurface": true
@@ -355,12 +357,6 @@
       "scope": "profile"
     },
     "showTurnChangedFiles": {
-      "scope": "profile"
-    },
-    "showExpandedBashTools": {
-      "scope": "profile"
-    },
-    "showExpandedEditTools": {
       "scope": "profile"
     },
     "toolJsonViewMode": {
@@ -423,6 +419,20 @@
       "surfaces": [
         "web",
         "desktop"
+      ]
+    },
+    "openLinksInBrowserPanel": {
+      "scope": "profile",
+      "surfaces": [
+        "desktop"
+      ]
+    },
+    "openTrackerLinksOnBoard": {
+      "scope": "profile",
+      "surfaces": [
+        "web",
+        "desktop",
+        "mobile"
       ]
     },
     "autoCreateWorktree": {
@@ -573,14 +583,6 @@
     "sessionWorkEnabled": {
       "scope": "profile"
     },
-    "sessionWorkAutoOpen": {
-      "scope": "profile",
-      "surfaces": [
-        "web",
-        "desktop",
-        "mobile"
-      ]
-    },
     "sessionReviewOfferEnabled": {
       "scope": "profile",
       "surfaces": [
@@ -588,9 +590,6 @@
         "desktop",
         "mobile"
       ]
-    },
-    "sessionWorkKeepInGroup": {
-      "scope": "profile"
     },
     "sessionGoalEnabled": {
       "scope": "profile"

@@ -23,6 +23,7 @@ import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { cn } from '@/lib/utils';
 import { ContextPanelHeaderToolbar } from './contextPanelHeaderSlot';
 import { useInContextPanelHeader } from './contextPanelHeaderSlotContext';
+import { toolContentShellChars } from '@/lib/opencode/toolContentShells';
 
 type SessionMessage = { info: Message; parts: Part[] };
 
@@ -180,7 +181,9 @@ const estimatePartChars = (part: Part, role: 'user' | 'assistant' | 'tool' | 'ot
       toolInputOutputLength
       + estimateTextLength(partRecord.raw)
       + Math.round(estimateTextLength(partRecord.metadata) * 0.25)
-      + Math.round(estimateTextLength(partRecord.state) * 0.1);
+      + Math.round(estimateTextLength(partRecord.state) * 0.1)
+      // A result left out of the page still counts, by the length the server reported.
+      + Math.round((toolContentShellChars(part) ?? 0) * 0.1);
 
     return { user: 0, assistant: 0, tool: toolPayloadLength, other: 0 };
   }
@@ -417,7 +420,7 @@ export const ContextPanelContent: React.FC = () => {
           place of the generic "Context" label. */}
       {inPanelHeader ? (
         <ContextPanelHeaderToolbar>
-          <div className="flex min-w-0 flex-1 items-center pl-1.5 pr-1">
+          <div className="flex min-w-0 flex-1 items-center ps-1.5 pe-1">
             <span dir="auto" className="truncate typography-ui-label text-foreground" title={viewModel.sessionTitle}>{viewModel.sessionTitle}</span>
           </div>
         </ContextPanelHeaderToolbar>
@@ -427,7 +430,7 @@ export const ContextPanelContent: React.FC = () => {
         {/* ── Session header ── */}
         <div className="mb-6">
           {inPanelHeader ? null : (
-            <h2 dir="auto" className="typography-ui-header font-semibold text-foreground truncate text-left">{viewModel.sessionTitle}</h2>
+            <h2 dir="auto" className="typography-ui-header font-semibold text-foreground truncate oc-ui-start-align">{viewModel.sessionTitle}</h2>
           )}
           <div className={cn(!inPanelHeader && 'mt-1', 'flex flex-wrap items-center gap-x-2 gap-y-0.5 typography-micro text-muted-foreground/70')}>
             <span>{viewModel.providerModel.providerName} / {viewModel.providerModel.modelName}</span>
@@ -578,7 +581,7 @@ export const ContextPanelContent: React.FC = () => {
                 >
                   <button
                     type="button"
-                    className="w-full cursor-pointer px-3 py-1.5 text-left hover:bg-[var(--interactive-hover)]"
+                    className="w-full cursor-pointer px-3 py-1.5 text-start hover:bg-[var(--interactive-hover)]"
                     aria-expanded={isExpanded}
                     onClick={() => {
                       setExpandedRawMessages((prev) => ({
@@ -610,20 +613,20 @@ export const ContextPanelContent: React.FC = () => {
                             {isAssistant ? assistantLeft : otherLabel}
                           </span>
                           {isAssistant && (
-                            <span className="text-right text-muted-foreground tabular-nums">
+                            <span className="text-end text-muted-foreground tabular-nums">
                               {assistantMiddle}
                             </span>
                           )}
                         </>
                       )}
-                      <span className="text-right text-muted-foreground">{previewTime}</span>
+                      <span className="text-end text-muted-foreground">{previewTime}</span>
                     </div>
                   </button>
 
                   {isExpanded && (
                     <div className="border-t border-[var(--surface-subtle)] p-0">
                       <div className="group relative max-h-[26rem] w-full overflow-auto bg-[var(--surface-background)]">
-                        <div className="absolute top-1 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100">
+                        <div className="absolute top-1 inset-e-2 z-10 opacity-0 transition-opacity group-hover:opacity-100">
                           <button
                             type="button"
                             className="rounded p-1 text-muted-foreground transition-colors hover:bg-interactive-hover/60 hover:text-foreground"

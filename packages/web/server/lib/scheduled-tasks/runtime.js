@@ -642,6 +642,8 @@ export const createScheduledTasksRuntime = (deps) => {
       const session = await client.session.create({
         title,
         location: { directory },
+        // Marks a run of a task, so it stays out of In work: nobody sent it.
+        metadata: { openchamber: { kind: 'scheduled' } },
         // No model or agent at all: OpenCode picks its own default.
         ...(selection.providerID && selection.modelID ? {
           model: {
@@ -1262,6 +1264,7 @@ export const createScheduledTasksRuntime = (deps) => {
     runNow,
     getStatus,
     validateTarget: (projectID, sessionID) => existingSessionTasks.validateTarget(projectID, sessionID),
+    listEligibleTargets: (projectID, candidates) => existingSessionTasks.listEligibleTargets(projectID, candidates),
     beforeScheduledTaskSend: (sessionID, directory, item) => existingSessionTasks.beforeSend(sessionID, directory, item),
     onScheduledTaskResult: (provenance, status, error) => existingSessionTasks.result(provenance, status, error),
     cancelWaitingPrompt: (projectID, taskID) => existingSessionTasks?.cancel(projectID, taskID),

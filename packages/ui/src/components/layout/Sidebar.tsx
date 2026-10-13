@@ -6,6 +6,7 @@ import { useUIStore } from '@/stores/useUIStore';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { beginLayoutAnimation, LAYOUT_ANIMATION_EASING, runWhenLayoutSettled } from '@/lib/layoutAnimation';
 import { useLayoutAnimationMs } from '@/hooks/useLayoutAnimationMs';
+import type { SidebarPeek } from './useSidebarPeek';
 
 const SIDEBAR_CONTENT_WIDTH = 280;
 // Wide enough for the toolbar's eight icons and a labelled titlebar button.
@@ -19,10 +20,12 @@ interface SidebarProps {
     className?: string;
     /** Fixed strip rendered above the scrollable content (e.g. toggle + project actions). */
     topBar?: React.ReactNode;
+    /** The collapsed sidebar shown over the chat on hover (`useSidebarPeek`). */
+    peek?: SidebarPeek;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ isOpen, isMobile, children, className, topBar }) => {
-    const { t } = useI18n();
+export const Sidebar: React.FC<SidebarProps> = ({ isOpen, isMobile, children, className, topBar, peek }) => {
+    const { t, direction } = useI18n();
     const sidebarWidth = useUIStore((state) => state.sidebarWidth);
     const setSidebarWidth = useUIStore((state) => state.setSidebarWidth);
     const [isResizing, setIsResizing] = React.useState(false);
@@ -75,7 +78,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, isMobile, children, cl
 
     // The titlebar overlay that floats above the sidebar is a sibling of it, not
     // a child, so it cannot read the width published on <aside>. Publish it on
-    // the root as well, the way --oc-header-height and --oc-titlebar-left-inset
+    // the root as well, the way --oc-header-height and --oc-titlebar-start-inset
     // already are, so the overlay can cap itself to the sidebar. It is the open
     // width, which a toggle leaves alone: a new value on the root restyles the
     // whole document.
@@ -135,7 +138,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, isMobile, children, cl
             return;
         }
 
-        const delta = event.clientX - startXRef.current;
+        // The handle is on the sidebar's end edge: in RTL dragging left widens it.
+        const delta = (event.clientX - startXRef.current) * (direction === 'rtl' ? -1 : 1);
         const nextWidth = clampSidebarWidth(startWidthRef.current + delta);
         if (resizingWidthRef.current === nextWidth) {
             return;
@@ -170,18 +174,27 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, isMobile, children, cl
     // `aria-hidden` here cost a 40 to 55 ms frame at the start of every
     // toggle whenever an accessibility client was on. `inert` already removes
     // the content from the accessibility tree and from focus.
+    // Collapsed and hovered: the column stays at zero width, so the chat does
+    // not move, and the sidebar slides out over it from the start edge.
+    const peekState = !isOpen && peek ? peek.state : false;
+    const peeking = peekState !== false;
+    const peekAnimation = peeking && peek && peek.animationMs > 0
+        ? `${peekState === 'in' ? 'oc-sidebar-peek-in' : 'oc-sidebar-peek-out'} ${peek.animationMs}ms ${LAYOUT_ANIMATION_EASING} forwards`
+        : undefined;
+
     return (
         <div
             ref={sidebarRef}
             data-left-sidebar=""
             className={cn(
-                'relative flex h-full overflow-hidden border-r border-border',
+                'relative flex h-full border-e border-border',
+                !peeking && 'overflow-hidden',
                 // In the class, not the inline style: an inline transition
                 // outranked `motion-reduce:transition-none`, so the sidebar
                 // still animated for readers who asked for reduced motion.
                 isResizing ? 'transition-none' : 'transition-[width,min-width,max-width] motion-reduce:transition-none',
                 'bg-sidebar',
-                !isOpen && 'border-r-0',
+                !isOpen && 'border-e-0',
                 className,
             )}
             style={{
@@ -189,21 +202,21 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, isMobile, children, cl
                 minWidth: `${currentWidth}px`,
                 maxWidth: `${currentWidth}px`,
                 ['--oc-left-sidebar-width' as string]: `${publishedWidth}px`,
-                overflowX: 'clip',
+                overflowX: peeking ? undefined : 'clip',
                 transitionDuration: `${layoutAnimationMs}ms`,
                 transitionTimingFunction: LAYOUT_ANIMATION_EASING,
             }}
         >
             {isOpen && (
                 <div
-                    className="pointer-events-none absolute inset-0 z-30 shadow-[inset_-2px_0_10px_-2px_rgb(0_0_0_/_0.06)]"
+                    className="pointer-events-none absolute inset-0 z-30 shadow-[inset_-2px_0_10px_-2px_rgb(0_0_0_/_0.06)] rtl:shadow-[inset_2px_0_10px_-2px_rgb(0_0_0_/_0.06)]"
                     aria-hidden="true"
                 />
             )}
             {isOpen && (
                 <div
                     className={cn(
-                        'absolute right-0 top-0 z-20 h-full w-[3px] cursor-col-resize hover:bg-[var(--interactive-border)]/80 transition-colors',
+                        'absolute inset-e-0 top-0 z-20 h-full w-[3px] cursor-col-resize hover:bg-[var(--interactive-border)]/80 transition-colors',
                         isResizing && 'bg-[var(--interactive-border)]'
                     )}
                     onPointerDown={handlePointerDown}
@@ -216,18 +229,31 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, isMobile, children, cl
                 />
             )}
             <aside
+                ref={peek?.overlayRef}
+                data-sidebar-peek={peeking ? peekState : undefined}
                 className={cn(
-                    'relative z-10 flex h-full shrink-0 flex-col transition-opacity ease-out motion-reduce:transition-none',
+                    'flex h-full shrink-0 flex-col',
+                    peeking
+                        // Above the chat, the header and an expanded zone (z-20);
+                        // under the titlebar controls (z-30).
+                        ? 'absolute inset-s-0 top-0 z-[25] border-e border-border bg-sidebar shadow-xl'
+                        : 'relative z-10 transition-opacity ease-out motion-reduce:transition-none',
                     isResizing && 'pointer-events-none',
-                    !isOpen && 'pointer-events-none select-none opacity-0'
+                    !isOpen && !peeking && 'pointer-events-none select-none opacity-0'
                 )}
                 style={{
                     width: 'var(--oc-left-sidebar-width)',
                     transitionDuration: `${layoutAnimationMs}ms`,
                     overflowX: 'hidden',
-                    contentVisibility: contentSkipped ? 'hidden' : undefined,
+                    contentVisibility: contentSkipped && !peeking ? 'hidden' : undefined,
+                    animation: peekAnimation,
+                    // SAFETY: a CSS custom property, which `CSSProperties` has no key for.
+                    ['--oc-peek-offset' as string]: direction === 'rtl' ? '100%' : '-100%',
                 }}
-                inert={!isOpen || undefined}
+                inert={(!isOpen && !peeking) || undefined}
+                onPointerEnter={peeking ? peek?.overlayHandlers.onPointerEnter : undefined}
+                onPointerLeave={peeking ? peek?.overlayHandlers.onPointerLeave : undefined}
+                onAnimationEnd={peeking ? peek?.overlayHandlers.onAnimationEnd : undefined}
             >
                 {topBar}
                 <ScrollableOverlay outerClassName="flex-1 min-h-0" disableHorizontal>

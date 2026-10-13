@@ -36,6 +36,8 @@ import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { hideWhitespaceChanges } from '@/lib/diff/hideWhitespaceChanges';
 import type { PatchHunkAnchor } from '@/lib/diff/patchFileDiff';
+import { getDiffLinesText } from '@/lib/diff/selectedDiffLines';
+import { PIERRE_DIFF_TINT_CSS } from '@/lib/shiki/pierreDiffTint';
 
 /**
  * A click on a collapsed-context expander of a partial (patch-only) diff.
@@ -131,6 +133,7 @@ const PIERRE_RUNTIME_BASE_CSS = `
 // as they break resize behavior.
 const WEBKIT_SCROLL_FIX_CSS = `
   ${PIERRE_RUNTIME_BASE_CSS}
+  ${PIERRE_DIFF_TINT_CSS}
 
   /* While a multi-line content drag is being mapped to a line selection the
      row highlight is the feedback; the native blue text selection on top of
@@ -181,10 +184,25 @@ const WEBKIT_SCROLL_FIX_CSS = `
     }
   }
 
+  /* A faint tint and hairlines above and below, across every column of both
+     sides, so two hunks read as two even where the label shows on one side
+     only. Inset shadows, not borders: the row keeps the height Pierre lays
+     out with. */
   [data-separator="line-info-basic"] {
     height: 24px !important;
-    background: var(--diffs-bg) !important;
+    background: color-mix(in srgb, var(--diffs-fg) 2%, var(--diffs-bg)) !important;
     position: relative;
+    box-shadow:
+      inset 0 1px 0 var(--interactive-border),
+      inset 0 -1px 0 var(--interactive-border);
+  }
+
+  [data-separator="line-info-basic"][data-separator-first] {
+    box-shadow: inset 0 -1px 0 var(--interactive-border);
+  }
+
+  [data-separator="line-info-basic"][data-separator-last] {
+    box-shadow: inset 0 1px 0 var(--interactive-border);
   }
 
   [data-diff-type="single"] [data-gutter],
@@ -428,19 +446,14 @@ const extractSelectedCode = (
 ): string => {
   // Default to modified if side is ambiguous, as users mostly comment on new code
   const isOriginal = range.side === 'deletions';
-  const content = fileDiff
-    ? (isOriginal ? fileDiff.deletionLines : fileDiff.additionLines).join('')
-    : (isOriginal ? original : modified);
-  const lines = content.split('\n');
-
-  // Ensure bounds
   const from = Math.min(range.start, range.end);
   const to = Math.max(range.start, range.end);
+  if (fileDiff) return getDiffLinesText(fileDiff, isOriginal ? 'deletions' : 'additions', from, to);
+
+  const lines = (isOriginal ? original : modified).split('\n');
   const startLine = Math.max(1, from);
   const endLine = Math.min(lines.length, to);
-
   if (startLine > endLine) return '';
-
   return lines.slice(startLine - 1, endLine).join('\n');
 };
 

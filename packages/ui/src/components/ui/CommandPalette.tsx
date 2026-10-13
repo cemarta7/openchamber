@@ -61,6 +61,8 @@ import { useMessageSearch } from '@/hooks/useMessageSearch';
 import type { MessageSearchHit } from '@/lib/messageSearch';
 import { MessageHitItem, MessageSearchFilters, type MessageAuthor, type MessageScope } from './commandPaletteMessages';
 import { requestReasoningReveal } from '@/components/chat/search/reasoningReveal';
+import { useObserveProjectActionRuns, useProjectActions } from '@/components/layout/projectActionsRunnerContext';
+import { resolveProjectActionIconName } from '@/lib/projectActions';
 
 type CommandEntry = {
   id: string;
@@ -104,8 +106,8 @@ const LRM = '\u200E';
 /** Secondary text that loses its start, not its end, when it does not fit. */
 const LeadingTruncated: React.FC<{ text: string; className?: string }> = ({ text, className }) => (
   <span
-    className={cn('min-w-0 truncate text-muted-foreground', className)}
-    style={{ direction: 'rtl', textAlign: 'left' }}
+    className={cn('oc-ui-start-align min-w-0 truncate text-muted-foreground', className)}
+    style={{ direction: 'rtl' }}
     title={text}
   >
     {`${LRM}${text}${LRM}`}
@@ -165,6 +167,9 @@ export const CommandPalette: React.FC = () => {
   const { files: filesApi, git: gitApi } = useRuntimeAPIs();
   const ensureGitStatus = useGitStore((s) => s.ensureStatus);
   const { isMobile } = useDeviceInfo();
+  const projectActions = useProjectActions();
+  // Run or Stop must match what the action is doing now.
+  useObserveProjectActionRuns(isCommandPaletteOpen);
 
   const currentRoot = React.useMemo(
     () => (effectiveDirectory ? normalizePath(effectiveDirectory) : null),
@@ -224,7 +229,7 @@ export const CommandPalette: React.FC = () => {
       {
         id: 'new-session',
         title: t('commandPalette.item.newSession'),
-        icon: <Icon name="add" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="add" className="me-2 h-4 w-4" />,
         shortcutId: 'new_chat',
         searchText: t('commandPalette.item.newSession'),
         onSelect: run(() => {
@@ -235,7 +240,7 @@ export const CommandPalette: React.FC = () => {
       {
         id: 'new-worktree',
         title: t('commandPalette.item.quickWorktree'),
-        icon: <Icon name="flashlight" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="flashlight" className="me-2 h-4 w-4" />,
         shortcutId: 'new_chat_worktree',
         searchText: t('commandPalette.item.quickWorktree'),
         onSelect: run(() => {
@@ -245,7 +250,7 @@ export const CommandPalette: React.FC = () => {
       {
         id: 'new-worktree-dialog',
         title: t('commandPalette.item.newWorktreeDialog'),
-        icon: <Icon name="git-branch" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="git-branch" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.newWorktreeDialog'),
         onSelect: run(() => {
           useUIStore.getState().setNewWorktreeDialogOpen(true);
@@ -254,7 +259,7 @@ export const CommandPalette: React.FC = () => {
       {
         id: 'add-project',
         title: t('commandPalette.item.addProject'),
-        icon: <Icon name="folder-add" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="folder-add" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.addProject'),
         onSelect: run(() => {
           sessionEvents.requestDirectoryDialog();
@@ -265,7 +270,7 @@ export const CommandPalette: React.FC = () => {
         title: isMobile
           ? t('commandPalette.item.showSessionSwitcher')
           : t('commandPalette.item.toggleSidebar'),
-        icon: <Icon name="layout-left" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="layout-left" className="me-2 h-4 w-4" />,
         shortcutId: 'toggle_sidebar',
         searchText: isMobile
           ? t('commandPalette.item.showSessionSwitcher')
@@ -282,7 +287,7 @@ export const CommandPalette: React.FC = () => {
       {
         id: 'toggle-terminal',
         title: t('commandPalette.item.toggleTerminal'),
-        icon: <Icon name="terminal-box" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="terminal-box" className="me-2 h-4 w-4" />,
         shortcutId: 'toggle_terminal',
         searchText: t('commandPalette.item.toggleTerminal'),
         onSelect: run(() => {
@@ -292,7 +297,7 @@ export const CommandPalette: React.FC = () => {
       {
         id: 'context-usage',
         title: t('commandPalette.item.showContextUsage'),
-        icon: <Icon name="pie-chart" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="pie-chart" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.showContextUsage'),
         onSelect: run(() => {
           if (currentDirectory) openContextOverview(currentDirectory);
@@ -302,7 +307,7 @@ export const CommandPalette: React.FC = () => {
         id: 'cycle-theme',
         secondary: true,
         title: t('commandPalette.item.cycleTheme'),
-        icon: <Icon name="palette" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="palette" className="me-2 h-4 w-4" />,
         shortcutId: 'cycle_theme',
         searchText: t('commandPalette.item.cycleTheme'),
         onSelect: run(() => {
@@ -313,7 +318,7 @@ export const CommandPalette: React.FC = () => {
         id: 'open-status',
         secondary: true,
         title: t('commandPalette.item.showOpenCodeStatus'),
-        icon: <Icon name="pulse" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="pulse" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.showOpenCodeStatus'),
         onSelect: run(() => {
           void showOpenCodeStatus();
@@ -322,7 +327,7 @@ export const CommandPalette: React.FC = () => {
       {
         id: 'open-settings',
         title: t('commandPalette.item.openSettings'),
-        icon: <Icon name="settings-3" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="settings-3" className="me-2 h-4 w-4" />,
         shortcutId: 'open_settings',
         searchText: t('commandPalette.item.openSettings'),
         onSelect: run(() => setSettingsDialogOpen(true)),
@@ -335,7 +340,7 @@ export const CommandPalette: React.FC = () => {
         id: 'open-source-board',
         secondary: true,
         title: t('sourceBoard.title'),
-        icon: <Icon name="todo" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="todo" className="me-2 h-4 w-4" />,
         shortcutId: 'toggle_source_board',
         searchText: t('sourceBoard.title'),
         onSelect: run(() => useUIStore.getState().setSourceBoardOpen(true)),
@@ -344,7 +349,7 @@ export const CommandPalette: React.FC = () => {
         id: 'reload-ui',
         secondary: true,
         title: t('commandPalette.item.reloadUi'),
-        icon: <Icon name="refresh" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="refresh" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.reloadUi'),
         onSelect: run(() => window.location.reload()),
       });
@@ -354,7 +359,7 @@ export const CommandPalette: React.FC = () => {
         id: 'pin-session',
         secondary: true,
         title: t('commandPalette.item.pinSession'),
-        icon: <Icon name="pushpin" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="pushpin" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.pinSession'),
         onSelect: run(() => {
           if (currentSessionId && currentDirectory) {
@@ -366,7 +371,7 @@ export const CommandPalette: React.FC = () => {
         id: 'copy-session-id',
         secondary: true,
         title: t('commandPalette.item.copySessionId'),
-        icon: <Icon name="file-copy" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="file-copy" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.copySessionId'),
         onSelect: run(() => {
           if (!currentSessionId) return;
@@ -385,7 +390,7 @@ export const CommandPalette: React.FC = () => {
         id: 'open-multi-run',
         secondary: true,
         title: t('commandPalette.item.openMultiRun'),
-        icon: <Icon name="checkbox-multiple" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="checkbox-multiple" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.openMultiRun'),
         onSelect: run(() => {
           setSessionSwitcherOpen(false);
@@ -396,7 +401,7 @@ export const CommandPalette: React.FC = () => {
         id: 'open-archive',
         secondary: true,
         title: t('commandPalette.item.openArchive'),
-        icon: <Icon name="archive" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="archive" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.openArchive'),
         onSelect: run(() => {
           setSessionSwitcherOpen(false);
@@ -407,7 +412,7 @@ export const CommandPalette: React.FC = () => {
         id: 'open-notes',
         secondary: true,
         title: t('commandPalette.item.openNotes'),
-        icon: <Icon name="sticky-note" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="sticky-note" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.openNotes'),
         onSelect: run(() => {
           if (currentDirectory) {
@@ -420,7 +425,7 @@ export const CommandPalette: React.FC = () => {
         id: 'open-todos',
         secondary: true,
         title: t('commandPalette.item.openTodos'),
-        icon: <Icon name="checkbox-circle" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="checkbox-circle" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.openTodos'),
         onSelect: run(() => {
           if (currentDirectory) {
@@ -435,7 +440,7 @@ export const CommandPalette: React.FC = () => {
         id: 'restart-opencode',
         secondary: true,
         title: t('commandPalette.item.restartOpenCode'),
-        icon: <Icon name="restart" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="restart" className="me-2 h-4 w-4" />,
         searchText: t('commandPalette.item.restartOpenCode'),
         onSelect: run(() => {
           void restartOpenCodeWithFeedback(t);
@@ -446,17 +451,51 @@ export const CommandPalette: React.FC = () => {
       id: 'toggle-memory-debug',
       secondary: true,
       title: t('commandPalette.item.toggleMemoryDebug'),
-      icon: <Icon name="bug" className="mr-2 h-4 w-4" />,
+      icon: <Icon name="bug" className="me-2 h-4 w-4" />,
       searchText: t('commandPalette.item.toggleMemoryDebug'),
       onSelect: run(() => {
         window.dispatchEvent(new CustomEvent('openchamber:memory-debug-toggle'));
       }),
     });
+    // Search-only: typing "run", "stop" or an action's name finds them.
+    if (projectActions?.available) {
+      list.push({
+        id: 'open-project-actions',
+        secondary: true,
+        title: t('commandPalette.item.openProjectActions'),
+        icon: <Icon name="play" className="me-2 h-4 w-4" />,
+        shortcutId: 'open_project_actions',
+        searchText: t('commandPalette.item.openProjectActions'),
+        onSelect: run(() => useUIStore.getState().setProjectActionsDialogOpen(true)),
+      });
+      for (const action of projectActions.actions) {
+        const actionRun = projectActions.runOf(action);
+        if (actionRun?.status === 'stopping') continue;
+        const title = actionRun
+          ? t('commandPalette.item.stopProjectAction', { name: action.name })
+          : t('commandPalette.item.runProjectAction', { name: action.name });
+        list.push({
+          id: `project-action:${action.id}`,
+          secondary: true,
+          title,
+          icon: <Icon name={actionRun ? 'stop' : resolveProjectActionIconName(action)} className="me-2 h-4 w-4" />,
+          searchText: title,
+          onSelect: run(() => {
+            if (actionRun) {
+              projectActions.stop(action);
+              return;
+            }
+            projectActions.select(action);
+            projectActions.run(action);
+          }),
+        });
+      }
+    }
     if (canUseElectronDesktopIPC()) {
       list.splice(1, 0, {
         id: 'new-mini-chat',
         title: t('commandPalette.item.newMiniChat'),
-        icon: <Icon name="window" className="mr-2 h-4 w-4" />,
+        icon: <Icon name="window" className="me-2 h-4 w-4" />,
         shortcutId: 'new_mini_chat',
         searchText: t('commandPalette.item.newMiniChat'),
         onSelect: run(() => {
@@ -487,6 +526,7 @@ export const CommandPalette: React.FC = () => {
     togglePinnedSession,
     setArchivePageOpen,
     setProjectContextTab,
+    projectActions,
   ]);
 
   // ---------------------------------------------------------------------------
@@ -511,8 +551,8 @@ export const CommandPalette: React.FC = () => {
           id: `settings:${page.slug}`,
           title: page.title,
           icon: page.slug === 'mcp'
-            ? <McpIcon className="mr-2 h-4 w-4" />
-            : <Icon name={iconName} className="mr-2 h-4 w-4" />,
+            ? <McpIcon className="me-2 h-4 w-4" />
+            : <Icon name={iconName} className="me-2 h-4 w-4" />,
           searchText: `${page.title} ${page.group} ${keywords}`,
           onSelect: run(() => {
             setSettingsPage(page.slug);
@@ -807,7 +847,7 @@ export const CommandPalette: React.FC = () => {
           void handleOpenFile(file.path);
         }}
       >
-        <FileTypeIcon filePath={file.path} className="mr-2 size-4 shrink-0" />
+        <FileTypeIcon filePath={file.path} className="me-2 size-4 shrink-0" />
         <span className="shrink-0 truncate" aria-label={file.relativePath}>{name}</span>
         {directory ? <LeadingTruncated text={directory} className="flex-1" /> : null}
       </CommandItem>
@@ -873,7 +913,7 @@ export const CommandPalette: React.FC = () => {
                 ))}
                 {messageSearch.status === 'ready' && messageSearch.next ? (
                   <CommandItem value="message:load-more" onSelect={loadMoreMessages} disabled={messageSearch.loadingMore}>
-                    <Icon name="more" className="mr-2 h-4 w-4" />
+                    <Icon name="more" className="me-2 h-4 w-4" />
                     <span className="truncate text-muted-foreground">{t('commandPalette.messages.loadMore')}</span>
                   </CommandItem>
                 ) : null}
@@ -907,7 +947,7 @@ export const CommandPalette: React.FC = () => {
                       <MessageHitItem key={`${hit.role}:${hit.id}`} hit={hit} projectLabel={projectLabelForDirectory(hit.directory)} onSelect={handleOpenMessage} />
                     ))}
                     <CommandItem value="message:show-all" onSelect={() => setMessagesMode(true)}>
-                      <Icon name="search" className="mr-2 h-4 w-4" />
+                      <Icon name="search" className="me-2 h-4 w-4" />
                       <span className="truncate text-muted-foreground">{t('commandPalette.messages.showAll')}</span>
                     </CommandItem>
                   </CommandGroup>
@@ -961,8 +1001,8 @@ export const CommandPalette: React.FC = () => {
                           value={`session:${session.id}`}
                           onSelect={() => handleOpenSession(session)}
                         >
-                          <Icon name="chat-ai-3" className="mr-2 h-4 w-4" />
-                          <span dir="auto" className="min-w-0 flex-1 truncate text-left">{title}</span>
+                          <Icon name="chat-ai-3" className="me-2 h-4 w-4" />
+                          <span dir="auto" className="min-w-0 flex-1 truncate oc-ui-start-align">{title}</span>
                           {projectLabel ? (
                             <span className="max-w-[180px] shrink-0 truncate text-muted-foreground typography-meta">{projectLabel}</span>
                           ) : null}
@@ -994,7 +1034,7 @@ export const CommandPalette: React.FC = () => {
                         value={`project:${project.id}`}
                         onSelect={() => handleOpenProject(project.id, project.path)}
                       >
-                        <Icon name="folder" className="mr-2 h-4 w-4" />
+                        <Icon name="folder" className="me-2 h-4 w-4" />
                         <span className="shrink-0 truncate">{project.displayName}</span>
                         <LeadingTruncated text={project.path} className="flex-1" />
                       </CommandItem>

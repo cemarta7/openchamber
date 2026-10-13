@@ -31,7 +31,12 @@ The previous positional/TUI converter and its `--force` option are replaced.
 Output retains the personal library's IDs and compact format. Publication skips
 identical files and refuses edited files or symlinks; use a fresh output directory
 to review regenerated palettes. Markdown, surfaces, text, borders, bubbles and
-status/PR semantics follow the shared VS Code adaptation. The converter adds source
+status/PR semantics follow the shared VS Code adaptation. Dark variants take
+primary and status colors from the source theme's seeds, because derived dark v2
+text tokens are pale tints that wash out buttons and status dots; light variants
+keep the deep v2 text tokens. Tokens a theme authors in `v2Overrides` win over the
+seeds, and an authored accent fill becomes the primary, as in OpenCode's own blue
+theme. The built-in OpenCode theme is this converter's `oc-2` output. The converter adds source
 metadata, the overlay and the syntax regex token without overriding adapted UI roles.
 
 Elevated surfaces scope `--foreground` to `surface.elevatedForeground`, so neutral
@@ -42,11 +47,26 @@ Palette files are not retuned to conceal incorrect role usage.
 Built-in palettes place the sidebar below the chat canvas in luminance. Fields
 and elevated panels are lighter than the canvas in dark mode and darker in light
 mode. Mono and Mono Plus keep their pure-black dark canvas, so their sidebars are
-the exception. User-message backgrounds carry a faint primary tint, with enough
-separation from the canvas to remain visible. Mono keeps every role grayscale.
+the exception. User-message backgrounds take on the primary's hue at their own
+lightness (`tintColor`: 16% of its chroma in dark, 6% in light), so the bubble
+reads as colored without becoming a brighter patch, with enough separation from
+the canvas to remain visible. Mono keeps every role grayscale.
 Body, secondary and bold text retain the palette's neutral cast with distinct
 contrast levels; bold text is a stronger body color rather than a syntax accent.
 These authored choices apply to built-ins, not to existing custom theme files.
+
+Catppuccin Mocha keeps the official palette for its surfaces and revised text,
+tool and interaction roles. Body, bold and italic text use Text; secondary text
+uses Subtext 0. Bold and italic retain their emphasis through typography.
+Elevated panels use Mantle, retaining Mocha's original recessed panel fill
+rather than the lighter elevated hierarchy used by other built-ins. User-message
+bubbles also use Mantle. Fenced code backgrounds use Base, matching the chat
+canvas. Inline code backgrounds use Surface 0, retaining the original chip fill
+and separating it from Mantle-backed tables even with the renderer's 50% alpha.
+Borders use Overlay 1 with alpha; hover and pressed states use Text with alpha.
+Body and secondary text retain the official contrasts rather than the softened
+text targets used by adapted palettes. These exceptions are authored in the
+built-in definition; the shared theme resolver and VS Code adaptation are unchanged.
 
 Built-in border strength uses OpenChamber's matching light/dark palette as the
 reference. Compare alpha-composited contrast on canvas, sidebar and elevated
@@ -84,11 +104,13 @@ high-contrast body classes. Existing saved custom files are not rewritten.
 Ordinary palettes retain their canvas and hue, but sidebar and elevated layers
 follow the built-in hierarchy. Surface contrast stays within 1.04–1.10 where
 the canvas permits it; a black canvas keeps a black sidebar. Body text is softened
-to a canvas contrast ceiling of 10 in dark and 9 in light, with a readability
+to a canvas contrast ceiling of 13.6 in dark and 9 in light, with a readability
 floor of 7 across shared surfaces when possible. Secondary text targets 4.6–6.
 Readability takes precedence over ceilings. Bubble text is checked after adding
-the faint primary tint. Bold uses stronger neutral text. Code backgrounds stay
-within 1.10 of the canvas; syntax token and diff colors retain their source values.
+the primary tint. Bold uses stronger neutral text. Code backgrounds keep their
+source lightness but take the canvas hue, so a neutral code fill does not sit as a
+cold slab inside a warm theme, and stay within 1.10 of the canvas; syntax token and
+diff colors retain their source values.
 
 Borders use the matching OpenChamber role's contrast on each corresponding
 surface as a baseline, including explicit tool and quote borders. Each cap allows
@@ -102,7 +124,8 @@ the authored selection pair. Focus retains its source color unless effectively i
 
 An unusable button fill falls back to a visible authored link, badge or highlight
 accent. Status shades may retain the source color only within the semantic hue
-family: info blue, success green, error red, warning amber. PR blocked is orange,
+family: info blue or cyan, success green or olive, error red or pink-red, warning
+amber or orange. PR blocked is orange,
 merged purple and draft secondary text. Status fills and borders follow the final
 status shade. A blue primary may share the info hue; hue rotation no longer moves
 info into another semantic family.

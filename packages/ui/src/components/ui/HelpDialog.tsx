@@ -213,6 +213,12 @@ export const HelpDialog: React.FC = () => {
           keys: '',
         },
         {
+          id: 'open_project_actions',
+          descriptionKey: 'helpDialog.item.openProjectActions',
+          icon: "play",
+          keys: '',
+        },
+        {
           id: 'open_settings',
           descriptionKey: "helpDialog.item.openSettings",
           icon: "settings-3",
@@ -298,7 +304,7 @@ export const HelpDialog: React.FC = () => {
 
         <ScrollableOverlay
           outerClassName="flex-1 min-h-0 mt-3"
-          className="pr-1"
+          className="pe-1"
           disableHorizontal
         >
           <div className="grid grid-cols-1 gap-x-12 gap-y-4 lg:grid-cols-2">

@@ -1,14 +1,14 @@
 /**
- * "In work": Jev moves a session into work when real work starts in it, and
- * says when a turn looks like the end of that work, or handed over changes
- * worth a look. The user closes; this runtime never does. See
+ * "In work": a session goes into work when the user sends a message in it,
+ * and Jev says when a turn looks like the end of that work, or handed over
+ * changes worth a look. The user closes; this runtime never does. See
  * DOCUMENTATION.md.
  *
- * Two moments ask Jev:
- * - a user message was sent (`message.updated`, role user): only while the
- *   session is not in work, so an open session costs no call here;
- * - a turn ended: session assist calls `evaluateTurnEnd` before it arms its
- *   quiet window, and one call answers both this runtime's questions and
+ * - A user message was sent (`message.updated`, role user): the session opens,
+ *   or reopens if the user closed it before sending. No Jev. A shell command
+ *   the user ran (`session.shell.started`) does the same.
+ * - A turn ended: session assist calls `evaluateTurnEnd` before it arms its
+ *   quiet window, and one Jev call answers both this runtime's questions and
  *   whether the Small Model is worth waking.
  *
  * Every failure leaves things as they were: nothing opens, no hint appears,
@@ -20,17 +20,10 @@ import path from 'path';
 import { OpenCode } from '@opencode/client';
 import { z } from 'zod';
 import { readMergedSettingsSync } from '../opencode/settings-files.js';
-import { loadAssistContext, loadSettledTurns } from '../session-assist/context.js';
+import { loadAssistContext } from '../session-assist/context.js';
 import { turnsToHistory, excerptHead, excerptHeadTail } from '../routing/history.js';
-import {
-  buildSendRequest,
-  buildTurnEndRequest,
-  decideAssist,
-  decideOpen,
-  decideReviewReady,
-  decideWrapUp,
-} from './questions.js';
-import { clearSuggestionPatch, offerReviewPatch, openByJevPatch, readWork, suggestDonePatch } from './state.js';
+import { buildTurnEndRequest, decideAssist, decideReviewReady, decideWrapUp } from './questions.js';
+import { clearSuggestionPatch, offerReviewPatch, openPatch, readWork, suggestDonePatch } from './state.js';
 
 const OPENCHAMBER_SETTINGS_FILE = path.join(
   process.env.OPENCHAMBER_DATA_DIR
@@ -39,12 +32,11 @@ const OPENCHAMBER_SETTINGS_FILE = path.join(
   'settings.json',
 );
 
-/** In work and auto-open default on, the review offer off; read at every use so a change applies without a restart. */
+/** In work defaults on, the review offer off; read at every use so a change applies without a restart. */
 const readSessionWorkSettings = () => {
   const settings = readMergedSettingsSync({ fs, path, settingsFilePath: OPENCHAMBER_SETTINGS_FILE });
   return {
     enabled: settings.sessionWorkEnabled !== false,
-    autoOpen: settings.sessionWorkAutoOpen !== false,
     reviewOffer: settings.sessionReviewOfferEnabled === true,
   };
 };
@@ -64,10 +56,17 @@ const userMessageSchema = z.object({
     info: z.object({
       id: z.string().min(1),
       role: z.literal('user'),
-      text: z.string(),
       time: z.object({ created: z.number() }).partial().optional(),
     }),
   }),
+});
+
+/** A shell command the user ran from the composer; only the user starts one. */
+const shellSchema = z.object({
+  type: z.literal('session.shell.started'),
+  id: z.string().min(1),
+  created: z.number(),
+  properties: z.object({ sessionID: z.string().min(1) }),
 });
 
 const busySchema = z.object({
@@ -75,12 +74,16 @@ const busySchema = z.object({
   properties: z.object({ sessionID: z.string().min(1), status: z.object({ type: z.literal('busy') }) }),
 });
 
-const reviewSessionSchema = z.object({ openchamber: z.object({ kind: z.literal('review') }) });
+/**
+ * Sessions that are not the user's own work: a review of another session, a
+ * `/btw` side question forked off one, a run of a scheduled task.
+ */
+const notWorkSessionSchema = z.object({ openchamber: z.object({ kind: z.enum(['review', 'btw', 'scheduled']) }) });
 
 export function createSessionWorkRuntime({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
-  /** `{ enabled, autoOpen, reviewOffer }` as currently saved. */
+  /** `{ enabled, reviewOffer }` as currently saved. */
   getSettings = readSessionWorkSettings,
   /** The classification provider's endpoint, or null when there is no Jev. */
   classifierEndpoint,
@@ -137,7 +140,8 @@ export function createSessionWorkRuntime({
 
   /**
    * The session record when it is one this feature serves: a top-level,
-   * unarchived project session that is not a review of another one. Chats
+   * unarchived project session that is not a review, a `/btw` side question
+   * or a scheduled task's run. Chats
    * are plain conversations and never in work. Null otherwise.
    */
   const eligibleSession = async (client, sessionId, signal) => {
@@ -145,7 +149,7 @@ export function createSessionWorkRuntime({
     if (session?.id === sessionId) lineage?.remember(sessionId, session.parentID ?? null);
     if (session?.id !== sessionId || session.parentID) return null;
     if (isChatDirectory(session.location?.directory ?? session.directory)) return null;
-    if (reviewSessionSchema.safeParse(session.metadata).success) return null;
+    if (notWorkSessionSchema.safeParse(session.metadata).success) return null;
     if (await isSessionArchived(sessionId)) return null;
     return session;
   };
@@ -156,28 +160,19 @@ export function createSessionWorkRuntime({
     while (suggested.size > SEEN_MESSAGES_LIMIT) suggested.delete(suggested.keys().next().value);
   };
 
-  const onUserMessage = async ({ sessionId, directory, messageId, text, createdAt }) => {
-    const settings = getSettings();
-    if (!settings.enabled || !settings.autoOpen || !text.trim()) return;
+  // Any sent message counts: one with only files or attached context has empty
+  // text. A shell command from the composer counts as one too.
+  const onUserMessage = async ({ sessionId, directory, messageId, createdAt }) => {
+    if (!getSettings().enabled) return;
     if (seenMessages.has(messageId)) return;
     seenMessages.add(messageId);
     while (seenMessages.size > SEEN_MESSAGES_LIMIT) seenMessages.delete(seenMessages.values().next().value);
 
-    const endpoint = await classifierEndpoint();
-    if (!endpoint) return;
-    const signal = AbortSignal.timeout(READ_TIMEOUT_MS);
-    const client = openCodeClient(directory);
-    const session = await eligibleSession(client, sessionId, signal);
-    if (!session) return;
+    // A session already in work costs no read of OpenCode.
     if (readWork(await readMetadata(sessionId, directory))?.state === 'open') return;
-
-    const turns = await loadSettledTurns({ readPage: readPages(client, sessionId, signal), signal });
-    const { answers } = await jev.ask(
-      buildSendRequest({ history: turnsToHistory(turns), request: excerptHead(text.trim(), REQUEST_CHARS) }),
-      endpoint,
-    );
-    if (stopped || !decideOpen(answers)) return;
-    await updateMetadata(sessionId, (metadata) => openByJevPatch(metadata, { requestAt: createdAt, now: now() }), { directory });
+    const session = await eligibleSession(openCodeClient(directory), sessionId, AbortSignal.timeout(READ_TIMEOUT_MS));
+    if (!session || stopped) return;
+    await updateMetadata(sessionId, (metadata) => openPatch(metadata, { requestAt: createdAt, now: now() }), { directory });
   };
 
   const retireSuggestion = (sessionId) => {
@@ -196,10 +191,22 @@ export function createSessionWorkRuntime({
       retireSuggestion(busy.data.properties.sessionID);
       return;
     }
+    const shell = shellSchema.safeParse(payload);
+    if (shell.success) {
+      const { sessionID } = shell.data.properties;
+      if (lineage?.isChild(sessionID) === true) return;
+      void onUserMessage({
+        sessionId: sessionID,
+        directory: payload.properties?.directory || directoryHint,
+        messageId: shell.data.id,
+        createdAt: shell.data.created,
+      }).catch((error) => console.warn('[session-work] could not check a shell command:', errorMessage(error)));
+      return;
+    }
     const message = userMessageSchema.safeParse(payload);
     if (!message.success) return;
     const { sessionID, info } = message.data.properties;
-    // A subsession is never in work: no read, no Jev.
+    // A subsession is never in work: nothing to read.
     if (lineage?.isChild(sessionID) === true) return;
     if (!seenMessages.has(info.id)) advanceTurn(sessionID);
     const directory = payload.properties?.directory || directoryHint;
@@ -207,7 +214,6 @@ export function createSessionWorkRuntime({
       sessionId: sessionID,
       directory,
       messageId: info.id,
-      text: info.text,
       createdAt: info.time?.created ?? now(),
     }).catch((error) => console.warn('[session-work] could not check a sent message:', errorMessage(error)));
   };
@@ -234,7 +240,6 @@ export function createSessionWorkRuntime({
       if (!session || session.revert?.messageID) return null;
       const work = settings.enabled ? readWork(await readMetadata(sessionId, directory)) : null;
       const ask = {
-        open: settings.enabled && settings.autoOpen && work?.state !== 'open',
         wrapUp: settings.enabled && work?.state === 'open',
         reviewReady: settings.reviewOffer,
         recap: assist.recap,
@@ -252,10 +257,6 @@ export function createSessionWorkRuntime({
       if (!request) return null;
       const { answers } = await jev.ask(request, endpoint);
       if (stopped) return null;
-      if (ask.open && decideOpen(answers)) {
-        const requestAt = turn.user.created ?? now();
-        await updateMetadata(sessionId, (metadata) => openByJevPatch(metadata, { requestAt, now: now() }), { directory });
-      }
       // Looks done wins over a review offer from the same turn.
       const suggest = ask.wrapUp && decideWrapUp(answers)
         ? suggestDonePatch

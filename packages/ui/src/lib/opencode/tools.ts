@@ -79,6 +79,11 @@ export const isEditTool = is(OPENCODE_TOOLS.edit)
 export const isWriteTool = is(OPENCODE_TOOLS.write)
 export const isPatchTool = is(OPENCODE_TOOLS.patch)
 
+// Tools whose transcript row opens the read file or skill in the app and never
+// shows the call's result.
+const NAVIGATION_TOOLS = new Set<string>([OPENCODE_TOOLS.read, OPENCODE_TOOLS.skill])
+export const isNavigationTool = (toolName: ToolName): boolean => NAVIGATION_TOOLS.has(normalizeToolName(toolName))
+
 const FILE_CHANGE_TOOLS = new Set<string>([OPENCODE_TOOLS.edit, OPENCODE_TOOLS.write, OPENCODE_TOOLS.patch])
 const EXPLORATION_TOOLS = new Set<string>([
   OPENCODE_TOOLS.read,
@@ -179,6 +184,8 @@ const metadataSchema = z
     files: z.array(fileDiffSchema.nullable().catch(null)).optional().catch(undefined),
     sessionID: optionalText,
     sessionId: optionalText,
+    shellID: optionalText,
+    status: optionalText,
     name: optionalText,
     toolCalls: z.array(executeToolCallSchema.nullable().catch(null)).optional().catch(undefined),
     truncated: z.boolean().optional().catch(undefined),
@@ -222,6 +229,16 @@ export type ExecuteToolCall = {
 }
 
 const MAX_EXECUTE_CALL_INPUT_LENGTH = 160
+
+/** Blocking work in a running `execute`, including progress forwarded by its child tool. */
+export function executeHasBackgroundableWork(metadata: Metadata | undefined): boolean {
+  const parsed = metadataSchema.parse(metadata ?? {})
+  // Child progress replaces Code Mode's call list while shell/subagent waits.
+  if (parsed.shellID || (parsed.status === "running" && (parsed.sessionID || parsed.sessionId))) return true
+  return (parsed.toolCalls ?? []).some((call) => (
+    call?.status === "running" && (isShellTool(call.tool) || isSubagentTool(call.tool))
+  ))
+}
 
 /**
  * The tools an `execute` script called, in order. Entries without a tool name

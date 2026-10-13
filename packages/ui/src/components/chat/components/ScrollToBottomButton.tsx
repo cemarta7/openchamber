@@ -20,7 +20,7 @@ const ScrollAction: React.FC<{ onClick: () => void; children?: React.ReactNode }
             type="button"
             onClick={onClick}
             aria-label={t('chat.scrollToBottom.aria')}
-            className="inline-flex h-[calc(1.75rem-2px)] min-w-0 max-w-full flex-1 items-center rounded-full [corner-shape:round] text-left"
+            className="inline-flex h-[calc(1.75rem-2px)] min-w-0 max-w-full flex-1 items-center rounded-full [corner-shape:round] text-start"
         >
             {/* flex-1 so the icon stays centred when the mobile
                 touch-target floor widens the bare button past 28px;
@@ -61,11 +61,11 @@ const WorkingPillBody: React.FC<{ onClick: () => void }> = ({ onClick }) => {
     return (
         <>
             <ScrollAction onClick={onClick}>
-                <span className={cn('-ml-px min-w-0 truncate text-[13px] leading-4 text-muted-foreground', working.canBackground ? 'pr-1' : 'pr-3')}>
+                <span className={cn('-ms-px min-w-0 truncate text-[13px] leading-4 text-muted-foreground', working.canBackground ? 'pe-1' : 'pe-2')}>
                     {label}
                 </span>
             </ScrollAction>
-            {working.canBackground ? <BackgroundWorkButton onClick={backgroundWork} className="mr-0.5 h-6 w-6" /> : null}
+            {working.canBackground ? <BackgroundWorkButton onClick={backgroundWork} className="me-0.5 h-6 w-6" /> : null}
         </>
     );
 };
@@ -91,17 +91,16 @@ const ScrollToBottomButton: React.FC<ScrollToBottomButtonProps> = ({ visible, wo
             {/* The same column that centres the composer, so the pill's left
                 edge lines up exactly with the input frame. */}
             <div className="chat-input-column">
-                {/* The soft shadow lives on this wrapper, away from the glass
-                    pill's backdrop-filter: sharing one element made the
-                    shadow intermittently drop after hide/show cycles. */}
+                {/* The soft shadow lives on this wrapper, apart from the
+                    pill itself. */}
                 <div className="inline-flex max-w-full rounded-full shadow-[0_2px_6px_-2px_rgb(0_0_0_/_0.10)] dark:shadow-[0_2px_6px_-2px_rgb(0_0_0_/_0.35)]">
                 <div
                     className={cn(
-                        // Glass material with a hairline real border — much
-                        // lighter than the oc-glass-floating stack.
+                        // Opaque surface with a hairline border, much lighter
+                        // than the oc-glass-floating shadow stack.
                         // min-h, not h: the mobile touch-target floor grows
                         // the buttons inside to 36px, and the pill with them.
-                        'oc-glass-popover inline-flex min-h-7 max-w-full items-center rounded-full [corner-shape:round]',
+                        'oc-surface-floating inline-flex min-h-7 max-w-full items-center rounded-full [corner-shape:round]',
                         'border border-black/[0.06] dark:border-white/[0.08]',
                         visible ? 'pointer-events-auto' : 'pointer-events-none',
                     )}

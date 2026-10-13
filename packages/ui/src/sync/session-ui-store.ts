@@ -14,7 +14,7 @@
 
 import type { ContextPartMetadata } from "@/lib/messages/contextParts"
 import { create } from "zustand"
-import type { Metadata, ModelRef, Part, Session, TextPart } from "@/lib/opencode/model"
+import { isSameModelRef, toModelRef, type Metadata, type ModelRef, type Part, type Session, type TextPart } from "@/lib/opencode/model"
 import type { AttachedFile, SessionWorktreeAttachment } from "@/stores/types/sessionTypes"
 import type { PermissionMode } from "@/stores/utils/permissionAutoAccept"
 import type { WorktreeMetadata } from "@/types/worktree"
@@ -33,8 +33,10 @@ import { selectCommandsForDirectory, useCommandsStore } from "@/stores/useComman
 import { selectSkillsForDirectory, useSkillsStore } from "@/stores/useSkillsStore"
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
 import { markPendingUserSendAnimation } from "@/lib/userSendAnimation"
+import { prepareUserMessageResume } from "./user-message-resume"
 import { normalizePath } from "@/lib/pathNormalization"
 import { CHAT_DRAFT_PROJECT_ID, createChatDirectory, deleteChatDirectory, getChatsRootFromDirectory, isChatDirectoryPath, warmChatsRootDirectory } from "@/lib/chatDirectories"
+import { isSpaceArchiveDirectory } from "@/lib/spaces/space-archives"
 import { isVSCodeRuntime } from "@/lib/desktop"
 import { composeForkSessionMessage } from "@/lib/messages/executionMeta"
 import { findLatestUserModelChoice } from "@/lib/messages/userModelChoice"
@@ -149,15 +151,14 @@ export function expandSlashCommandGoalObjective(content: string, commands: GoalC
 export function resolveSendSelection(
   sessionId: string,
   directory: string | undefined,
-  desired: { providerID: string; modelID: string; variant?: string; agent?: string },
+  desired: { providerID: string; modelID: string; variant?: string | null; agent?: string },
 ): { model?: ModelRef; agent?: string } {
   const sessions = getDirectoryState(directory)?.session ?? getAllSyncSessions()
   const session = sessions.find((candidate) => candidate.id === sessionId)
-  const model: ModelRef = { providerID: desired.providerID, id: desired.modelID, variant: desired.variant }
-  const modelChanged = !session?.model
-    || session.model.providerID !== model.providerID
-    || session.model.id !== model.id
-    || session.model.variant !== model.variant
+  // Compared in wire form: an explicit `Default` (null) switches the session
+  // off an effort once, then matches the `"default"` OpenCode records for it.
+  const model = toModelRef({ providerID: desired.providerID, id: desired.modelID, variant: desired.variant })
+  const modelChanged = !session?.model || !isSameModelRef(session.model, model)
   const agentChanged = Boolean(desired.agent) && session?.agent !== desired.agent
   return {
     model: modelChanged ? model : undefined,
@@ -174,7 +175,8 @@ export async function routeMessage(params: {
   modelID: string
   agent?: string
   agentMentionName?: string
-  variant?: string
+  /** `null` is an explicit `Default` thinking level. */
+  variant?: string | null
   inputMode?: "normal" | "shell"
   files?: Array<{ type: "file"; mime: string; url: string; filename: string }>
   additionalParts?: Array<{ text: string; synthetic?: boolean; metadata?: ContextPartMetadata; files?: Array<{ type: "file"; mime: string; url: string; filename: string }>; systemContext?: 'session-knowledge' }>
@@ -340,6 +342,8 @@ type CapturedSendTarget = {
 }
 
 type SendMessageOptions = {
+  /** Explicit composer intent; automated continuations must not restore archives. */
+  userInitiated?: boolean
   target?: CapturedSendTarget
   sessionId?: string
   directory?: string
@@ -478,7 +482,8 @@ export type SessionUIState = {
     attachments?: AttachedFile[],
     agentMentionName?: string,
     additionalParts?: Array<{ text: string; attachments?: AttachedFile[]; synthetic?: boolean; metadata?: ContextPartMetadata; systemContext?: 'session-knowledge' }>,
-    variant?: string,
+    /** `null` is an explicit `Default` thinking level. */
+    variant?: string | null,
     inputMode?: "normal" | "shell",
     options?: SendMessageOptions,
   ) => Promise<void>
@@ -987,7 +992,7 @@ const resolveVariantToRecord = (
   agentName: string | undefined,
   providerID: string,
   modelID: string,
-  sentVariant: string | undefined,
+  sentVariant: string | null | undefined,
 ): string | null | undefined => {
   const config = useConfigStore.getState()
   const describesThisSend = config.currentProviderId === providerID
@@ -1000,7 +1005,8 @@ export async function materializeOpenDraftSession(selection: {
   providerID: string
   modelID: string
   agent?: string
-  variant?: string
+  /** `null` is an explicit `Default` thinking level. */
+  variant?: string | null
 }, draftOverride?: NewSessionDraftState): Promise<MaterializedDraftSession | null> {
   const store = useSessionUIStore.getState()
   const draft = draftOverride ?? store.newSessionDraft
@@ -1375,11 +1381,15 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     // Callers that forward "the current session's directory" forward it for
     // chat sessions too, and a chat session's scratch directory names no
     // project. Treating it as an explicit project target would force a project
-    // draft rooted in scratch; it is a request for another chat.
+    // draft rooted in scratch; it is a request for another chat. The archive
+    // directory of a deleted isolated space is the same: a chat opened from
+    // the Archive page leaves it behind as the current one, and a draft rooted
+    // there would make a live session inside the archive.
+    const isScratchDirectory = (directory: string): boolean => isChatDirectoryPath(directory) || isSpaceArchiveDirectory(directory)
     const rawExplicitDirectory = options?.directoryOverride !== undefined
       ? normalizePath(options.directoryOverride)
       : null
-    const explicitDirectoryIsChat = rawExplicitDirectory !== null && isChatDirectoryPath(rawExplicitDirectory)
+    const explicitDirectoryIsChat = rawExplicitDirectory !== null && isScratchDirectory(rawExplicitDirectory)
     const explicitDirectory = explicitDirectoryIsChat ? null : rawExplicitDirectory
     const persistedProjectById = persistedTarget?.projectId
       ? projects.find((p) => p.id === persistedTarget.projectId) ?? null
@@ -1392,7 +1402,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     // erase the project the user last picked. A managed chat scratch directory
     // is not external; the recorded project still reopens from it.
     const isImplicitExternalChatFallback = currentDirectory !== null
-      && !isChatDirectoryPath(currentDirectory)
+      && !isScratchDirectory(currentDirectory)
       && currentDirProject === null
       && options?.automatic !== true
       && options?.target === undefined
@@ -1441,7 +1451,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       // A chat session leaves a managed scratch directory behind as the current
       // one; it owns no project, so it must not decide this draft's project —
       // the recorded target below knows which project the user last chose.
-      if (currentDirectory && !isChatDirectoryPath(currentDirectory)) return currentDirProject
+      if (currentDirectory && !isScratchDirectory(currentDirectory)) return currentDirProject
       return persistedProject ?? fallbackProject
     })()
 
@@ -1450,8 +1460,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       if (explicitProject) return normalizePath(explicitProject.path ?? null)
       // A chat session's directory is a managed scratch folder, never a
       // project: letting it through would open a project draft rooted in it.
-      if (currentDirectory && !isChatDirectoryPath(currentDirectory)) return currentDirectory
-      if (persistedTarget?.directory && !isChatDirectoryPath(persistedTarget.directory)) return persistedTarget.directory
+      if (currentDirectory && !isScratchDirectory(currentDirectory)) return currentDirectory
+      if (persistedTarget?.directory && !isScratchDirectory(persistedTarget.directory)) return persistedTarget.directory
       return normalizePath(selectedProject?.path ?? null)
     })()
 
@@ -1768,7 +1778,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     attachments?: AttachedFile[],
     agentMentionName?: string,
     additionalParts?: Array<{ text: string; attachments?: AttachedFile[]; synthetic?: boolean; metadata?: ContextPartMetadata; systemContext?: 'session-knowledge' }>,
-    variant?: string,
+    /** `null` is an explicit `Default` thinking level. */
+    variant?: string | null,
     inputMode?: "normal" | "shell",
     options?: SendMessageOptions,
   ) => {
@@ -1908,6 +1919,9 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
       // ---- Existing session ----
       const targetSessionId = capturedTarget?.sessionId ?? options?.sessionId ?? get().currentSessionId
+      const resumeAfterSend = options?.userInitiated && inputMode !== 'shell' && targetSessionId
+        ? prepareUserMessageResume(targetSessionId, capturedRuntimeKey)
+        : undefined
       const sessionAgentSelection = targetSessionId
         ? useSelectionStore.getState().getSessionAgentSelection(targetSessionId)
         : null
@@ -2019,6 +2033,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       if (knowledge?.text) {
         void reportSessionKnowledgeDelivered(currentSessionDirectory, targetSessionId || "", knowledge.signature)
       }
+      // Keep restore failures outside the send promise and its retry path.
+      void resumeAfterSend?.().catch(console.warn)
     })
   },
 

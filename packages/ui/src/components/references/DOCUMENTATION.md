@@ -74,6 +74,12 @@ preview's footer holds actions instead of what the agent gets.
 - The board keeps its own project, tab and Linear team per runtime
   (`stores/useSourceBoardStore.ts`). Switching them never changes the app's
   selected project.
+- On desktop and web the board stays mounted once opened and is only hidden
+  (`invisible`, `inert`) while closed, so it reopens where it was left,
+  whichever way it was opened (its button, a link): the previewed item, the
+  search, both scroll positions, a reply draft. A reopen puts focus back in
+  the search. A new project or tab still starts a fresh list. The phone's
+  board page is not kept.
 - The repository tab is the project's host only: GitHub or GitLab, whichever
   `useRepositoryHostProvider` names; a project with no supported remote shows
   Linear alone.
@@ -91,7 +97,8 @@ preview's footer holds actions instead of what the agent gets.
   in the preview opens the team's states (`SourceBoardLinearStatus`).
 - An issue, PR or Linear issue a session links to opens on the board, selected:
   from the work-status panel and from the sidebar's badges and their tooltips
-  (`sourceBoard/openOnBoard.ts`). The board moves to the session's project and
+  (`sourceBoard/openOnBoard.ts`), and from links in chat while
+  `openTrackerLinksOnBoard` is on (`chat/useOpenChatLink.ts`). The board moves to the session's project and
   tab and previews the item, read on its own (`focusRepositoryItem` with its
   link, `focusLinearIssue` with its identifier, then the browser's
   `pinnedItem`) while the search stays empty and the list as it was. A link

@@ -56,7 +56,7 @@ reply: the dock acknowledges it when its step opens, the card (all fields on
 screen) from the start, and an unacknowledged link counts as missing.
 
 An MCP elicitation is a form OpenCode files under the session id `global`
-(`LOCATION_SCOPED_FORM_SESSION_ID` in `sync-context.tsx`): it belongs to the
+(`LOCATION_SCOPED_FORM_SESSION_ID` in `sync/location-scoped-forms.ts`): it belongs to the
 directory, not to a turn. `useScopedBlockingForms` appends the directory's
 `global` forms after the session subtree's own, so the dock (and the BTW
 sheet's inline card) offer it from every session of that directory, and the
@@ -114,7 +114,10 @@ its own queue. It stays visible under the form and permission docks.
 `selectComposerQueue` in the submission builder excludes server-scheduled items
 before the composer counts manual content or reads captured send configuration.
 Mixed queues use only ordinary items for manual send; a scheduled-only queue
-cannot trigger an empty composer send. Scheduled items stay visible in the
+cannot trigger an empty composer send. Only the send button flushes the queue
+from an empty composer; Enter and Ctrl/Cmd+Enter with nothing typed do
+nothing, so a stray keystroke cannot push the queue into a running turn
+(#4749). Scheduled items stay visible in the
 queue rows with reorder and remove, but no edit or send action.
 
 `BackgroundShellsStrip` lists the commands that went to the background (not the ones
@@ -122,10 +125,13 @@ a turn is waiting for, see `background` in `sync/background-shells.ts`) of
 the session and of its
 subagents at any depth (`sessionsInTree` over the global sessions store, a
 subagent missing from it keeps its commands out), each with its command,
-elapsed time and Stop through `opencodeClient.stopBackgroundShell`, the same
+elapsed time and Stop through `opencodeClient.stopBackgroundShells`, the same
 flow as the command's row in the chat. One command is one row; several
 collapse into a count that expands in place, collapsed again on a session
-switch. It shows whether the session runs or idles, and hides in BTW and
+switch, and the count row carries Stop all. Stop all sends one call per owning
+session, so each agent gets one note for all of its commands and their
+completions arrive together; a stopping row stays disabled until OpenCode
+reports its command ended, and a failed call makes its commands stoppable again. It shows whether the session runs or idles, and hides in BTW and
 new-session drafts. The elapsed text is a leaf on the shared one-second
 ticker, and the tree is compared as a string, so neither the tick nor
 session-list updates re-render the composer.
@@ -156,8 +162,10 @@ updates it.
 ## Floating composer
 
 In a normal session view the composer slot is an absolute layer over the
-bottom of the transcript (`ChatContainer`), and the input box is glass
-(`oc-glass-composer`). The draft screen and the expanded editor keep the slot
+bottom of the transcript (`ChatContainer`), and the input box is an opaque
+surface (`oc-surface-floating`): it is always on screen over the moving
+transcript, and a blur there was redrawn on every streamed frame (see the rule
+in `design-system.css`). The draft screen and the expanded editor keep the slot
 in flow. A `ResizeObserver` on the slot publishes its height as
 `--chat-composer-inset` and the timeline's tail spacer height as
 `--chat-composer-tail-inset`, written onto the elements that read them (the
@@ -188,10 +196,10 @@ cut in half by its top edge. That inset applies only while a reply streams
 and the view follows it (`data-live-tail` on the chat column, set by
 `ChatContainer` from the timeline's `isFollowingProgrammatically`: no
 scroll-to-bottom pill and no reader gesture); at rest and while the reader scrolls history the rows slide
-under the composer's glass, which is what makes the composer read as
+under the composer, which is what makes the composer read as
 floating. There the end fade is longer instead (`--scroll-shadow-end-size`):
 it starts just above the box and runs to the scroller's bottom edge, so rows
-under the glass and beside a box narrower than the transcript (wide layout)
+under the box and beside a box narrower than the transcript (wide layout)
 thin out gradually instead of running into the window's edge.
 The variable is written straight to the DOM, so composer growth never
 re-renders the timeline: the list's own footer observer extends the content
@@ -199,12 +207,11 @@ and the scroll hook's pinned-end observer keeps a reader on the end. The
 mobile keyboard choreography is unchanged: the form inside the slot is still
 the keyboard mover and the column shrinks around it at settle.
 
-Glass does not nest: a `backdrop-filter` element is a backdrop root, so a
-glass child only blurs its parent's content. Popups therefore anchor to the
-wrapper outside the box, and the dictation overlay (`.oc-dictation-overlay`)
-never stacks glass on glass: a CSS rule in `design-system.css` hides the
-composer's own contents while it is up, leaving the box as the single glass
-surface on desktop and the overlay itself on mobile. On desktop the footer's
+The box clips its contents, so popups anchor to the wrapper outside it. The
+dictation overlay (`.oc-dictation-overlay`) never shows the composer's own
+contents through it: a CSS rule in `design-system.css` hides them while it is
+up, leaving the box as the single surface on desktop and the overlay itself on
+mobile. On desktop the footer's
 dictation reports its state and the box carries `data-dictating`; the
 elements between the box and the overlay carry `data-dictation-chain`, so the
 rule only targets their other children. A `:has()` over the box was
@@ -223,14 +230,14 @@ so a streaming turn's `session.updated` events do not re-render the composer.
 A glass surface never carries its own shadow: the shadow sits on a wrapper
 (or the glass moves to an inner layer). Chromium grows a backdrop-filter
 layer by the shadow's blur, and that band painted a flat grey strip over
-whatever was stacked above: the status pill, the floating panels.
-This holds for the box, the mobile pill, the floating
-panels, the context-chip preview and the mobile dictation overlay.
+whatever was stacked above. This holds for the floating panels and the
+context-chip preview. The box, the mobile pill and the dictation overlay are
+opaque and keep their shadow on a wrapper all the same.
 
 Context chips (review comments, quotes, annotations, terminal selections, PR
 context) sit in the attachment row inside the box, shaped like file and linked
 reference chips. Their preview cannot open inside the box, which clips its
-contents and is a backdrop root, so `ComposerContextChips` portals it into a
+contents, so `ComposerContextChips` portals it into a
 positioned host outside the box: the autocomplete wrapper on desktop, the
 dictation host on mobile. The preview opens above that host, and its scrollable
 content is capped by the space between the host and the chat column's top edge,
@@ -250,7 +257,7 @@ so a long preview does not hide its entry actions behind the chat header.
 | `parallel/` | "Run in parallel": the launch state of a new-session draft (prompt variants, models per variant, worktrees, setup, auto-fusion) and the strip that renders it above the editor |
 | `text.ts` | How inserted text meets the text already there |
 | `largeTextPaste.ts` | Detect large plain-text pastes, own the double-paste gesture, and build virtual `.txt` files |
-| `largeTextPasteOffer.ts` | Ask-toast offer id begin/resolve (supersede + double-apply guards) |
+| `largeTextPasteOffer.ts` | Large-paste choice offer id begin/resolve (supersede + double-apply guards) |
 
 `ChatInput.handlePaste` owns paste orchestration: URL-over-selection markdown
 links, clipboard files, and large plain-text pastes. Pasted and dropped files
@@ -274,7 +281,8 @@ Large pastes (about 2,000 characters or 25 lines) follow the composer setting
 `largeTextPasteBehavior` (`ask` / `attach` / `inline` / `inline-double-paste`). Attaching creates an
 in-memory `text/plain` file named `pasted-context-N.txt`, inserts a bracket
 citation, and sends it through the same attachment pipeline as a manually
-picked `.txt` file. Ask-toast actions read live composer/attachment state so
+picked `.txt` file. In `ask`, `ui/LargeTextPasteChoice` floats above the
+composer's start edge, styled like the chat text-selection menu. Its actions read live composer/attachment state so
 typing or other attaches between paste and choice stay consistent. Short text,
 images, and URL wraps keep their existing paths.
 In `inline-double-paste`, the first paste uses CodeMirror's native paste path.
@@ -288,11 +296,16 @@ the inline text until attachment succeeds and rechecks the live document,
 selection and draft scope before replacement. Failed attachments keep the text.
 If editing invalidates a conversion already attaching, its accepted file remains
 in the source draft but the newer text is never replaced.
-On mobile, choosing either ask-toast action restores editor focus, expanding
-the collapsed pill if needed. Hosted mobile focuses inside the tap; Capacitor
-uses the shell's existing next-frame keyboard timing when the pill expands.
-Dismissing the toast still inserts inline without taking focus from another
-control.
+On desktop the choice takes focus with "Attach as file" selected: Enter picks
+the focused option, arrows and Tab switch, Escape pastes inline, and a printable
+key pastes inline and is then typed. Every answer returns focus to the editor.
+Focus moving elsewhere in the window pastes inline and leaves focus there;
+switching to another window leaves the choice waiting. On mobile the editor
+keeps focus (taps do not move it, so the keyboard stays up); a choice restores
+editor focus, expanding the collapsed pill if needed. Hosted mobile focuses
+inside the tap; Capacitor uses the shell's existing next-frame keyboard timing
+when the pill expands. A newer large paste replaces an unanswered choice, and a
+draft, mode or runtime change drops it, so it never lands in another draft.
 
 ## The prompt language
 
@@ -456,7 +469,12 @@ and the send path reading the same grammar.
   selection has to be the update that follows the focus.
 - `submit/buildOutgoingMessage.ts` flattens queued messages, the composer text,
   context drafts and linked references into OpenCode's one-primary-plus-parts
-  shape. The oldest queued message becomes primary. **Every attached context
+  shape. Every text the user typed, the queued messages oldest first and then
+  the composer text, joins the primary text with a blank line between them,
+  and their files join the primary attachments: OpenCode 2.x delivers each
+  additional part as a synthetic message the timeline does not show, so a
+  typed message sent as a part would reach the model and vanish from the chat
+  (#4746). **Every attached context
   item (inline comments, terminal selections, browser annotations, PR context,
   each linked issue, PR or guest item) becomes its own synthetic text part carrying structured
   metadata** built by `lib/messages/contextParts.ts`; the timeline reads that
@@ -717,7 +735,7 @@ none of them is verifiable outside a real device.** Change them only against
 hardware.
 
 `state/mobileComposerMorph.ts` plays the pill ↔ composer swap as a FLIP morph
-in the native iOS shell only. The swap commits synchronously (`flushSync`); the glass box
+in the native iOS shell only. The swap commits synchronously (`flushSync`); the box
 (`data-composer-box`) is then frozen at its old height and animated to the
 new one (WAAPI) with its rows anchored to the bottom edge, so the footer and
 model/agent rows stay where the pill's rows were; the prompt

@@ -476,7 +476,7 @@ export function CodeMirrorEditor({
       viewRef.current = null;
       setPortalWidgets([]);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [blockWidgetsRef, syncEditorCssVars, syncPortalWidgets]);
 
   // Only the compartments whose input changed are reconfigured: a reconfigure
@@ -601,6 +601,8 @@ export function CodeMirrorEditor({
     <>
       <div
         ref={hostRef}
+        // Code reads left to right in every UI language; gutters stay on the left.
+        dir="ltr"
         className={cn(
           'oc-surface-code h-full w-full',
           '[&_.cm-editor]:h-full [&_.cm-editor]:w-full',

@@ -248,47 +248,34 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       const worktreesByProject = new Map(seededRawScope.worktreesByProject);
       const unresolvedProjectPaths = new Set<string>();
 
-      // Constrain fanout: previously `Promise.all(projects.map(...))` could
-      // spawn dozens of concurrent `git worktree list` and
-      // `checkIsGitRepository` calls on cold start, each touching the
-      // worktree process. Concurrency=3 keeps startup latency low while
-      // bounding peak worktree-process load.
-      const worktreeConcurrency = 3;
-      let cursor = 0;
-      const workers = Array.from({ length: worktreeConcurrency }, async () => {
-        while (true) {
-          const nextIndex = cursor;
-          cursor += 1;
-          if (nextIndex >= projectEntries.length) return;
-          const project = projectEntries[nextIndex];
-          const projectPath = normalizePath(project.path);
-          if (!projectPath) continue;
-          try {
-            const worktrees = await runBackgroundNetworkTask(async () => {
-              // Use store-cached isGitRepo when available; fall back to
-              // a direct check for projects the Git store hasn't seen yet.
-              const cachedIsGitRepo = useGitStore.getState().directories.get(projectPath)?.isGitRepo;
-              const isGitRepo = cachedIsGitRepo ?? await checkIsGitRepository(projectPath);
-              if (!isGitRepo) return null;
-              return listProjectWorktrees({ id: project.id, path: projectPath });
-            });
-            if (worktrees === null) {
-              worktreesByProject.delete(projectPath);
-              continue;
-            }
-            if (cancelled) return;
-            if (worktrees.length === 0) {
-              worktreesByProject.delete(projectPath);
-            } else {
-              worktreesByProject.set(projectPath, worktrees);
-            }
-          } catch {
-            // Keep last-known worktrees when a project is temporarily unavailable.
-            unresolvedProjectPaths.add(projectPath);
+      // Read every project at once. The repository check and worktree list
+      // inside coalesce into one `/api/git/projects` batch, and the server
+      // bounds how many git processes run concurrently, so the client no
+      // longer needs its own worker pool to protect the worktree process.
+      await runBackgroundNetworkTask(() => Promise.all(projectEntries.map(async (project) => {
+        const projectPath = normalizePath(project.path);
+        if (!projectPath) return;
+        try {
+          // Use store-cached isGitRepo when available; fall back to a direct
+          // check for projects the Git store hasn't seen yet.
+          const cachedIsGitRepo = useGitStore.getState().directories.get(projectPath)?.isGitRepo;
+          const isGitRepo = cachedIsGitRepo ?? await checkIsGitRepository(projectPath);
+          if (!isGitRepo) {
+            worktreesByProject.delete(projectPath);
+            return;
           }
+          const worktrees = await listProjectWorktrees({ id: project.id, path: projectPath });
+          if (cancelled) return;
+          if (worktrees.length === 0) {
+            worktreesByProject.delete(projectPath);
+          } else {
+            worktreesByProject.set(projectPath, worktrees);
+          }
+        } catch {
+          // Keep last-known worktrees when a project is temporarily unavailable.
+          unresolvedProjectPaths.add(projectPath);
         }
-      });
-      await Promise.all(workers);
+      })));
 
       if (cancelled || getRuntimeKey() !== discoveryRuntimeKey) return;
 
@@ -473,8 +460,12 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   }
 
   const showArchivedSessions = useSessionDisplayStore((state) => state.showArchivedSessions);
-  const projectSortOrder = useSessionDisplayStore((state) => state.projectSortOrder);
+  const storedProjectSortOrder = useSessionDisplayStore((state) => state.projectSortOrder);
   const rawSidebarViewMode = useSessionDisplayStore((state) => state.sidebarViewMode);
+  // VS Code keeps the projects view only; the mode switch is hidden there.
+  const sidebarViewMode = isVSCode ? 'projects' : rawSidebarViewMode;
+  // The timeline keeps projects in the user's own order; dragging is its only sort.
+  const projectSortOrder = sidebarViewMode === 'timeline' ? 'manual' : storedProjectSortOrder;
   const manualProjectOrder = useProjectsStore((state) => state.manualProjectOrder);
 
   const sidebarRenderSources = {
@@ -539,11 +530,6 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   // The projects view always groups by worktree (parallel-work overview).
   // VS Code has no worktree groups, so it renders the merged per-project list.
   const useGroupedSections = !isVSCode;
-  // VS Code keeps the projects view only; the mode switch is hidden there.
-  const sidebarViewMode = isVSCode ? 'projects' : rawSidebarViewMode;
-  // Zone headers pin themselves in the grouped view, where a project can
-  // scroll for a long time; the flat timeline reads better without them.
-  const stickyZoneHeaders = sidebarViewMode === 'projects';
   const desktopHeaderActionButtonClass =
     'inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-md leading-none text-foreground hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed';
   const mobileHeaderActionButtonClass =
@@ -649,7 +635,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       <SidebarHeader
         hideDirectoryControls={hideDirectoryControls}
         showProjectDisplayControls={!isVSCode}
-        showRecentControls={!isVSCode}
+        showSectionControls={!isVSCode}
         handleOpenDirectoryDialog={handleOpenDirectoryDialog}
         // A desktop page: phones have their own shell, VS Code no source pickers.
         showSourceBoard={!mobileVariant && !isVSCode}
@@ -691,7 +677,6 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
           hideDirectoryControls,
           showOnlyMainWorkspace,
           isDesktopShellRuntime,
-          stickyZoneHeaders,
           projectSortOrder,
           sidebarViewMode,
           emptyState,

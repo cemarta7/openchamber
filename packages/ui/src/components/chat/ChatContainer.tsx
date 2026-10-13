@@ -173,6 +173,7 @@ const hasBlockingChatOverlay = (): boolean => {
         isAboutDialogOpen,
         isCommandPaletteOpen,
         isHelpDialogOpen,
+        isProjectActionsDialogOpen,
         isImagePreviewOpen,
         runOverviewKey,
         isSessionSwitcherOpen,
@@ -182,6 +183,7 @@ const hasBlockingChatOverlay = (): boolean => {
     return isAboutDialogOpen
         || isCommandPaletteOpen
         || isHelpDialogOpen
+        || isProjectActionsDialogOpen
         || isImagePreviewOpen
         || runOverviewKey !== null
         || isSessionSwitcherOpen
@@ -649,7 +651,7 @@ const ReadOnlyPromptBanner: React.FC<{ text: string; onStop?: () => void; stopLa
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="-my-1.5 -mr-2 shrink-0 text-[var(--status-error)] hover:text-[var(--status-error)]"
+                        className="-my-1.5 -me-2 shrink-0 text-[var(--status-error)] hover:text-[var(--status-error)]"
                         onClick={onStop}
                         aria-label={stopLabel}
                         title={stopLabel}
@@ -847,7 +849,6 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         [effectiveSessionDirectory, sync],
     );
     const loadMoreMessages = React.useCallback(
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         (sessionId: string, _direction: 'up' | 'down') => sync.loadMore(sessionId, effectiveSessionDirectory),
         [effectiveSessionDirectory, sync],
     );
@@ -860,7 +861,6 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         () => (pinned ? { expanded: pinnedExpandedInput, setExpanded: setPinnedExpandedInput } : null),
         [pinned, pinnedExpandedInput],
     );
-    const stickyUserHeader = useUIStore((state) => state.stickyUserHeader);
     const promptNavigatorEnabled = useUIStore((state) => state.promptNavigatorEnabled);
     const allowPromptingSubagentSessions = useUIStore((state) => state.allowPromptingSubagentSessions);
     // The timeline dialog of the main chat is app state (a global shortcut
@@ -1113,7 +1113,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
             variant="outline"
             size="xs"
             onClick={handleReturnToParentSession}
-            className="absolute left-3 top-3 z-20 !font-normal bg-[var(--surface-background)]/95"
+            className="absolute inset-s-3 top-3 z-20 !font-normal bg-[var(--surface-background)]/95"
             aria-label={t('chat.container.returnToParent.aria')}
             title={parentSession.title?.trim()
                 ? t('chat.container.returnToParent.titleNamed', { title: parentSession.title })
@@ -1125,11 +1125,12 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     ) : null;
     // A chat of a deleted isolated space is on the Archive page and read-only; the server refuses
     // to run it whatever the screen shows. Its directory is the archive's own, and the list of
-    // archives is read once per runtime.
+    // archives is read once per runtime. A draft opened after such a chat still sits in the
+    // archive's directory until it is sent, and is not read-only: it is a new chat.
     React.useEffect(() => {
         ensureSpaceArchives();
     }, []);
-    const spaceArchive = useSpaceArchiveOf(effectiveSessionDirectory);
+    const spaceArchive = useSpaceArchiveOf(currentSessionId ? effectiveSessionDirectory : null);
     const promptReadOnly = spaceArchive !== null || resolveChatPromptReadOnly(
         currentSession,
         allowPromptingSubagentSessions,
@@ -1428,57 +1429,6 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         };
     }, [currentSessionId, isDesktopExpandedInput, navigation, scrollRef]);
 
-    React.useLayoutEffect(() => {
-        const container = scrollRef.current;
-        if (!container) return;
-
-        // Read by the transcript's sticky user messages, which inherit it from
-        // here: a new value restyles the transcript, so it is written only when
-        // the height changed.
-        const updateChatScrollHeight = () => {
-            const value = `${container.clientHeight}px`;
-            if (container.style.getPropertyValue('--chat-scroll-height') !== value) {
-                container.style.setProperty('--chat-scroll-height', value);
-            }
-        };
-
-        updateChatScrollHeight();
-
-        let rafId = 0;
-        const scheduleUpdate = () => {
-            if (rafId) return;
-            rafId = requestAnimationFrame(() => {
-                rafId = 0;
-                updateChatScrollHeight();
-            });
-        };
-
-        if (typeof ResizeObserver === 'undefined') {
-            window.addEventListener('resize', scheduleUpdate);
-            return () => {
-                if (rafId) cancelAnimationFrame(rafId);
-                window.removeEventListener('resize', scheduleUpdate);
-            };
-        }
-
-        // A width change (the sidebar or the context panel animating) leaves
-        // the height alone; it is skipped before anything reads layout. Inside
-        // the callback layout is current, so the read forces none.
-        let observedHeight: number | null = null;
-        const resizeObserver = new ResizeObserver((entries) => {
-            const height = entries[entries.length - 1]?.contentRect.height;
-            if (height === undefined || height === observedHeight) return;
-            observedHeight = height;
-            updateChatScrollHeight();
-        });
-        resizeObserver.observe(container);
-
-        return () => {
-            if (rafId) cancelAnimationFrame(rafId);
-            resizeObserver.disconnect();
-        };
-    }, [currentSessionId, isDesktopExpandedInput, scrollRef]);
-
     const lastScrolledSessionKeyRef = React.useRef<string | null>(null);
 
     const isSessionHydrating =
@@ -1592,7 +1542,6 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     const scrollNodeRef = React.useMemo(() => ({ current: scrollNode }), [scrollNode]);
     useScrollShadow(scrollNodeRef, {
         observeMutations: false,
-        hideTopShadow: isMobile && stickyUserHeader,
         // The glass composer is the visible end of the transcript.
         hideBottomShadow: floatingComposer,
     });
@@ -1826,7 +1775,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
 			{returnToParentButton}
 			{sessionSurface}
 			{chatSearch.open && currentSessionId && messageSearchEnabled ? (
-				<div className="pointer-events-none absolute right-3 top-2 z-20">
+				<div className="pointer-events-none absolute inset-e-3 top-2 z-20">
 					<ChatSearchBar
 						sessionId={currentSessionId}
 						scrollNode={scrollNode}

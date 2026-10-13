@@ -11,7 +11,7 @@ const openaiLogin = { kind: 'login' as const, id: 'openai', provider: 'openai', 
 const entry = (change: Partial<SpaceEntry> = {}): SpaceEntry => ({
   id: 'a1b2c3d4e5f6',
   name: 'Fix login',
-  placeId: 'docker',
+  placeId: 'docker', machine: null,
   projectDirectory: '/home/me/app',
   projectFolder: { path: '/home/me/app', found: true },
   directory: '/spaces/a1b2c3d4e5f6/app',
@@ -52,6 +52,16 @@ describe('spaceAccessNoticeOf', () => {
     expect(spaceAccessNoticeOf(entry({ grants: [openaiLogin] }))).toBeNull();
     expect(spaceAccessNoticeOf(entry({ grants: [openaiLogin], access: 'needs_access', needsAccess: ['openai'] }))).toEqual({ kind: 'needs_again', providers: ['openai'] });
     expect(spaceAccessNoticeOf(entry({ grants: [], access: null }))).toEqual({ kind: 'no_model' });
+  });
+
+  test('says nothing about a missing model key with the open internet, where free models answer without one', () => {
+    expect(spaceAccessNoticeOf(entry({ grants: [], access: null, network: { mode: 'open', domains: [] } }))).toBeNull();
+    expect(spaceAccessNoticeOf(entry({ grants: [registry], network: { mode: 'open', domains: [] } }))).toBeNull();
+    // A network the host could not read is unknown, never open; an allowlist keeps the line.
+    expect(spaceAccessNoticeOf(entry({ grants: [], access: null, network: null }))).toEqual({ kind: 'no_model' });
+    expect(spaceAccessNoticeOf(entry({ grants: [], access: null, network: { mode: 'allowlist', domains: ['registry.npmjs.org'] } }))).toEqual({ kind: 'no_model' });
+    // A key lost at a restart is still said, whatever the network.
+    expect(spaceAccessNoticeOf(entry({ access: 'needs_access', needsAccess: ['anthropic'], network: { mode: 'open', domains: [] } }))).toEqual({ kind: 'needs_again', providers: ['anthropic'] });
   });
 
   test('says it could not check rather than "granted" when the gatekeeper did not answer', () => {

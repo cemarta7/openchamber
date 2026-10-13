@@ -192,19 +192,6 @@ const USER_MESSAGE_RENDERING_OPTIONS: Option<'markdown' | 'plain'>[] = [
     },
 ];
 
-const CHAT_RENDER_MODE_OPTIONS: Option<'sorted' | 'live'>[] = [
-    {
-        id: 'sorted',
-        labelKey: 'settings.openchamber.visual.option.chatRenderMode.sorted.label',
-        descriptionKey: 'settings.openchamber.visual.option.chatRenderMode.sorted.description',
-    },
-    {
-        id: 'live',
-        labelKey: 'settings.openchamber.visual.option.chatRenderMode.live.label',
-        descriptionKey: 'settings.openchamber.visual.option.chatRenderMode.live.description',
-    },
-];
-
 const MESSAGE_STREAM_TRANSPORT_OPTIONS: Option<'auto' | 'ws' | 'sse'>[] = [
     {
         id: 'auto',
@@ -315,7 +302,7 @@ const normalizeUserMessageRenderingMode = (mode: unknown): 'markdown' | 'plain' 
     return mode === 'markdown' ? 'markdown' : 'plain';
 };
 
-type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'scrollbars' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'tableCellWrap' | 'copyMessagesAsPlainText' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'inputHistoryScope' | 'inputHistoryLimit' | 'messageSearch' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'largeTextPaste' | 'enterToSend' | 'reportUsage' | 'autoSaveEnabled' | 'confirmFileTreeMove' | 'sessionTabs' | 'animatedActivityIndicators' | 'layoutAnimations' | 'fileTreeSide';
+type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'scrollbars' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'tableCellWrap' | 'copyMessagesAsPlainText' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'followUpBehavior' | 'inputHistoryScope' | 'inputHistoryLimit' | 'messageSearch' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'largeTextPaste' | 'enterToSend' | 'reportUsage' | 'autoSaveEnabled' | 'confirmFileTreeMove' | 'sessionTabs' | 'animatedActivityIndicators' | 'layoutAnimations' | 'openLinksInBrowserPanel' | 'openTrackerLinksOnBoard' | 'fileTreeSide';
 
 const WINDOW_CONTROLS_POSITION_OPTIONS: Array<{ id: DesktopWindowControlsPosition; labelKey: string }> = [
     { id: 'left', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsLeft' },
@@ -369,9 +356,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const setUserMessageRenderingMode = useUIStore(state => state.setUserMessageRenderingMode);
     const collapsibleUserMessages = useUIStore(state => state.collapsibleUserMessages);
     const setCollapsibleUserMessages = useUIStore(state => state.setCollapsibleUserMessages);
-    const stickyUserHeader = useUIStore(state => state.stickyUserHeader);
     const promptNavigatorEnabled = useUIStore(state => state.promptNavigatorEnabled);
-    const setStickyUserHeader = useUIStore(state => state.setStickyUserHeader);
     const setPromptNavigatorEnabled = useUIStore(state => state.setPromptNavigatorEnabled);
     const autoSaveEnabled = useUIStore(state => state.autoSaveEnabled);
     const setAutoSaveEnabled = useUIStore(state => state.setAutoSaveEnabled);
@@ -381,6 +366,10 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const fileTreeSide = useUIStore(state => state.fileTreeSide);
     const setFileTreeSide = useUIStore(state => state.setFileTreeSide);
     const setLayoutAnimations = useUIStore(state => state.setLayoutAnimations);
+    const openLinksInBrowserPanel = useUIStore(state => state.openLinksInBrowserPanel);
+    const setOpenLinksInBrowserPanel = useUIStore(state => state.setOpenLinksInBrowserPanel);
+    const openTrackerLinksOnBoard = useUIStore(state => state.openTrackerLinksOnBoard);
+    const setOpenTrackerLinksOnBoard = useUIStore(state => state.setOpenTrackerLinksOnBoard);
     const wideChatLayoutEnabled = useUIStore(state => state.wideChatLayoutEnabled);
     const setWideChatLayoutEnabled = useUIStore(state => state.setWideChatLayoutEnabled);
     const codeBlockLineWrap = useUIStore(state => state.codeBlockLineWrap);
@@ -389,8 +378,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const setTableCellWrap = useUIStore(state => state.setTableCellWrap);
     const copyMessagesAsPlainText = useUIStore(state => state.copyMessagesAsPlainText);
     const setCopyMessagesAsPlainText = useUIStore(state => state.setCopyMessagesAsPlainText);
-    const chatRenderMode = useUIStore(state => state.chatRenderMode);
-    const setChatRenderMode = useUIStore(state => state.setChatRenderMode);
     const activityRenderMode = useUIStore(state => state.activityRenderMode);
     const setActivityRenderMode = useUIStore(state => state.setActivityRenderMode);
     const fontSize = useUIStore(state => state.fontSize);
@@ -454,10 +441,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const setShowToolFileIcons = useUIStore(state => state.setShowToolFileIcons);
     const showTurnChangedFiles = useUIStore(state => state.showTurnChangedFiles);
     const setShowTurnChangedFiles = useUIStore(state => state.setShowTurnChangedFiles);
-    const showExpandedBashTools = useUIStore(state => state.showExpandedBashTools);
-    const setShowExpandedBashTools = useUIStore(state => state.setShowExpandedBashTools);
-    const showExpandedEditTools = useUIStore(state => state.showExpandedEditTools);
-    const setShowExpandedEditTools = useUIStore(state => state.setShowExpandedEditTools);
     const timeFormatPreference = useUIStore(state => state.timeFormatPreference);
     const setTimeFormatPreference = useUIStore(state => state.setTimeFormatPreference);
     const weekStartPreference = useUIStore(state => state.weekStartPreference);
@@ -473,7 +456,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const effectiveMessageStreamTransport = messageStreamTransport;
     const settingsDefaultFileViewerPreview = useConfigStore((state) => state.settingsDefaultFileViewerPreview);
     const setSettingsDefaultFileViewerPreview = useConfigStore((state) => state.setSettingsDefaultFileViewerPreview);
-    const isSettingsDialogOpen = useUIStore(state => state.isSettingsDialogOpen);
     const {
         themeMode,
         setThemeMode,
@@ -505,7 +487,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const setDesktopWindowControlsPosition = useUIStore((state) => state.setDesktopWindowControlsPosition);
     const desktopWindowControlsStyle = useUIStore((state) => state.desktopWindowControlsStyle);
     const setDesktopWindowControlsStyle = useUIStore((state) => state.setDesktopWindowControlsStyle);
-    const [chatRenderPreviewTick, setChatRenderPreviewTick] = React.useState(0);
     const reportUsage = useUIStore(state => state.reportUsage);
     const setReportUsage = useUIStore(state => state.setReportUsage);
 
@@ -534,61 +515,10 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         void updateDesktopSettings({ desktopWindowControlsStyle: value });
     }, [setDesktopWindowControlsStyle]);
 
-    const shouldAnimateChatPreview = (isSettingsDialogOpen || isMobile || isVSCodeRuntime())
-        && (visibleSettings ? visibleSettings.includes('chatRenderMode') : true);
-
-    React.useEffect(() => {
-        if (!shouldAnimateChatPreview) {
-            return;
-        }
-
-        // Use requestAnimationFrame for smoother animation without setInterval overhead
-        let rafId: number | null = null;
-        let lastTime = Date.now();
-        
-        const tick = () => {
-            const now = Date.now();
-            // Update every ~420ms
-            if (now - lastTime >= 420) {
-                setChatRenderPreviewTick((prev) => (prev + 1) % 24);
-                lastTime = now;
-            }
-            rafId = requestAnimationFrame(tick);
-        };
-        
-        // Only run when visible
-        if (typeof document === 'undefined' || document.visibilityState === 'visible') {
-            rafId = requestAnimationFrame(tick);
-        }
-        
-        const onVisibility = () => {
-            if (document.visibilityState === 'visible' && rafId === null) {
-                rafId = requestAnimationFrame(tick);
-            } else if (document.visibilityState !== 'visible' && rafId !== null) {
-                cancelAnimationFrame(rafId);
-                rafId = null;
-            }
-        };
-        
-        document.addEventListener('visibilitychange', onVisibility);
-
-        return () => {
-            document.removeEventListener('visibilitychange', onVisibility);
-            if (rafId !== null) {
-                cancelAnimationFrame(rafId);
-            }
-        };
-    }, [shouldAnimateChatPreview]);
-
     const handleUserMessageRenderingModeChange = React.useCallback((mode: 'markdown' | 'plain') => {
         setUserMessageRenderingMode(mode);
         void updateDesktopSettings({ userMessageRenderingMode: mode });
     }, [setUserMessageRenderingMode]);
-
-    const handleStickyUserHeaderChange = React.useCallback((enabled: boolean) => {
-        setStickyUserHeader(enabled);
-        void updateDesktopSettings({ stickyUserHeader: enabled });
-    }, [setStickyUserHeader]);
 
     const handlePromptNavigatorEnabledChange = React.useCallback((enabled: boolean) => {
         setPromptNavigatorEnabled(enabled);
@@ -626,11 +556,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         void updateDesktopSettings({ enterToSend: enabled, enterToSendConfigured: true });
     }, [setEnterToSend, setEnterToSendConfigured]);
 
-    const handleChatRenderModeChange = React.useCallback((mode: 'sorted' | 'live') => {
-        setChatRenderMode(mode);
-        void updateDesktopSettings({ chatRenderMode: mode });
-    }, [setChatRenderMode]);
-
     const handleMessageStreamTransportChange = React.useCallback((mode: 'auto' | 'ws' | 'sse') => {
         setMessageStreamTransport(mode);
         void updateDesktopSettings({ messageStreamTransport: mode });
@@ -652,7 +577,9 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
 
     const handleActivityRenderModeChange = React.useCallback((mode: 'collapsed' | 'summary') => {
         setActivityRenderMode(mode);
-        void updateDesktopSettings({ activityRenderMode: mode });
+        // A stored legacy 'sorted' chat mode reads as Collapsed until the user
+        // picks a mode here; retire it so the choice sticks.
+        void updateDesktopSettings({ activityRenderMode: mode, chatRenderMode: 'live' });
     }, [setActivityRenderMode]);
 
     const handleMermaidRenderingModeChange = React.useCallback((mode: 'svg' | 'ascii') => {
@@ -675,16 +602,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         void updateDesktopSettings({ defaultFileViewerPreview: enabled });
         window.dispatchEvent(new CustomEvent('openchamber:file-viewer-preview-mode-changed', { detail: { enabled } }));
     }, [setSettingsDefaultFileViewerPreview]);
-
-    const handleShowExpandedBashToolsChange = React.useCallback((enabled: boolean) => {
-        setShowExpandedBashTools(enabled);
-        void updateDesktopSettings({ showExpandedBashTools: enabled });
-    }, [setShowExpandedBashTools]);
-
-    const handleShowExpandedEditToolsChange = React.useCallback((enabled: boolean) => {
-        setShowExpandedEditTools(enabled);
-        void updateDesktopSettings({ showExpandedEditTools: enabled });
-    }, [setShowExpandedEditTools]);
 
     const handleTimeFormatPreferenceChange = React.useCallback((value: 'auto' | '12h' | '24h') => {
         setTimeFormatPreference(value);
@@ -749,15 +666,13 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         ? hasLocalizationSettings
         : (shouldShow('theme') || showWindowControlsPositionSetting || shouldShow('pwaInstallName') || shouldShow('pwaOrientation') || shouldShow('timeFormat') || shouldShow('weekStart'));
     const hasLayoutSettings = shouldShow('fontSize') || shouldShow('terminalFontSize') || shouldShow('editorFontSize') || shouldShow('spacing') || (shouldShow('scrollbars') && !hasThemeSettings) || (shouldShow('inputBarOffset') && isMobile);
-    const hasNavigationSettings = (shouldShow('terminalQuickKeys') && !isMobile) || ((shouldShow('terminalShell') || shouldShow('terminalLoginShell')) && !isVSCode) || shouldShow('fileEditorKeymap') || shouldShow('autoSaveEnabled') || (shouldShow('confirmFileTreeMove') && !isVSCode && !isMobile) || (shouldShow('layoutAnimations') && !isVSCode && !isMobile) || (shouldShow('fileTreeSide') && !isVSCode && !isMobile) || (shouldShow('sessionTabs') && !isVSCode && !isMobile);
+    const hasNavigationSettings = (shouldShow('terminalQuickKeys') && !isMobile) || ((shouldShow('terminalShell') || shouldShow('terminalLoginShell')) && !isVSCode) || shouldShow('fileEditorKeymap') || shouldShow('autoSaveEnabled') || (shouldShow('confirmFileTreeMove') && !isVSCode && !isMobile) || (shouldShow('layoutAnimations') && !isVSCode && !isMobile) || (shouldShow('openLinksInBrowserPanel') && isDesktopShell() && !isMobile) || (shouldShow('openTrackerLinksOnBoard') && !isVSCode) || (shouldShow('fileTreeSide') && !isVSCode && !isMobile) || (shouldShow('sessionTabs') && !isVSCode && !isMobile);
     const hasBehaviorSettings = shouldShow('mermaidRendering')
         || (shouldShow('sessionGoal') && !isVSCode)
         || shouldShow('userMessageRendering')
-        || shouldShow('chatRenderMode')
         || shouldShow('messageTransport')
         || shouldShow('activityRenderMode')
         || shouldShow('collapsibleUserMessages')
-        || shouldShow('stickyUserHeader')
         || shouldShow('promptNavigatorEnabled')
         || shouldShow('wideChatLayout')
         || shouldShow('codeBlockLineWrap')
@@ -775,11 +690,9 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         || shouldShow('persistDraft')
         || shouldShow('largeTextPaste')
         || shouldShow('showToolFileIcons')
-        || shouldShow('expandedTools')
         || (!isMobile && shouldShow('inputSpellcheck'))
         || shouldShow('enterToSend');
-    const showBehaviorDisplaySettings = shouldShow('chatRenderMode')
-        || shouldShow('activityRenderMode');
+    const showBehaviorDisplaySettings = shouldShow('activityRenderMode');
     const showTransportSection = shouldShow('messageTransport');
     const showBehaviorMessageOptions = shouldShow('userMessageRendering')
         || shouldShow('mermaidRendering')
@@ -791,7 +704,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         || (shouldShow('sessionGoal') && !isVSCode)
         || shouldShow('subagentReadOnlyBanner')
         || shouldShow('collapsibleUserMessages')
-        || shouldShow('stickyUserHeader')
         || shouldShow('promptNavigatorEnabled')
         || shouldShow('wideChatLayout')
         || shouldShow('codeBlockLineWrap')
@@ -806,8 +718,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         || shouldShow('showTurnChangedFiles')
         || (!isMobile && shouldShow('inputSpellcheck'))
         || shouldShow('enterToSend')
-        || shouldShow('reasoning')
-        || shouldShow('expandedTools');
+        || shouldShow('reasoning');
     // First behavior section under the page header should not draw a top border on Chat-only;
     // when Appearance (or earlier sections) already rendered, keep the default divider.
     const behaviorSectionDivider = hasAppearanceSettings || hasLayoutSettings || hasNavigationSettings;
@@ -1684,6 +1595,26 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                     settingsItem="appearance.layout-animations"
                                 />
                             )}
+                            {shouldShow('openLinksInBrowserPanel') && isDesktopShell() && !isMobile && (
+                                <SettingsCheckboxRow
+                                    checked={openLinksInBrowserPanel}
+                                    onChange={setOpenLinksInBrowserPanel}
+                                    label={t('settings.openchamber.visual.field.openLinksInBrowserPanel')}
+                                    ariaLabel={t('settings.openchamber.visual.field.openLinksInBrowserPanel')}
+                                    info={t('settings.openchamber.visual.field.openLinksInBrowserPanelInfo')}
+                                    settingsItem="appearance.open-links-in-browser-panel"
+                                />
+                            )}
+                            {shouldShow('openTrackerLinksOnBoard') && !isVSCode && (
+                                <SettingsCheckboxRow
+                                    checked={openTrackerLinksOnBoard}
+                                    onChange={setOpenTrackerLinksOnBoard}
+                                    label={t('settings.openchamber.visual.field.openTrackerLinksOnBoard')}
+                                    ariaLabel={t('settings.openchamber.visual.field.openTrackerLinksOnBoard')}
+                                    info={t('settings.openchamber.visual.field.openTrackerLinksOnBoardInfo')}
+                                    settingsItem="appearance.open-tracker-links-on-board"
+                                />
+                            )}
                             {showTerminalShellSetting && (
                                 <SettingsStackedField
                                     label={t('settings.openchamber.visual.field.terminalShell')}
@@ -1752,92 +1683,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                 divider={behaviorSectionDivider}
                                 contentClassName="space-y-6"
                             >
-                                {shouldShow('chatRenderMode') && (
-                                    <SettingsControlGroup
-                                        title={t('settings.openchamber.visual.section.chatRenderMode')}
-                                        settingsItem="chat.render-mode"
-                                    >
-                                        <div role="radiogroup" aria-label={t('settings.openchamber.visual.section.chatRenderModeAria')} className="grid w-full max-w-[26rem] grid-cols-1 gap-3 @xl:grid-cols-2">
-                                            {CHAT_RENDER_MODE_OPTIONS.map((option) => {
-                                                const selected = chatRenderMode === option.id;
-                                                const previewPhase = chatRenderPreviewTick % 12;
-                                                return (
-                                                    <button
-                                                        key={option.id}
-                                                        type="button"
-                                                        onClick={() => handleChatRenderModeChange(option.id)}
-                                                        aria-pressed={selected}
-                                                        className={cn(
-                                                            'flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors',
-                                                            selected
-                                                                ? 'border-border bg-interactive-selection text-interactive-selection-foreground'
-                                                                : 'border-border hover:border-border/80 hover:bg-interactive-hover'
-                                                        )}
-                                                    >
-                                                        <span className={cn('typography-ui-label', selected ? 'text-inherit' : 'text-muted-foreground')}>
-                                                            {tUnsafe(option.labelKey)}
-                                                        </span>
-                                                        <div className="mt-2 w-full rounded-md border border-border/60 bg-muted/30 p-2">
-                                                            {option.id === 'live' ? (
-                                                                <div className="space-y-1.5">
-                                                                    {[0, 1, 2].map((index) => {
-                                                                        const rowStart = index * 3 + 1;
-                                                                        const rowProgressPhase = previewPhase - rowStart + 1;
-                                                                        const rowProgress = rowProgressPhase <= 0
-                                                                            ? 0
-                                                                            : rowProgressPhase === 1
-                                                                                ? 42
-                                                                                : rowProgressPhase === 2
-                                                                                    ? 68
-                                                                                    : 92;
-                                                                        const visible = rowProgress > 0;
-                                                                        return (
-                                                                            <div
-                                                                                key={index}
-                                                                                className={cn(
-                                                                                    'flex items-center gap-1.5 transition-all duration-300 motion-reduce:transition-none',
-                                                                                    visible ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0'
-                                                                                )}
-                                                                            >
-                                                                                <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/55" />
-                                                                                <span
-                                                                                    className="h-1.5 rounded bg-muted-foreground/30 transition-all duration-300 motion-reduce:transition-none"
-                                                                                    style={{ width: `${rowProgress}%` }}
-                                                                                />
-                                                                            </div>
-                                                                        );
-                                                                    })}
-                                                                </div>
-                                                            ) : (
-                                                                <div className="space-y-1.5">
-                                                                    {[0, 1, 2].map((index) => {
-                                                                        const visible = previewPhase >= (index + 1) * 3;
-                                                                        return (
-                                                                            <div
-                                                                                key={index}
-                                                                                className={cn(
-                                                                                    'flex items-center gap-1.5 transition-all duration-300 motion-reduce:transition-none',
-                                                                                    visible ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0'
-                                                                                )}
-                                                                            >
-                                                                                <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/55" />
-                                                                                <span
-                                                                                    className="h-1.5 rounded bg-muted-foreground/30"
-                                                                                    style={{ width: '92%' }}
-                                                                                />
-                                                                            </div>
-                                                                        );
-                                                                    })}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </button>
-                                                );
-                                            })}
-                                        </div>
-                                    </SettingsControlGroup>
-                                )}
-
                                 {shouldShow('activityRenderMode') && (
                                     <SettingsControlGroup title={t('settings.openchamber.visual.section.activityDefault')} settingsItem="chat.activity-default">
                                         <SettingsRadioGroup aria-label={t('settings.openchamber.visual.section.activityDefaultAria')}>
@@ -2009,29 +1854,10 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
 
                         {showBehaviorFeatureCheckboxes && (
                             <>
-                                {shouldShow('expandedTools') && (
-                                    <SettingsSection
-                                        title={t('settings.openchamber.visual.section.showToolsOpenedByDefault')}
-                                        divider={showBehaviorDisplaySettings || showTransportSection || showBehaviorMessageOptions || behaviorSectionDivider}
-                                        contentClassName={SETTINGS_OPTION_STACK_CLASS}
-                                    >
-                                        <SettingsCheckboxRow
-                                            checked={showExpandedBashTools}
-                                            onChange={handleShowExpandedBashToolsChange}
-                                            label={t('settings.openchamber.visual.field.bash')}
-                                            ariaLabel={t('settings.openchamber.visual.field.showExpandedBashToolsAria')}
-                                        />
-                                        <SettingsCheckboxRow
-                                            checked={showExpandedEditTools}
-                                            onChange={handleShowExpandedEditToolsChange}
-                                            label={t('settings.openchamber.visual.field.editTools')}
-                                            ariaLabel={t('settings.openchamber.visual.field.showExpandedEditToolsAria')}
-                                        />
-                                    </SettingsSection>
-                                )}
                                 <SettingsSection
                                     title={t('settings.openchamber.visual.section.sessionAssistance')}
                                     settingsItem="chat.session-assistance"
+                                    divider={showBehaviorDisplaySettings || showTransportSection || showBehaviorMessageOptions || behaviorSectionDivider}
                                     contentClassName={SETTINGS_OPTION_STACK_CLASS}
                                 >
                                     <SettingsCheckboxRow
@@ -2173,7 +1999,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                     />
                                 </SettingsSection>
 
-                                {(shouldShow('collapsibleUserMessages') || shouldShow('stickyUserHeader') || shouldShow('promptNavigatorEnabled') || shouldShow('wideChatLayout') || shouldShow('splitAssistantMessageActions') || shouldShow('codeBlockLineWrap') || shouldShow('tableCellWrap') || shouldShow('copyMessagesAsPlainText')) && (
+                                {(shouldShow('collapsibleUserMessages') || shouldShow('promptNavigatorEnabled') || shouldShow('wideChatLayout') || shouldShow('splitAssistantMessageActions') || shouldShow('codeBlockLineWrap') || shouldShow('tableCellWrap') || shouldShow('copyMessagesAsPlainText')) && (
                                 <SettingsSection
                                     title={t('settings.openchamber.visual.section.messageAppearance')}
                                     settingsItem="chat.message-appearance"
@@ -2186,16 +2012,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         label={t('settings.openchamber.visual.field.collapsibleUserMessages')}
                                         ariaLabel={t('settings.openchamber.visual.field.collapsibleUserMessagesAria')}
                                         settingsItem="chat.collapsible-user-messages"
-                                    />
-                                )}
-
-                                {shouldShow('stickyUserHeader') && (
-                                    <SettingsCheckboxRow
-                                        checked={stickyUserHeader}
-                                        onChange={handleStickyUserHeaderChange}
-                                        label={t('settings.openchamber.visual.field.stickyUserHeader')}
-                                        ariaLabel={t('settings.openchamber.visual.field.stickyUserHeaderAria')}
-                                        settingsItem="chat.sticky-user-header"
                                     />
                                 )}
 

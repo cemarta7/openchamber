@@ -1,6 +1,5 @@
 /**
- * The status line under an isolated space's group in the sidebar: while it is being made (DESIGN.md,
- * user journey step 2) the step the host announced, the model access this window is giving, a
+ * The status line under an isolated space's group in the sidebar: while it is being made (journey step 2) the step the host announced, the model access this window is giving, a
  * failed creation with the way to remove it, or access that could not be given; once it runs, what
  * access it lacks (step 4), read from the gatekeeper through the journey list, with the way to the
  * grant dialog. Since 5d-2 (step 8) it also says when a space is stopped, broken or not answering,
@@ -58,7 +57,7 @@ const STATE_LINE = {
   stopped_idle: { text: 'spaces.group.state.stoppedIdle', tone: 'muted', action: 'start' },
   damaged: { text: 'spaces.group.state.damaged', tone: 'warning', action: 'restart' },
   not_answering: { text: 'spaces.group.state.notAnswering', tone: 'warning', action: 'restart' },
-} satisfies Record<Exclude<SpaceCondition['kind'], 'busy' | 'action_failed'>, { text: I18nKey; tone: 'muted' | 'warning' | 'error'; action: SpaceAction }>;
+} satisfies Record<Exclude<SpaceCondition['kind'], 'busy' | 'action_failed' | 'unreachable'>, { text: I18nKey; tone: 'muted' | 'warning' | 'error'; action: SpaceAction }>;
 
 const Line: React.FC<{ icon: 'loader-4' | 'error-warning' | 'alert' | 'stop'; tone: 'muted' | 'error' | 'warning'; children: React.ReactNode }> = ({ icon, tone, children }) => (
   <span className={tone === 'error' ? 'flex items-start gap-1.5 text-[var(--status-error)]' : tone === 'warning' ? 'flex items-start gap-1.5 text-[var(--status-warning)]' : 'flex items-start gap-1.5 text-muted-foreground'}>
@@ -126,7 +125,7 @@ export const SpaceGroupStatus: React.FC<{ spaceId: string; className?: string }>
   const grantLine = (providerId: string | null, children: React.ReactNode) => (
     <button
       type="button"
-      className="-mx-1 self-start rounded px-1 text-left hover:bg-[var(--interactive-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="-mx-1 self-start rounded px-1 text-start hover:bg-[var(--interactive-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       title={t('spaces.group.access.give')}
       aria-label={t('spaces.group.access.giveAria', { label: entry?.name ?? '' })}
       onClick={() => useSpacesStore.getState().openAccessDialog(spaceId, providerId)}
@@ -193,6 +192,21 @@ export const SpaceGroupStatus: React.FC<{ spaceId: string; className?: string }>
       <div className={cn('flex flex-col gap-1', className)}>
         <Line icon="error-warning" tone="error">{t(FAILED_TEXT[condition.action], { reason: spaceFailureText(t, condition.failure) })}</Line>
         {actionButton(condition.action)}
+      </div>
+    );
+  }
+
+  // The machine is off or out of reach: nothing to do here but wait, or, once the machine left
+  // Settings, delete the space, which forgets its record and nothing else.
+  if (condition?.kind === 'unreachable') {
+    return (
+      <div className={cn('flex flex-col gap-1', className)}>
+        <Line icon="alert" tone="warning">
+          {condition.gone
+            ? t('spaces.group.state.machineRemoved')
+            : condition.machine === null ? t('spaces.group.state.unreachable') : t('spaces.group.state.unreachableMachine', { machine: condition.machine })}
+        </Line>
+        {condition.gone ? actionButton('remove') : null}
       </div>
     );
   }

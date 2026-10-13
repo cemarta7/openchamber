@@ -11,11 +11,10 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { useI18n, type Locale } from '@/lib/i18n';
+import { isRightToLeft, type Locale, useI18n } from '@/lib/i18n';
 import { changeRequestCopy } from '@/lib/source-control/changeRequestCopy';
 import { openExternalUrl } from '@/lib/url';
 import { buildWalkthroughView } from '@/lib/walkthrough/model';
-import { qualifyBaseRef } from '@/components/views/git/baseBranch';
 import type { WalkthroughSource, WalkthroughTarget, WalkthroughWorkingTreeScope } from '@/lib/walkthrough/types';
 import { ModelSelector } from '@/components/sections/agents/ModelSelector';
 import { useBranchComparisonBase } from '@/hooks/useBranchComparisonBase';
@@ -157,11 +156,13 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
       event.preventDefault();
       const startX = event.clientX;
       const startWidth = tocWidth;
+      // The contents column is at the start; in RTL dragging left widens it.
+      const sign = isRightToLeft(event.currentTarget) ? -1 : 1;
       const maxWidth = Math.max(TOC_MIN_WIDTH, (rootRef.current?.clientWidth ?? 0) * TOC_MAX_FRACTION);
       setDraggingToc(true);
 
       const onMove = (moveEvent: PointerEvent) => {
-        const next = Math.min(maxWidth, Math.max(TOC_MIN_WIDTH, startWidth + moveEvent.clientX - startX));
+        const next = Math.min(maxWidth, Math.max(TOC_MIN_WIDTH, startWidth + (moveEvent.clientX - startX) * sign));
         setStoredTocWidth(next);
       };
       const onUp = () => {
@@ -181,7 +182,8 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
   const handleTocResizeKey = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       const step = event.shiftKey ? 40 : 10;
-      const delta = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+      const sign = isRightToLeft(event.currentTarget) ? -1 : 1;
+      const delta = (event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0) * sign;
       if (delta === 0) return;
       event.preventDefault();
       const maxWidth = Math.max(TOC_MIN_WIDTH, (rootRef.current?.clientWidth ?? 0) * TOC_MAX_FRACTION);
@@ -214,6 +216,7 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
   }), [directory, runtimeKey]);
   const branches = useGitBranches(directory || null);
   const setBaseOverride = useGitBaseBranchStore((state) => state.setOverride);
+  const clearBaseOverride = useGitBaseBranchStore((state) => state.clearOverride);
   const ensureAll = useGitStore((state) => state.ensureAll);
   const { sourceControl, git } = useRuntimeAPIs();
   const binding = useRepositoryBinding(directory, sourceControl);
@@ -223,33 +226,24 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
   }, [directory, ensureAll, git, visible]);
 
   // Changes and the walkthrough share one base: the person's explicit choice,
-  // else what the branch's own reflog says it was created from.
+  // else the open pull request's base, the reflog, then the default branch.
   const currentBranch = status?.current ?? null;
   const choosingCommit = pendingSourceSelection?.directory === directory && pendingSourceSelection.kind === 'commit' && !requestedTarget;
   const isCommitScope = choosingCommit || requestedTarget?.source.kind === 'commit';
   const requestedCommitHash = requestedTarget?.source.kind === 'commit' ? requestedTarget.source.hash : undefined;
   const commitComparison = useCommitComparison(directory || null, currentBranch, visible && isCommitScope, requestedCommitHash);
   const selectedCommitHash = commitComparison.selectedCommit?.hash ?? requestedCommitHash ?? null;
-  const { base: comparisonBase, resolved: comparisonBaseResolved, revision: branchRevision } =
-    useBranchComparisonBase(directory || null, currentBranch, visible);
-  const branchSource = useMemo<Extract<WalkthroughSource, { kind: 'branch' }> | null>(() => {
-    const headRef = currentBranch;
-    // A branch is never its own base, and the check belongs before the ref is
-    // qualified: afterwards `refs/heads/main` never equals a plain `main`.
-    if (!headRef || !comparisonBase || comparisonBase === headRef) return null;
-    const all = branches?.all ?? [];
-    // A base is named literally by the range API and must belong to the remote
-    // this repository is bound to, so whatever was chosen or detected is
-    // qualified here before it becomes a comparison.
-    const baseRef = qualifyBaseRef(comparisonBase, {
-      localBranches: all.filter((name) => !name.startsWith('remotes/')),
-      remoteBranches: all.filter((name) => name.startsWith('remotes/')).map((name) => name.slice('remotes/'.length)),
-      remoteNames: new Set(binding.read?.repository.remotes.map((remote) => remote.name) ?? []),
-      primaryRemote: binding.contexts[0]?.primaryRemote,
+  const remoteNames = useMemo(
+    () => new Set(binding.read?.repository.remotes.map((remote) => remote.name) ?? []),
+    [binding.read],
+  );
+  const { base: comparisonBase, source: comparisonBaseSource, resolved: comparisonBaseResolved, revision: branchRevision } =
+    useBranchComparisonBase(directory || null, currentBranch, visible, {
+      branches, remoteNames, primaryRemote: binding.contexts[0]?.primaryRemote, readContext: binding.contexts[0] ?? null,
     });
-    if (!baseRef) return null;
-    return { kind: 'branch', baseRef, headRef };
-  }, [binding.contexts, binding.read, branches, comparisonBase, currentBranch]);
+  const branchSource = useMemo<Extract<WalkthroughSource, { kind: 'branch' }> | null>(() => (
+    currentBranch && comparisonBase ? { kind: 'branch', baseRef: comparisonBase, headRef: currentBranch } : null
+  ), [comparisonBase, currentBranch]);
 
   // The pull request for this branch used to appear only after visiting the PR
   // panel, because nothing else asked GitHub about it. Ask here too: the status
@@ -596,7 +590,7 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
   return (
     <div ref={rootRef} className="flex h-full min-h-0 flex-col">
       <ContextPanelHeaderToolbar>
-      <header ref={headerRef} className={cn('flex min-w-0 flex-wrap items-center gap-2', inPanelHeader ? 'flex-1 py-1 pr-1' : 'shrink-0 border-b border-border/60 px-3 py-2')}>
+      <header ref={headerRef} className={cn('flex min-w-0 flex-wrap items-center gap-2', inPanelHeader ? 'flex-1 py-1 pe-1' : 'shrink-0 border-b border-border/60 px-3 py-2')}>
         {rootIsGitRepo === false && Array.isArray(nestedRepos) && nestedRepos.length > 0 ? (
           <NestedRepoPicker
             repositories={nestedRepos}
@@ -690,8 +684,12 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
             branches={branches?.all ?? []}
             currentBranch={currentBranch}
             base={comparisonBase}
+            automatic={comparisonBaseSource !== 'chosen'}
             onSelect={(base) => {
               if (directory && currentBranch) setBaseOverride(directory, currentBranch, base);
+            }}
+            onSelectAutomatic={() => {
+              if (directory && currentBranch) clearBaseOverride(directory, currentBranch);
             }}
           />
         )}
@@ -709,7 +707,7 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
         )}
         {isPrScope && <PullRequestComparisonSelector key={JSON.stringify([directory, currentBranch])} comparison={prComparison} />}
 
-        <div className="ml-auto flex min-w-0 items-center gap-1">
+        <div className="ms-auto flex min-w-0 items-center gap-1">
           {isPrScope && selectedPr && <Button variant="ghost" size="sm"
             aria-label={t('contextPanel.mode.diff')} title={t('contextPanel.mode.diff')}
             onClick={() => openContextPanelTab(rootDirectory, { mode: 'diff', diffScope: 'pr' })}>
@@ -890,7 +888,7 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
             type="button"
             variant="ghost"
             size="xs"
-            className="ml-auto"
+            className="ms-auto"
             disabled={generateDisabled}
             // Not forced: if an entry for this exact request existed the banner
             // would not be here, and a forced run would refuse the cache it may
@@ -912,7 +910,7 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
             type="button"
             variant="ghost"
             size="xs"
-            className="ml-auto"
+            className="ms-auto"
             // Clicking this again mid-flight would abort the running generation
             // and start another — paying for the same answer twice.
             disabled={isGeneratingEntry}
@@ -989,7 +987,7 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
                   onKeyDown={handleTocResizeKey}
                   className={cn(
                     'group relative w-1 shrink-0 cursor-col-resize',
-                    'before:absolute before:inset-y-0 before:-left-1 before:-right-1 before:content-[\'\']',
+                    'before:absolute before:inset-y-0 before:-inset-s-1 before:-inset-e-1 before:content-[\'\']',
                     'hover:bg-interactive-selection focus-visible:bg-interactive-selection focus-visible:outline-none',
                     draggingToc && 'bg-interactive-selection'
                   )}
