@@ -100,7 +100,7 @@ The webview build emits each worker as one self-contained file. VS Code webviews
   - Includes OpenCode resolution diagnostics parity handler used by shared UI (`/api/config/opencode-resolution`).
   - OpenCode JSONC reads in `opencodeConfig.ts` fail closed on a partial or non-object `jsonc-parser` tree (`INVALID_JSONC`) so mutations cannot rewrite a `$schema`-only stub over an existing config. Comment-only files read as empty, while other content that yields no JSON value (YAML, plain text) fails closed. A broken layer is omitted from the merge and recorded on `layerErrors`; valid sibling layers still load, including plugin list/read via `getPluginConfigSources`. Writes still refuse to overwrite the broken file.
   - `writeConfig` and the agent/command markdown writer replace their file atomically through `writeFileAtomic` from `packages/web/server/lib/opencode/atomic-write.js`, the same function the web server uses, so OpenCode's watcher never reads a partial file.
-  - Config writes through `writeConfig` are structural, not whole-file re-serializations: the parsed file is diffed against the desired config and each change is applied with `jsonc-parser` edits (property removal locates the separator comma with the scanner so surrounding comments survive and no stray comma is left behind). Comments, formatting, and line endings outside the changed values are preserved; changed arrays are replaced whole; comment-only files keep their comments with the serialized config appended below. The edited text must re-parse to exactly the intended config or the write falls back to a normalized rewrite, so a structural edit can never corrupt the file.
+  - Config writes through `writeConfig` are structural, not whole-file re-serializations: the parsed file is diffed against the desired config and each change is applied with `jsonc-parser` edits (property removal locates the separator comma with the scanner so surrounding comments survive and no stray comma is left behind). Comments, formatting, and line endings outside the changed values are preserved; an array that only gains items at its end or only loses items is edited item by item through the web server's `jsonc-edits.js`, any other changed array is replaced whole, and a removed property or item alone on its line takes the line with it; comment-only files keep their comments with the serialized config appended below. The edited text must re-parse to exactly the intended config or the write falls back to a normalized rewrite, so a structural edit can never corrupt the file.
 
 - `bridge-project-setup-runtime.ts`
   - Extension-host side of `GET/PUT /api/projects/:projectId/config` (the webview handles the route locally and bridges `api:project-setup:get` / `api:project-setup:update`). Reads and writes the client-owned keys of `~/.config/openchamber/projects/<projectId>.json` (worktree setup commands, project actions, draft starters) with the rules in `project-setup.ts`, a mirror of the server's `packages/web/server/lib/projects/project-setup.js`; keep the two in sync. The file name follows the server's bounded rule (`projectConfigFileStemOf`, mirrored from `packages/web/server/lib/projects/project-id.js`): an id over 200 characters is stored as `path_sha256_<digest>.json` so a deeply nested checkout does not exceed the file name limit. A file an older build wrote under the long name is still read when the bounded one is missing and is removed once a write has moved its content. Writes to one file are chained; server-owned and unknown keys survive. The read also merges the team's optional `<workspace>/.openchamber/project.json` (checkout path decoded from the `path_<base64url>` id) by the same rules as the server, so the webview sees one view with `shared` / `personal` blocks. The shared UI (`openchamberConfig.ts`) no longer composes that path or reads it through the fs bridge.
@@ -360,6 +360,20 @@ Bridge surface (`bridge-config-runtime.ts`), matching the web routes:
 - `api:config/warming` — `PUT /api/config/warming`; `{ enabled }` turns session
   warming on (`true`, keeping a hand-tuned object) or off (removes the key),
   written with the shared `writeWarmingEnabled` to the same file.
+- `api:config/skills` — the `GET` list adds `skillPolicy` and a skill `id` on
+  every entry, as the web route does; the OpenCode list and the disk scan merge
+  by OpenCode skill id.
+- `api:config/skill-policy` — `PUT /api/config/skill-policy`; payload
+  `{ body: { id, scope, enabled }, directory }`. The webview route
+  (`webview/main.tsx`) sends the request directory and answers the status and
+  body the host returns as `{ status, body }`. The host checks that `directory`
+  exists and is a directory, needs it for the `project` scope, and otherwise runs
+  the web server's `handleSkillPolicyWrite` with `skillPolicyService` from
+  `opencodeConfig.ts` and the OpenCode reader `createOpenCodePolicyReader` from
+  `bridge-settings-runtime.ts` (`GET /api/info`, `GET /api/config` with the
+  directory header). Semantics and the response contract are in
+  `packages/web/server/lib/opencode/DOCUMENTATION.md`, "Per-skill switches". A
+  malformed payload answers 400 `invalid_request`.
 
 ## Session archive and metadata
 

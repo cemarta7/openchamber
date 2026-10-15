@@ -1,0 +1,505 @@
+/**
+ * Per-skill on/off through OpenCode's own policy config (#3075).
+ *
+ * A skill is switched off with one statement in an OpenCode config file:
+ *
+ *   { "action": "integration.use", "resource": "skill:<id>", "effect": "deny" }
+ *
+ * OpenCode then drops the skill from its registry, from the model's list and
+ * from explicit `session.skill` / prompt attachments, without a restart. The
+ * id is OpenCode's path-derived skill id (the folder of `SKILL.md`), never the
+ * display name, and one id covers every source copy of a skill.
+ *
+ * Where the statement goes depends on the running OpenCode: 2.0.25 through
+ * 2.0.28 read only `experimental.policies`, 2.0.29 and newer also read the
+ * top-level `policies` (and mark the experimental key deprecated).
+ *
+ * Ownership: the switch owns exactly the exact-id deny statement above, in the
+ * one config file of the scope it edits (the user's global `opencode.json[c]`
+ * or the project config OpenChamber writes for the directory). Turning a skill
+ * off appends that statement unless it already decides the file; turning it
+ * on removes every copy of it from that file and nothing else. Wildcards,
+ * allows, other actions, other files and Console policies are never written,
+ * so a restriction the switch did not create stays in force and is reported
+ * through `decidedBy` instead of being overridden with an allow.
+ *
+ * This module is pure apart from the injected file and OpenCode readers, so
+ * the web server and the VS Code extension host share one implementation.
+ */
+import fs from 'fs';
+import path from 'path';
+import { isBoolean, isPlainObject, isString } from '../shared/guards.js';
+
+/** Scopes a switch can write. */
+const SKILL_POLICY_SCOPES = Object.freeze(['global', 'project']);
+
+const INTEGRATION_USE = 'integration.use';
+const SKILL_RESOURCE_PREFIX = 'skill:';
+
+/** The config key OpenCode reads policy statements from, by version. */
+const SKILL_POLICY_LOCATION = Object.freeze({
+  EXPERIMENTAL: 'experimental.policies',
+  TOP_LEVEL: 'policies',
+});
+
+const EXPERIMENTAL_PATH = ['experimental', 'policies'];
+const TOP_LEVEL_PATH = ['policies'];
+
+const releaseParts = (version) => {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$/.exec(isString(version) ? version.trim() : '');
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+};
+
+const isAtLeast = (parts, minimum) => {
+  for (let index = 0; index < 3; index += 1) {
+    if (parts[index] !== minimum[index]) return parts[index] > minimum[index];
+  }
+  return true;
+};
+
+/**
+ * Where a running OpenCode reads skill policies: `policies` from 2.0.29,
+ * `experimental.policies` from 2.0.25, `null` for anything that does not
+ * enforce them (older 2.x, another major, an unreadable version).
+ */
+export function skillPolicyLocation(version) {
+  const parts = releaseParts(version);
+  if (!parts || parts[0] !== 2) return null;
+  if (isAtLeast(parts, [2, 0, 29])) return SKILL_POLICY_LOCATION.TOP_LEVEL;
+  if (isAtLeast(parts, [2, 0, 25])) return SKILL_POLICY_LOCATION.EXPERIMENTAL;
+  return null;
+}
+
+/** The arrays a version enforces, in the order OpenCode concatenates them. */
+const enforcedPaths = (location) => (location === SKILL_POLICY_LOCATION.EXPERIMENTAL
+  ? [EXPERIMENTAL_PATH]
+  : [EXPERIMENTAL_PATH, TOP_LEVEL_PATH]);
+
+const writePath = (location) => (location === SKILL_POLICY_LOCATION.EXPERIMENTAL ? EXPERIMENTAL_PATH : TOP_LEVEL_PATH);
+
+/**
+ * A skill id a switch may name: what OpenCode derives from a folder or file
+ * name. Wildcard characters and separators are refused, so an owned statement
+ * can only ever match the one id it was written for.
+ */
+const FORBIDDEN_ID_CHARACTERS = new Set(['*', '?', '/', '\\']);
+
+export function isValidSkillPolicyId(id) {
+  return isString(id)
+    && id.length > 0
+    && id.length <= 255
+    && id === id.trim()
+    && id !== '.'
+    && id !== '..'
+    && ![...id].some((character) => {
+      const code = character.charCodeAt(0);
+      return FORBIDDEN_ID_CHARACTERS.has(character) || code < 0x20 || code === 0x7f;
+    });
+}
+
+/**
+ * OpenCode's skill id for a skill file: the folder of a `SKILL.md`, or the
+ * name of a loose `<id>.md` file. `null` for anything else.
+ */
+export function skillIdFromPath(skillPath) {
+  if (!isString(skillPath) || !skillPath) return null;
+  const parts = skillPath.split(/[\\/]/).filter(Boolean);
+  const file = parts.at(-1) ?? '';
+  const id = file === 'SKILL.md' ? parts.at(-2) : (file.endsWith('.md') ? file.slice(0, -3) : null);
+  return isValidSkillPolicyId(id) ? id : null;
+}
+
+const isStatement = (value) => isPlainObject(value)
+  && isString(value.action)
+  && isString(value.resource)
+  && (value.effect === 'allow' || value.effect === 'deny');
+
+const ownedResource = (id) => `${SKILL_RESOURCE_PREFIX}${id}`;
+
+/** The statement a switch writes, and the only one it ever removes. */
+const isOwnedStatement = (value, id) => isStatement(value)
+  && value.action === INTEGRATION_USE
+  && value.resource === ownedResource(id)
+  && value.effect === 'deny';
+
+const readPath = (config, keyPath) => {
+  let current = config;
+  for (const key of keyPath) {
+    if (!isPlainObject(current)) return undefined;
+    current = current[key];
+  }
+  return current;
+};
+
+const readArray = (config, keyPath) => {
+  const value = readPath(config, keyPath);
+  return Array.isArray(value) ? value : [];
+};
+
+/**
+ * OpenCode's `Wildcard.match`: `*` is any run, `?` one character, a trailing
+ * ` *` also matches nothing. Same as the UI's `matchesWildcard` in
+ * `lib/opencode/projection.ts`.
+ */
+function matchesWildcard(input, pattern) {
+  let escaped = pattern
+    .replaceAll('\\', '/')
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
+  if (escaped.endsWith(' .*')) escaped = `${escaped.slice(0, -3)}( .*)?`;
+  return new RegExp(`^${escaped}$`, 's').test(input.replaceAll('\\', '/'));
+}
+
+const lastMatchIn = (statements, id) => {
+  const resource = ownedResource(id);
+  let match = null;
+  for (const statement of statements) {
+    if (isStatement(statement) && statement.action === INTEGRATION_USE && matchesWildcard(resource, statement.resource)) {
+      match = statement;
+    }
+  }
+  return match;
+};
+
+const enforcedStatements = (config, location) => enforcedPaths(location).flatMap((keyPath) => readArray(config, keyPath));
+
+/**
+ * Whether a config file holds the switch's own deny for `id`. With an unknown
+ * `location` (OpenCode not reachable) both arrays count.
+ */
+function hasOwnedSkillDeny(config, id, location = null) {
+  return enforcedStatements(config, location ?? SKILL_POLICY_LOCATION.TOP_LEVEL).some((statement) => isOwnedStatement(statement, id));
+}
+
+/** Every id a config file switches off with an owned statement. */
+export function listOwnedSkillDenies(config, location = null) {
+  const ids = new Set();
+  for (const statement of enforcedStatements(config, location ?? SKILL_POLICY_LOCATION.TOP_LEVEL)) {
+    if (!isStatement(statement) || statement.action !== INTEGRATION_USE || statement.effect !== 'deny') continue;
+    if (!statement.resource.startsWith(SKILL_RESOURCE_PREFIX)) continue;
+    const id = statement.resource.slice(SKILL_RESOURCE_PREFIX.length);
+    if (isValidSkillPolicyId(id)) ids.add(id);
+  }
+  return [...ids];
+}
+
+class SkillPolicyConfigError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'SkillPolicyConfigError';
+    this.code = 'SKILL_POLICY_CONFIG_SHAPE';
+  }
+}
+
+/**
+ * Turn `id` off (`disabled: true`) or back on in one config object, in place.
+ * Returns whether the object changed.
+ *
+ * Off appends the owned deny to the version's write array unless an owned deny
+ * already decides `id` in this file. On removes every owned deny for `id` from
+ * the arrays the version enforces, dropping an array (and an `experimental`
+ * object) it emptied. Nothing else in the file moves.
+ */
+export function setSkillDisabled(config, id, disabled, location) {
+  if (!isPlainObject(config)) throw new SkillPolicyConfigError('The config file is not an object');
+  if (!isValidSkillPolicyId(id)) throw new SkillPolicyConfigError(`Invalid skill id "${id}"`);
+  if (location !== SKILL_POLICY_LOCATION.TOP_LEVEL && location !== SKILL_POLICY_LOCATION.EXPERIMENTAL) {
+    throw new SkillPolicyConfigError('Unknown policy location');
+  }
+
+  if (disabled) {
+    if (isOwnedStatement(lastMatchIn(enforcedStatements(config, location), id), id)) return false;
+    const [first, second] = writePath(location);
+    let parent = config;
+    if (second) {
+      if (parent[first] === undefined) parent[first] = {};
+      if (!isPlainObject(parent[first])) throw new SkillPolicyConfigError(`"${first}" in the config file is not an object`);
+      parent = parent[first];
+    }
+    const key = second ?? first;
+    if (parent[key] === undefined) parent[key] = [];
+    if (!Array.isArray(parent[key])) throw new SkillPolicyConfigError(`"${writePath(location).join('.')}" in the config file is not a list`);
+    parent[key].push({ action: INTEGRATION_USE, resource: ownedResource(id), effect: 'deny' });
+    return true;
+  }
+
+  let changed = false;
+  for (const keyPath of enforcedPaths(location)) {
+    const parent = keyPath.length === 2 ? readPath(config, [keyPath[0]]) : config;
+    const key = keyPath.at(-1);
+    if (!isPlainObject(parent) || !Array.isArray(parent[key])) continue;
+    const kept = parent[key].filter((statement) => !isOwnedStatement(statement, id));
+    if (kept.length === parent[key].length) continue;
+    changed = true;
+    if (kept.length > 0) {
+      parent[key] = kept;
+      continue;
+    }
+    delete parent[key];
+    if (keyPath.length === 2 && Object.keys(parent).length === 0) delete config[keyPath[0]];
+  }
+  return changed;
+}
+
+const isDocument = (entry) => isPlainObject(entry) && entry.type === 'document' && isPlainObject(entry.info);
+
+const documentStatements = (info) => [...readArray(info, EXPERIMENTAL_PATH), ...readArray(info, TOP_LEVEL_PATH)];
+
+/**
+ * The statement that decides `id` across OpenCode's config documents, as
+ * `GET /api/config` serves them (lowest priority first). OpenCode evaluates
+ * the documents reversed and lets the last match win, so a global rule beats a
+ * project one in either direction. `null` means no rule matches: the skill is
+ * allowed. Console statements are not part of `/api/config`.
+ */
+export function findDecidingSkillStatement(entries, id) {
+  let decided = null;
+  for (const entry of [...entries].filter(isDocument).reverse()) {
+    const match = lastMatchIn(documentStatements(entry.info), id);
+    if (match) decided = { path: isString(entry.path) ? entry.path : null, resource: match.resource, effect: match.effect };
+  }
+  return decided;
+}
+
+const UNKNOWN = 'unknown';
+
+/**
+ * One skill's policy state for the UI.
+ * - `disabledIn`: whether the switch's own rule is saved in each scope's file
+ *   (`null`: that scope has no file, or the file could not be read).
+ * - `effective`: what OpenCode applies (`unknown` when its config could not be
+ *   read; never inferred from a missing skill).
+ * - `decidedBy`: the statement that decides it and its file; `scope` says
+ *   which switch owns that file (`other` for any file a switch never writes),
+ *   `owned` whether it is a switch's own deny.
+ */
+function describeSkillPolicy(id, { entries, scopes, savedByScope, samePath }) {
+  const disabledIn = {};
+  for (const scope of SKILL_POLICY_SCOPES) {
+    const saved = savedByScope[scope];
+    disabledIn[scope] = saved ? saved.has(id) : null;
+  }
+  if (!entries) return { disabledIn, effective: UNKNOWN, decidedBy: null };
+
+  const decided = findDecidingSkillStatement(entries, id);
+  if (!decided) return { disabledIn, effective: 'enabled', decidedBy: null };
+  const scope = SKILL_POLICY_SCOPES.find((name) => scopes[name] && decided.path && samePath(scopes[name].path, decided.path)) ?? 'other';
+  return {
+    disabledIn,
+    effective: decided.effect === 'deny' ? 'disabled' : 'enabled',
+    decidedBy: {
+      ...decided,
+      scope,
+      owned: scope !== 'other' && decided.effect === 'deny' && decided.resource === ownedResource(id),
+    },
+  };
+}
+
+const realPathOrResolved = (filePath) => {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+};
+
+// A config path OpenCode reports and the one OpenChamber computes can differ
+// only by a link on the way (a linked `~/.config`, a linked project root).
+const defaultSamePath = (left, right) => isString(left)
+  && isString(right)
+  && (path.resolve(left) === path.resolve(right) || realPathOrResolved(left) === realPathOrResolved(right));
+
+const errorMessage = (error) => (error instanceof Error ? error.message : String(error));
+
+const statusError = (status, code, message) => Object.assign(new Error(message), { status, code });
+
+/**
+ * @param {object} dependencies
+ * @param {(directory: string | null) => { global: string, project: string | null }} dependencies.resolveTargets
+ *   The config file each scope writes; project is `null` without a directory.
+ * @param {(filePath: string) => object} dependencies.readConfigFile throws on invalid JSONC
+ * @param {(config: object, filePath: string) => void} dependencies.writeConfig comment-preserving writer
+ * @param {(left: string, right: string) => boolean} [dependencies.samePath]
+ * @param {(ms: number) => Promise<void>} [dependencies.sleep]
+ * @param {number} [dependencies.confirmAttempts] OpenCode reads after a write before reporting it unconfirmed
+ * @param {number} [dependencies.confirmDelayMs]
+ */
+export function createSkillPolicyService({
+  resolveTargets,
+  readConfigFile,
+  writeConfig,
+  samePath = defaultSamePath,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  confirmAttempts = 8,
+  confirmDelayMs = 250,
+}) {
+  // Writes run one at a time per process: read, change and write a file as
+  // one step, so two switches flipped together cannot drop each other's rule.
+  let writeQueue = Promise.resolve();
+  const serialize = (task) => {
+    const run = writeQueue.then(task, task);
+    writeQueue = run.catch(() => {});
+    return run;
+  };
+
+  const readScopes = (directory) => {
+    const targets = resolveTargets(directory);
+    const scopes = { global: { path: targets.global, error: null }, project: null };
+    // A project directory whose config file is the global one (a project
+    // opened at the OpenCode config directory) has no separate project scope.
+    if (targets.project && !samePath(targets.project, targets.global)) {
+      scopes.project = { path: targets.project, error: null };
+    }
+    return scopes;
+  };
+
+  const readSaved = (scopes, location) => {
+    const savedByScope = { global: null, project: null };
+    for (const scope of SKILL_POLICY_SCOPES) {
+      const target = scopes[scope];
+      if (!target) continue;
+      try {
+        savedByScope[scope] = new Set(listOwnedSkillDenies(readConfigFile(target.path), location));
+      } catch (error) {
+        target.error = errorMessage(error);
+      }
+    }
+    return savedByScope;
+  };
+
+  const readOpenCode = async (openCode, directory) => {
+    const [version, entries] = await Promise.all([
+      openCode.readVersion().catch(() => null),
+      openCode.readConfigEntries(directory).catch(() => null),
+    ]);
+    return { version, entries: Array.isArray(entries) ? entries : null };
+  };
+
+  const summarize = ({ version, location, entries, scopes }) => ({
+    version,
+    location,
+    // `null`: OpenCode could not be read, or it enforces no skill policies.
+    // Switches are read-only then; saved rules still show.
+    writable: location !== null,
+    effectiveAvailable: entries !== null,
+    scopes,
+  });
+
+  /**
+   * The policy state of `ids` in `directory`, plus every id a scope's file
+   * switches off even when no skill with that id is installed any more, so it
+   * can still be switched back on.
+   */
+  const readState = async ({ directory, ids, openCode }) => {
+    const { version, entries } = await readOpenCode(openCode, directory);
+    const location = skillPolicyLocation(version);
+    const scopes = readScopes(directory);
+    const savedByScope = readSaved(scopes, location);
+    const allIds = new Set(ids.filter(isValidSkillPolicyId));
+    for (const saved of Object.values(savedByScope)) for (const id of saved ?? []) allIds.add(id);
+    const skills = {};
+    for (const id of allIds) skills[id] = describeSkillPolicy(id, { entries, scopes, savedByScope, samePath });
+    return { ...summarize({ version, location, entries, scopes }), skills };
+  };
+
+  const isConfirmed = (entries, targetPath, id, disabled, location) => {
+    const document = entries.find((entry) => isDocument(entry) && isString(entry.path) && samePath(entry.path, targetPath));
+    if (!document) return !disabled;
+    return hasOwnedSkillDeny(document.info, id, location) === disabled;
+  };
+
+  /**
+   * Save `enabled` for `id` in one scope's file, then wait briefly for
+   * OpenCode to pick it up. A failed write throws and changes nothing; a write
+   * OpenCode has not confirmed yet resolves with `confirmed: false` and the
+   * last state OpenCode reported (or `unknown`).
+   */
+  const setEnabled = async ({ directory, id, scope, enabled, openCode }) => {
+    if (!isValidSkillPolicyId(id)) throw statusError(400, 'invalid_id', 'Invalid skill id');
+    if (!SKILL_POLICY_SCOPES.includes(scope)) throw statusError(400, 'invalid_scope', 'Scope must be "global" or "project"');
+    if (!isBoolean(enabled)) throw statusError(400, 'invalid_enabled', '"enabled" must be true or false');
+
+    const version = await openCode.readVersion().catch(() => null);
+    const location = skillPolicyLocation(version);
+    if (!location) {
+      throw version
+        ? statusError(409, 'unsupported_version', `OpenCode ${version} does not enforce skill policies; 2.0.25 or newer does`)
+        : statusError(503, 'opencode_unavailable', 'OpenCode is not reachable, so the skill switch cannot be saved');
+    }
+
+    const scopes = readScopes(directory);
+    const target = scopes[scope];
+    if (!target) throw statusError(409, 'scope_unavailable', 'This directory has no separate project config');
+
+    const changed = await serialize(() => {
+      let config;
+      try {
+        config = readConfigFile(target.path);
+      } catch (error) {
+        throw statusError(409, error?.code === 'INVALID_JSONC' ? 'invalid_config' : 'read_failed', errorMessage(error));
+      }
+      let didChange;
+      try {
+        didChange = setSkillDisabled(config, id, !enabled, location);
+      } catch (error) {
+        throw statusError(409, 'invalid_config', errorMessage(error));
+      }
+      if (didChange) writeConfig(config, target.path);
+      return didChange;
+    });
+
+    const saved = { scope, path: target.path, disabled: !enabled, changed };
+    let entries = null;
+    let confirmed = false;
+    for (let attempt = 0; attempt < confirmAttempts; attempt += 1) {
+      if (attempt > 0) await sleep(confirmDelayMs);
+      entries = await openCode.readConfigEntries(directory).then((value) => (Array.isArray(value) ? value : null), () => null);
+      if (entries && isConfirmed(entries, target.path, id, !enabled, location)) {
+        confirmed = true;
+        break;
+      }
+    }
+
+    const savedByScope = readSaved(scopes, location);
+    return {
+      saved,
+      confirmed,
+      state: summarize({ version, location, entries, scopes }),
+      policy: describeSkillPolicy(id, { entries, scopes, savedByScope, samePath }),
+    };
+  };
+
+  return { readState, setEnabled };
+}
+
+/**
+ * The write route both runtimes serve (`PUT /api/config/skill-policy`, body
+ * `{ id, scope, enabled }`). `directory` is already validated by the runtime;
+ * the project scope needs one. Only an installed id can be switched off;
+ * switching on never adds a statement, so it needs no inventory check.
+ * Answers `{ status, body }` instead of throwing.
+ *
+ * @param {object} input
+ * @param {ReturnType<typeof createSkillPolicyService>} input.service
+ * @param {(directory: string | null) => Promise<Set<string>>} input.listInstalledSkillIds
+ */
+export async function handleSkillPolicyWrite({ service, body, directory, openCode, listInstalledSkillIds }) {
+  const id = isPlainObject(body) ? body.id : undefined;
+  const scope = isPlainObject(body) ? body.scope : undefined;
+  const enabled = isPlainObject(body) ? body.enabled : undefined;
+  try {
+    if (scope === 'project' && !directory) throw statusError(400, 'directory_required', 'The project scope needs a directory');
+    if (enabled === false && isValidSkillPolicyId(id) && !(await listInstalledSkillIds(directory)).has(id)) {
+      throw statusError(404, 'unknown_skill', `No installed skill has the id "${id}"`);
+    }
+    const result = await service.setEnabled({ directory, id, scope, enabled, openCode });
+    return { status: 200, body: { ok: true, id, ...result } };
+  } catch (error) {
+    if (Number.isInteger(error?.status)) {
+      return { status: error.status, body: { ok: false, error: { code: error.code, message: error.message } } };
+    }
+    console.error('Failed to save skill policy:', error);
+    return { status: 500, body: { ok: false, error: { code: 'write_failed', message: errorMessage(error) } } };
+  }
+}

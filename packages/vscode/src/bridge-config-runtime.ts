@@ -58,8 +58,10 @@ import {
   setWebSearchSelection,
   setWarmingEnabled,
   getWebSearchSource,
+  skillPolicyService,
   type SnippetScope,
 } from './opencodeConfig';
+import { handleSkillPolicyWrite, type SkillPolicyOpenCodeReader } from '../../web/server/lib/opencode/skill-policy.js';
 import { parseWebSearchSelection } from './opencode-config-v2';
 import {
   getSkillsCatalog,
@@ -85,8 +87,28 @@ type ConfigRuntimeDeps = {
   resetMagicPromptOverride: (id: string) => Promise<{ version: number; overrides: Record<string, string> }>;
   resetAllMagicPromptOverrides: () => Promise<{ version: number; overrides: Record<string, string> }>;
   fetchOpenCodeSkillsFromApi: (ctx: BridgeContext | undefined, workingDirectory?: string) => Promise<DiscoveredSkill[] | null>;
+  createOpenCodePolicyReader: (ctx: BridgeContext | undefined) => SkillPolicyOpenCodeReader;
   clientReloadDelayMs: number;
 };
+
+const skillPolicyPayloadSchema = z.object({ body: z.json().optional(), directory: z.string().optional() });
+const projectScopeSchema = z.object({ scope: z.literal('project') });
+
+/** A directory the webview names for a skill switch: it must exist and be a directory. */
+const resolveSkillPolicyDirectory = (raw: string | undefined) => {
+  const trimmed = raw?.trim();
+  if (!trimmed) return { directory: null, error: null };
+  try {
+    const resolved = fs.realpathSync(path.resolve(trimmed));
+    return fs.statSync(resolved).isDirectory()
+      ? { directory: resolved, error: null }
+      : { directory: null, error: 'Specified path is not a directory' };
+  } catch {
+    return { directory: null, error: 'Directory not found' };
+  }
+};
+
+const skillIdsOf = (skills: DiscoveredSkill[]) => skills.flatMap((skill) => (skill.id ? [skill.id] : []));
 
 const AGENTS_MD_PATH = path.join(OPENCODE_CONFIG_DIR, 'AGENTS.md');
 const MAX_BEHAVIOR_PROMPT_SIZE = 1024 * 1024;
@@ -644,11 +666,19 @@ export async function handleConfigBridgeMessage(
         // partial instead of caching it as the complete list (#3921).
         const openCodeSkills = await deps.fetchOpenCodeSkillsFromApi(ctx, workingDirectory);
         const skills = mergeDiscoveredSkills(openCodeSkills || [], discoverSkills(workingDirectory));
+        // Same `skillPolicy` the web route adds; a failure answers `{ error }`
+        // and leaves the list intact.
+        const skillPolicy = await skillPolicyService.readState({
+          directory: workingDirectory ?? null,
+          ids: skillIdsOf(skills),
+          openCode: deps.createOpenCodePolicyReader(ctx),
+        }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
         return {
           id,
           type,
           success: true,
           data: {
+            skillPolicy,
             ...(openCodeSkills === null ? { openCodeSkillsUnavailable: true } : {}),
             skills: skills.map((skill) => ({
               ...skill,
@@ -738,6 +768,31 @@ export async function handleConfigBridgeMessage(
       }
 
       return { id, type, success: false, error: `Unsupported method: ${normalizedMethod}` };
+    }
+
+    // PUT /api/config/skill-policy — see the web route in
+    // `packages/web/server/lib/opencode/skill-routes.js`. Answers `{ status, body }`.
+    case 'api:config/skill-policy': {
+      const parsed = skillPolicyPayloadSchema.safeParse(payload ?? {});
+      if (!parsed.success) {
+        return { id, type, success: true, data: { status: 400, body: { ok: false, error: { code: 'invalid_request', message: 'Malformed skill policy request' } } } };
+      }
+      const explicit = resolveSkillPolicyDirectory(parsed.data.directory);
+      if (explicit.error) {
+        return { id, type, success: true, data: { status: 400, body: { ok: false, error: { code: 'invalid_directory', message: explicit.error } } } };
+      }
+      // The project scope needs the directory named; the global one falls back
+      // to the working directory for reading OpenCode's effective state.
+      const directory = explicit.directory
+        ?? (projectScopeSchema.safeParse(parsed.data.body).success ? null : (resolveWorkingDirectory(ctx) ?? null));
+      const data = await handleSkillPolicyWrite({
+        service: skillPolicyService,
+        body: parsed.data.body,
+        directory,
+        openCode: deps.createOpenCodePolicyReader(ctx),
+        listInstalledSkillIds: async (target) => new Set(skillIdsOf(await resolveDiscoveredSkills(deps, ctx, target ?? undefined))),
+      });
+      return { id, type, success: true, data };
     }
 
     case 'api:config/skills:catalog': {

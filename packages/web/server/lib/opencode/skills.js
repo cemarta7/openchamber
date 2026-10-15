@@ -22,6 +22,7 @@ import {
   findWorktreeRoot,
   isPlainObject,
 } from './shared.js';
+import { isString } from '../shared/guards.js';
 
 const BUILT_IN_SKILL_LOCATION = '<built-in>';
 
@@ -253,15 +254,22 @@ async function discoverSkills(workingDirectory) {
   return Array.from(skills.values());
 }
 
+// One entry per OpenCode skill id: OpenCode loads one copy of an id, and its
+// policies switch the id off as a whole. Two ids that share a display name
+// stay two entries. An entry without an id (none could be derived) falls back
+// to the display-name match.
 function mergeDiscoveredSkills(primarySkills = [], fallbackSkills = []) {
   const merged = [];
+  const seenIds = new Set();
   const seenNames = new Set();
 
   const appendSkill = (skill) => {
     const name = typeof skill?.name === 'string' ? skill.name.trim() : '';
-    if (!name || seenNames.has(name)) {
+    const id = isString(skill?.id) && skill.id ? skill.id : null;
+    if (!name || (id ? seenIds.has(id) : seenNames.has(name))) {
       return;
     }
+    if (id) seenIds.add(id);
     seenNames.add(name);
     merged.push(skill);
   };

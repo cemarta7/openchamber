@@ -5,7 +5,6 @@ import os from 'node:os';
 import yaml from 'yaml';
 import {
   applyEdits,
-  createScanner,
   findNodeAtLocation,
   modify,
   parse as parseJsonc,
@@ -17,6 +16,13 @@ import {
 } from 'jsonc-parser';
 import { resolveNpmRegistryRequest } from '../../web/server/lib/opencode/npm-registry-config.js';
 import { writeFileAtomic } from '../../web/server/lib/opencode/atomic-write.js';
+import {
+  arrayItemTextEdits,
+  diffArrayItems,
+  removeNodeEdits,
+  type ArrayItemEdit,
+} from '../../web/server/lib/opencode/jsonc-edits.js';
+import { createSkillPolicyService, skillIdFromPath } from '../../web/server/lib/opencode/skill-policy.js';
 import {
   toAgentEntity,
   fromAgentEntity,
@@ -854,11 +860,8 @@ const isJsonObject = (value: JsonValue): value is JsonObject => isPlainObject(va
 
 type ConfigEdit =
   | { type: 'set'; path: JSONPath; value: unknown }
-  | { type: 'remove'; path: JSONPath };
-
-// jsonc-parser's SyntaxKind is an ambient const enum, which cannot be imported
-// as a value under verbatimModuleSyntax; mirror the token code used below.
-const JSONC_COMMA_TOKEN = 5;
+  | { type: 'remove'; path: JSONPath }
+  | ArrayItemEdit;
 
 const deepEqualJsonValue = (a: JsonValue, b: JsonValue): boolean => {
   if (a === b) return true;
@@ -874,8 +877,10 @@ const deepEqualJsonValue = (a: JsonValue, b: JsonValue): boolean => {
 };
 
 // Structural diff between the parsed on-disk config and the desired config.
-// Object keys are compared per key (order-insensitive); arrays and scalars are
-// replaced whole. The desired config must already be JSON-normalized (no
+// Object keys are compared per key (order-insensitive); an array that only
+// gains items at its end or only loses items is edited item by item (shared
+// with the web writer in `jsonc-edits.js`), any other array and every scalar
+// is replaced whole. The desired config must already be JSON-normalized (no
 // `undefined` values), so absent keys are the only removal signal.
 const collectConfigEdits = (
   current: JsonValue,
@@ -883,6 +888,13 @@ const collectConfigEdits = (
   basePath: JSONPath,
   edits: ConfigEdit[],
 ): void => {
+  if (Array.isArray(current) && Array.isArray(next)) {
+    const itemEdits = diffArrayItems(current, next, basePath, deepEqualJsonValue);
+    if (itemEdits) {
+      edits.push(...itemEdits);
+      return;
+    }
+  }
   if (!isJsonObject(current) || !isJsonObject(next)) {
     if (!deepEqualJsonValue(current, next)) {
       edits.push({ type: 'set', path: basePath, value: next });
@@ -905,22 +917,11 @@ const collectConfigEdits = (
   }
 };
 
-const findSeparatorComma = (text: string, start: number, end: number): number => {
-  if (end <= start) return -1;
-  const scanner = createScanner(text, true);
-  scanner.setPosition(start);
-  const token = scanner.scan();
-  const offset = scanner.getTokenOffset();
-  if (token === JSONC_COMMA_TOKEN && offset < end) {
-    return offset;
-  }
-  return -1;
-};
-
-// Removes exactly the property node plus one adjacent separator comma. The
-// scanner-based comma lookup keeps comments in the surrounding gaps (including
-// commas inside comments), and avoids jsonc-parser's own removal leaving a
-// stray comma when the last property of an object is deleted.
+// Removes exactly the property node plus one adjacent separator comma, and the
+// property's line when nothing else is on it. The scanner-based comma lookup
+// keeps comments in the surrounding gaps (including commas inside comments),
+// and avoids jsonc-parser's own removal leaving a stray comma when the last
+// property of an object is deleted.
 const removePropertyEdits = (text: string, propertyPath: JSONPath): Edit[] => {
   const root = parseTree(text, [], { allowTrailingComma: true });
   const valueNode = root ? findNodeAtLocation(root, propertyPath) : undefined;
@@ -939,25 +940,12 @@ const removePropertyEdits = (text: string, propertyPath: JSONPath): Edit[] => {
 
   const siblings = objectNode.children;
   const index = siblings.indexOf(propertyNode);
-  const propStart = propertyNode.offset;
-  const propEnd = propertyNode.offset + propertyNode.length;
-  const edits: Edit[] = [{ offset: propStart, length: propEnd - propStart, content: '' }];
-
-  const objectEnd = objectNode.offset + objectNode.length;
   const nextSibling = index < siblings.length - 1 ? siblings[index + 1] : null;
-  const afterGapEnd = nextSibling ? nextSibling.offset : objectEnd - 1;
-  let commaOffset = findSeparatorComma(text, propEnd, afterGapEnd);
-  if (commaOffset === -1) {
-    const previousSibling = index > 0 ? siblings[index - 1] : null;
-    const beforeGapStart = previousSibling
-      ? previousSibling.offset + previousSibling.length
-      : objectNode.offset + 1;
-    commaOffset = findSeparatorComma(text, beforeGapStart, propStart);
-  }
-  if (commaOffset !== -1) {
-    edits.push({ offset: commaOffset, length: 1, content: '' });
-  }
-  return edits;
+  const previousSibling = index > 0 ? siblings[index - 1] : null;
+  return removeNodeEdits(text, propertyNode.offset, propertyNode.offset + propertyNode.length, {
+    nextStart: nextSibling ? nextSibling.offset : objectNode.offset + objectNode.length - 1,
+    previousEnd: previousSibling ? previousSibling.offset + previousSibling.length : objectNode.offset + 1,
+  });
 };
 
 const applyConfigEdits = (existingText: string, edits: ConfigEdit[]): string => {
@@ -970,6 +958,11 @@ const applyConfigEdits = (existingText: string, edits: ConfigEdit[]): string => 
   for (const edit of edits) {
     if (edit.type === 'remove') {
       text = applyEdits(text, removePropertyEdits(text, edit.path));
+    } else if (edit.type === 'insert-item') {
+      const itemEdits = arrayItemTextEdits(text, edit, formattingOptions.eol);
+      text = applyEdits(text, itemEdits ?? modify(text, edit.path, edit.value, { formattingOptions, isArrayInsertion: true }));
+    } else if (edit.type === 'remove-item') {
+      text = applyEdits(text, arrayItemTextEdits(text, edit, formattingOptions.eol) ?? []);
     } else {
       text = applyEdits(text, modify(text, edit.path, edit.value, { formattingOptions }));
     }
@@ -2784,6 +2777,8 @@ export type SkillConfigSources = {
 };
 
 export type DiscoveredSkill = {
+  /** OpenCode's skill id (folder of `SKILL.md`), which policies name; `null` when none can be derived. */
+  id: string | null;
   name: string;
   path: string;
   scope: SkillScope;
@@ -2794,21 +2789,39 @@ export type DiscoveredSkill = {
 
 export const BUILT_IN_SKILL_LOCATION = '<built-in>';
 
+/**
+ * Mirror of the web server's skill policy service (`skill-routes.js`): the
+ * global switch writes the user's OpenCode config, the project switch the
+ * project config file this extension writes for the directory.
+ */
+export const skillPolicyService = createSkillPolicyService({
+  resolveTargets: (directory) => {
+    const { paths } = readConfigLayers(directory ?? undefined);
+    return { global: paths.userPath, project: directory ? paths.projectPath : null };
+  },
+  readConfigFile,
+  writeConfig,
+});
+
 export const mergeDiscoveredSkills = (
   primarySkills: DiscoveredSkill[] = [],
   fallbackSkills: DiscoveredSkill[] = []
 ): DiscoveredSkill[] => {
   const merged: DiscoveredSkill[] = [];
+  const seenIds = new Set<string>();
   const seenNames = new Set<string>();
 
+  // Mirror of the web server's `mergeDiscoveredSkills`: one entry per
+  // OpenCode skill id; the display name decides only for an entry without one.
   const appendSkill = (skill: DiscoveredSkill | null | undefined) => {
     if (!skill) {
       return;
     }
     const name = typeof skill?.name === 'string' ? skill.name.trim() : '';
-    if (!name || seenNames.has(name)) {
+    if (!name || (skill.id ? seenIds.has(skill.id) : seenNames.has(name))) {
       return;
     }
+    if (skill.id) seenIds.add(skill.id);
     seenNames.add(name);
     merged.push(skill);
   };
@@ -2839,6 +2852,7 @@ const addSkillFromMdFile = (
     }
 
     skillsMap.set(name, {
+      id: skillIdFromPath(skillMdPath),
       name,
       path: skillMdPath,
       scope,

@@ -26,6 +26,30 @@ describe('skills', () => {
     ]);
   });
 
+  it('merges by OpenCode skill id, keeping ids that share a display name apart', () => {
+    const merged = mergeDiscoveredSkills(
+      [
+        { id: 'beta-one', name: 'Same Name', path: '/repo/.opencode/skills/beta-one/SKILL.md' },
+        { id: 'beta-two', name: 'Same Name', path: '/repo/.opencode/skills/beta-two/SKILL.md' },
+        { id: 'dup-skill', name: 'Dup Project', path: '/repo/.opencode/skills/dup-skill/SKILL.md' },
+      ],
+      [
+        // Copies OpenCode does not load: same id, other sources and names.
+        { id: 'dup-skill', name: 'Dup Global', path: '/home/u/.config/opencode/skills/dup-skill/SKILL.md' },
+        { id: 'dup-skill', name: 'Dup Claude', path: '/repo/.claude/skills/dup-skill/SKILL.md' },
+        // A skill switched off: OpenCode does not list it, the disk scan does.
+        { id: 'disabled-skill', name: 'Same Name', path: '/repo/.opencode/skills/disabled-skill/SKILL.md' },
+      ],
+    );
+
+    expect(merged.map((skill) => [skill.id, skill.name])).toEqual([
+      ['beta-one', 'Same Name'],
+      ['beta-two', 'Same Name'],
+      ['dup-skill', 'Dup Project'],
+      ['disabled-skill', 'Same Name'],
+    ]);
+  });
+
   it('discovers repository-local .agents skills for the project directory', async () => {
     const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-project-agents-'));
     const skillDir = path.join(tempRoot, '.agents', 'skills', 'repo-local-skill');
@@ -52,6 +76,7 @@ describe('skills', () => {
       const match = discovered.find((skill) => skill.name === 'repo-local-skill');
 
       expect(match).toEqual({
+        id: 'repo-local-skill',
         name: 'repo-local-skill',
         path: skillPath,
         scope: 'project',

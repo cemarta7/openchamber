@@ -18,9 +18,12 @@ import {
   SKILL_DIR,
   SKILL_SCOPE,
   deleteSkillSupportingFile,
+  readConfigFile,
   readSkillSupportingFile,
+  writeConfig,
   writeSkillSupportingFile,
 } from './shared.js';
+import { createSkillPolicyService } from './skill-policy.js';
 
 const createTempProject = () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-skill-routes-'));
@@ -658,5 +661,153 @@ describe('skill-routes directory soft fallback', () => {
     });
     expect(response.status).toBe(401);
     expect(scanned).toBe(false);
+  });
+});
+
+describe('skill policy routes', () => {
+  const cleanups = [];
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  });
+
+  const writeSkill = (root, relative, name) => {
+    const file = path.join(root, relative, 'SKILL.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `---\nname: ${name}\ndescription: ${name}\n---\nBody\n`);
+  };
+
+  // A stand-in OpenCode serving what the routes read: its version, its config
+  // documents (read from the files on every request, as a watching OpenCode
+  // would), and the skills those documents leave enabled.
+  const startOpenCodeStub = async ({ globalPath, projectPath, projectRoot }) => {
+    const readDocuments = () => [globalPath, projectPath]
+      .filter((file) => fs.existsSync(file))
+      .map((file) => ({ type: 'document', path: file, info: readConfigFile(file) }));
+    const denied = () => new Set(readDocuments().flatMap((entry) => entry.info.policies ?? [])
+      .filter((rule) => rule.effect === 'deny')
+      .map((rule) => rule.resource.slice('skill:'.length)));
+    const all = [
+      { id: 'alpha-skill', name: 'Alpha Display', path: path.join(projectRoot, '.opencode', 'skills', 'alpha-skill', 'SKILL.md'), description: 'a' },
+      { id: 'beta-one', name: 'Same Name', path: path.join(projectRoot, '.opencode', 'skills', 'beta-one', 'SKILL.md'), description: 'b1' },
+      { id: 'beta-two', name: 'Same Name', path: path.join(projectRoot, '.opencode', 'skills', 'beta-two', 'SKILL.md'), description: 'b2' },
+    ];
+    const stub = express();
+    stub.get('/api/info', (_req, res) => res.json({ version: '2.0.29', pid: 1, urls: [], paths: { tmp: os.tmpdir() } }));
+    stub.get('/api/config', (_req, res) => res.json(readDocuments()));
+    stub.get('/api/skill', (_req, res) => {
+      const off = denied();
+      res.json({ location: { directory: projectRoot }, data: all.filter((skill) => !off.has(skill.id)) });
+    });
+    const server = await new Promise((resolve) => {
+      const started = stub.listen(0, () => resolve(started));
+    });
+    cleanups.push(() => new Promise((resolve) => server.close(resolve)));
+    return server.address().port;
+  };
+
+  const setupApp = async () => {
+    const projectRoot = fs.realpathSync(createTempProject());
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-skill-policy-global-'));
+    cleanups.push(() => {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(configDir, { recursive: true, force: true });
+    });
+    writeSkill(projectRoot, '.opencode/skills/alpha-skill', 'Alpha Display');
+    writeSkill(projectRoot, '.opencode/skills/beta-one', 'Same Name');
+    writeSkill(projectRoot, '.opencode/skills/beta-two', 'Same Name');
+    const globalPath = path.join(configDir, 'opencode.json');
+    const globalText = '{\n  "theme": "dark"\n}\n';
+    fs.writeFileSync(globalPath, globalText);
+    const projectPath = path.join(projectRoot, '.opencode', 'opencode.json');
+    const port = await startOpenCodeStub({ globalPath, projectPath, projectRoot });
+    const handle = startSkillsApp({
+      projectRoot,
+      overrides: {
+        buildOpenCodeUrl: () => `http://127.0.0.1:${port}/`,
+        getOpenCodePort: () => port,
+        skillPolicyService: createSkillPolicyService({
+          resolveTargets: (directory) => ({ global: globalPath, project: directory ? projectPath : null }),
+          readConfigFile,
+          writeConfig,
+          sleep: async () => {},
+        }),
+      },
+    });
+    cleanups.push(() => handle.close());
+    const query = `?directory=${encodeURIComponent(projectRoot)}`;
+    const put = (body) => fetch(`${handle.baseUrl}/api/config/skill-policy${query}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const list = async () => (await fetch(`${handle.baseUrl}/api/config/skills${query}`)).json();
+    return { projectRoot, globalPath, globalText, projectPath, put, list };
+  };
+
+  it('lists skills by OpenCode id, switches one off and on in the project, and keeps it listed while off', async () => {
+    const { globalPath, globalText, projectPath, put, list } = await setupApp();
+
+    const before = await list();
+    const ids = before.skills.map((skill) => skill.id);
+    expect(ids).toEqual(expect.arrayContaining(['alpha-skill', 'beta-one', 'beta-two']));
+    expect(before.skills.filter((skill) => skill.name === 'Same Name').map((skill) => skill.id).sort()).toEqual(['beta-one', 'beta-two']);
+    expect(before.skillPolicy).toMatchObject({ version: '2.0.29', location: 'policies', writable: true, effectiveAvailable: true });
+    expect(before.skillPolicy.skills['alpha-skill']).toEqual({ disabledIn: { global: false, project: false }, effective: 'enabled', decidedBy: null });
+
+    // The display name is not an id OpenCode policies know.
+    const byName = await put({ id: 'Alpha Display', scope: 'project', enabled: false });
+    expect(byName.status).toBe(404);
+    expect(fs.existsSync(projectPath)).toBe(false);
+
+    const off = await put({ id: 'alpha-skill', scope: 'project', enabled: false });
+    expect(off.status).toBe(200);
+    expect(await off.json()).toMatchObject({
+      ok: true,
+      id: 'alpha-skill',
+      saved: { scope: 'project', path: projectPath, disabled: true, changed: true },
+      confirmed: true,
+      policy: { effective: 'disabled', decidedBy: { scope: 'project', owned: true } },
+    });
+    expect(readConfigFile(projectPath)).toEqual({
+      policies: [{ action: 'integration.use', resource: 'skill:alpha-skill', effect: 'deny' }],
+    });
+    expect(fs.readFileSync(globalPath, 'utf8')).toBe(globalText);
+
+    const whileOff = await list();
+    const alpha = whileOff.skills.find((skill) => skill.id === 'alpha-skill');
+    expect(alpha).toMatchObject({ name: 'Alpha Display', scope: 'project' });
+    expect(whileOff.skillPolicy.skills['alpha-skill']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+
+    const on = await put({ id: 'alpha-skill', scope: 'project', enabled: true });
+    expect(await on.json()).toMatchObject({ ok: true, confirmed: true, saved: { disabled: false, changed: true }, policy: { effective: 'enabled' } });
+    expect(readConfigFile(projectPath)).toEqual({});
+  });
+
+  it('switches a skill off globally and reports the project switch as overridden', async () => {
+    const { globalPath, put } = await setupApp();
+    expect((await put({ id: 'beta-one', scope: 'global', enabled: false })).status).toBe(200);
+    expect(readConfigFile(globalPath)).toEqual({
+      theme: 'dark',
+      policies: [{ action: 'integration.use', resource: 'skill:beta-one', effect: 'deny' }],
+    });
+
+    const project = await (await put({ id: 'beta-one', scope: 'project', enabled: true })).json();
+    expect(project).toMatchObject({
+      ok: true,
+      saved: { changed: false },
+      policy: { disabledIn: { global: true, project: false }, effective: 'disabled', decidedBy: { scope: 'global', owned: true } },
+    });
+  });
+
+  it('refuses a project switch without an explicit directory', async () => {
+    const handle = startSkillsApp({ projectRoot: os.tmpdir() });
+    cleanups.push(() => handle.close());
+    const response = await fetch(`${handle.baseUrl}/api/config/skill-policy`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'alpha-skill', scope: 'project', enabled: false }),
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.code).toBe('directory_required');
   });
 });

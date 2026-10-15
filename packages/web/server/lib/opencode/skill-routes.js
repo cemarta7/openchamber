@@ -1,7 +1,13 @@
 import { OpenCode } from '@opencode/client';
 import { buildAppliedResponse } from './config-mutation-response.js';
-import { OPENCODE_CONFIG_DIR } from './shared.js';
-import { asNonEmptyString } from '../shared/guards.js';
+import { OPENCODE_CONFIG_DIR, readConfigFile, readConfigLayers, writeConfig } from './shared.js';
+import {
+  createSkillPolicyService,
+  handleSkillPolicyWrite,
+  isValidSkillPolicyId,
+  skillIdFromPath,
+} from './skill-policy.js';
+import { asNonEmptyString, isString } from '../shared/guards.js';
 import { appendInstalledSources, isInstalledFromSource, readInstalledSources, removeInstalledSources } from '../skills-catalog/installed-sources.js';
 
 /**
@@ -53,6 +59,16 @@ export const registerSkillRoutes = (app, dependencies) => {
     createHttpsCredentialReference,
     resolveSourceControlAccount,
     credentialResolver,
+    // The global switch writes the user's OpenCode config, the project
+    // switch the project config file OpenChamber writes for the directory.
+    skillPolicyService = createSkillPolicyService({
+      resolveTargets: (directory) => {
+        const { paths } = readConfigLayers(directory);
+        return { global: paths.userPath, project: directory ? paths.projectPath : null };
+      },
+      readConfigFile,
+      writeConfig,
+    }),
   } = dependencies;
 
   const resolveCatalogGitIdentity = async (identityId, source) => {
@@ -193,6 +209,34 @@ export const registerSkillRoutes = (app, dependencies) => {
     return { scope: SKILL_SCOPE.USER, source };
   };
 
+  const makeOpenCodeClient = (workingDirectory) => OpenCode.make({
+    baseUrl: buildOpenCodeUrl('/', '').replace(/\/$/, ''),
+    headers: {
+      ...getOpenCodeAuthHeaders(),
+      // v2 scopes a request with a header, not a `directory` option, and
+      // rejects non-ASCII header values, so the path is percent-encoded.
+      ...(workingDirectory ? { 'x-opencode-directory': encodeURIComponent(workingDirectory) } : {}),
+    },
+    fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(8_000) }),
+  });
+
+  // What the skill policy service reads from the running OpenCode. Both
+  // reject when OpenCode is not running, so a failed read never looks like
+  // a server without policies.
+  const openCodePolicyReader = {
+    readVersion: async () => {
+      if (!getOpenCodePort()) throw new Error('OpenCode is not running');
+      const info = await makeOpenCodeClient(null).server.info();
+      return isString(info?.version) ? info.version : null;
+    },
+    readConfigEntries: async (workingDirectory) => {
+      if (!getOpenCodePort()) throw new Error('OpenCode is not running');
+      const entries = await makeOpenCodeClient(workingDirectory).config.get();
+      if (!Array.isArray(entries)) throw new Error('OpenCode returned a malformed config list');
+      return entries;
+    },
+  };
+
   // Returns null when OpenCode's list could not be read (not running, error,
   // timeout, malformed payload) so callers can tell a failed fetch from a
   // genuinely empty list.
@@ -202,17 +246,7 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
 
     try {
-      const client = OpenCode.make({
-        baseUrl: buildOpenCodeUrl('/', '').replace(/\/$/, ''),
-        headers: {
-          ...getOpenCodeAuthHeaders(),
-          // v2 scopes a request with a header, not a `directory` option, and
-          // rejects non-ASCII header values, so the path is percent-encoded.
-          ...(workingDirectory ? { 'x-opencode-directory': encodeURIComponent(workingDirectory) } : {}),
-        },
-        fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(8_000) }),
-      });
-
+      const client = makeOpenCodeClient(workingDirectory);
       const response = await client.skill.list();
       const payload = response?.data;
       if (!Array.isArray(payload)) {
@@ -232,11 +266,14 @@ export const registerSkillRoutes = (app, dependencies) => {
           const location = rawLocation.startsWith('/builtin/') ? '<built-in>' : rawLocation;
           const description = typeof item?.description === 'string' ? item.description : '';
           const content = typeof item?.content === 'string' ? item.content : '';
+          // v2 reports the id; derive it from the path for a payload without.
+          const id = isValidSkillPolicyId(item?.id) ? item.id : skillIdFromPath(rawLocation);
           if (!name || !location) {
             return null;
           }
           if (location === '<built-in>') {
             return {
+              id,
               name,
               path: location,
               scope: SKILL_SCOPE.USER,
@@ -247,6 +284,7 @@ export const registerSkillRoutes = (app, dependencies) => {
           }
           const inferred = inferSkillScopeAndSourceFromPath(location, projectAncestors);
           const skill = {
+            id,
             name,
             path: location,
             scope: inferred.scope,
@@ -297,6 +335,46 @@ export const registerSkillRoutes = (app, dependencies) => {
 
     return { directory: null, error: null };
   };
+
+  // Policy state for the listed skills, keyed by OpenCode skill id. A failure
+  // here answers `{ error }` and leaves the skill list intact.
+  const readSkillPolicyForList = async (directory, skills) => {
+    try {
+      const ids = skills.map((skill) => skill.id).filter(isString);
+      return await skillPolicyService.readState({ directory, ids, openCode: openCodePolicyReader });
+    } catch (error) {
+      console.error('Failed to read skill policies:', error);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+
+  const listInstalledSkillIds = async (directory) => {
+    const skills = mergeDiscoveredSkills(
+      (await fetchOpenCodeDiscoveredSkills(directory)) ?? [],
+      await discoverSkills(directory),
+    );
+    return new Set(skills.map((skill) => skill.id).filter(isString));
+  };
+
+  // Switch one skill on or off in one scope: body `{ id, scope, enabled }`,
+  // `id` being OpenCode's skill id. See skill-policy.js for what is written.
+  app.put('/api/config/skill-policy', async (req, res) => {
+    const scope = req.body?.scope;
+    const { directory, error } = scope === 'project'
+      ? await resolveOptionalProjectDirectory(req)
+      : await resolveSkillsDirectory(req);
+    if (error) {
+      return res.status(400).json({ ok: false, error: { code: 'invalid_directory', message: error } });
+    }
+    const result = await handleSkillPolicyWrite({
+      service: skillPolicyService,
+      body: req.body,
+      directory,
+      openCode: openCodePolicyReader,
+      listInstalledSkillIds,
+    });
+    return res.status(result.status).json(result.body);
+  });
 
   app.get('/api/config/skills', async (req, res) => {
     try {
@@ -351,6 +429,7 @@ export const registerSkillRoutes = (app, dependencies) => {
       if (openCodeSkills === null) {
         body.openCodeSkillsUnavailable = true;
       }
+      body.skillPolicy = await readSkillPolicyForList(directory, enrichedSkills);
       res.json(body);
     } catch (error) {
       console.error('Failed to list skills:', error);

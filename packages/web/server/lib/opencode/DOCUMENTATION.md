@@ -63,7 +63,9 @@ and OpenChamber resolves the directory itself.
 - `packages/web/server/lib/opencode/model-discovery.js`: bounded custom-provider `/models` discovery and optional models.dev enrichment. It accepts only http(s), does not follow redirects, filters transport headers, never returns credentials, and treats models.dev failure as unenriched success. Edit requests may name the provider so the host can fall back to a stored credential when the form leaves the key blank — the key from OpenCode's credential store or, failing that, the provider's stored config entry (`settings.apiKey`, else the first `env` variable name that is set in the server environment) — but only while the form's base URL still matches the saved one, so a changed URL never receives the stored credential; an explicitly entered replacement key wins.
 - `packages/web/server/lib/opencode/pwa-manifest-routes.js`: PWA manifest route registration with recent-session shortcut resolution and short-lived caching.
 - `packages/web/server/lib/opencode/project-icon-routes.js`: project icon upload/read/discovery route registration and icon storage orchestration.
-- `packages/web/server/lib/opencode/skill-routes.js`: route registration for skill config CRUD, supporting files, and skills catalog scan/install flows.
+- `packages/web/server/lib/opencode/skill-routes.js`: route registration for skill config CRUD, supporting files, skills catalog scan/install flows, and the per-skill switch (`PUT /api/config/skill-policy`).
+- `packages/web/server/lib/opencode/skill-policy.js`: per-skill on/off through OpenCode `integration.use` policies: version-dependent config key, rule ownership, effective state across config documents, and the serialized write. Shared with the VS Code extension host. See "Per-skill switches" below.
+- `packages/web/server/lib/opencode/jsonc-edits.js`: item-level array edits and line-aware node removal for the JSONC config writers in `shared.js` and the VS Code extension host's `opencodeConfig.ts`.
 - `packages/web/server/lib/opencode/settings-runtime.js`: Settings persistence runtime (disk IO, migrations, normalization, project validation, and persisted update serialization). With no project stored, the legacy migration turns a stored `lastDirectory` into the first project, except a folder inside the chats roots (`chatRoots` dep, compared lexically and by realpath): with no project open the UI's last directory is usually a chat's, and a chat belongs to no project.
 - `packages/web/server/lib/opencode/settings-helpers.js`: Settings payload sanitization/format helpers runtime for response shaping and persisted merge prep. `lastDirectory: ''` is kept as written: the UI sends it when the last project is removed, and every reader (the warm-up, the legacy last-directory-to-project migration, request directory resolution) treats it as unset.
 - `packages/web/server/lib/opencode/settings-normalization-runtime.js`: path/settings/tunnel normalization and sanitization helpers runtime used by settings/routes/config wiring.
@@ -223,7 +225,7 @@ Hard rules, verified against v2.0.8 (the completion stamp against v2.0.16)
 - `getConfigPaths(workingDirectory)`, `readConfigLayers(workingDirectory)`, `readConfig(workingDirectory)`: Config file operations with layer merging (user, project, custom). `readConfigLayers` isolates `INVALID_JSONC` per layer: a broken file is omitted from the merge (`{}` for that layer only), recorded on `layerErrors`, and does not block valid sibling layers. Writes still refuse to overwrite the broken file.
 - `readConfigFile(filePath)`: Reads one config file. Missing, whitespace-only, and comment-only files return `{}`; a comment-only file is recognized by `ValueExpected` being the only parse error. A `jsonc-parser` error that produces a partial or non-object tree throws `INVALID_JSONC` — partial parse trees must never be treated as authoritative (avoids rewriting a `$schema`-only stub over a full config). Content that yields no JSON value for any other reason (YAML, plain text) also throws instead of reading as empty.
 - `readConfigLayer(filePath)`: Same parse as `readConfigFile`, but isolates `INVALID_JSONC` to `{ config: {}, error }` so plugin/MCP/agent readers can skip one broken layer without aborting valid siblings. Writes still refuse to overwrite the broken file.
-- `writeConfig(config, filePath)`: Writes config with automatic backup, replacing the file atomically through `writeFileAtomic` so a watcher or a crash never sees a partial config. Refuses to overwrite an existing non-empty file that fails the same JSONC parse check. Existing files are edited structurally instead of being re-serialized whole, so comments, formatting, and line endings outside the changed values survive; changed arrays are replaced whole, comment-only files keep their comments with the serialized config appended below, and the edited text must re-parse to exactly the intended config or the write falls back to a normalized rewrite (never an invalid file).
+- `writeConfig(config, filePath)`: Writes config with automatic backup, replacing the file atomically through `writeFileAtomic` so a watcher or a crash never sees a partial config. Refuses to overwrite an existing non-empty file that fails the same JSONC parse check. Existing files are edited structurally instead of being re-serialized whole, so comments, formatting, and line endings outside the changed values survive; an array that only gains items at its end or only loses items is edited item by item (`jsonc-edits.js`, shared with the VS Code writer), any other changed array is replaced whole, and a removed property or item that sat alone on its line takes the line with it, so adding a key or item and removing it again gives back the original text; comment-only files keep their comments with the serialized config appended below, and the edited text must re-parse to exactly the intended config or the write falls back to a normalized rewrite (never an invalid file).
 - `getJsonEntrySource(layers, sectionKind, entryName)`: Resolves which config layer provides an entry. `sectionKind` is `agents`, `commands`, `providers`, or `mcp`, and both the v2 and the v1 spelling are searched (v2 wins). The result carries `sectionKey` (the spelling that actually held the entry) and `legacy`, so a writer can rewrite the same file in v2 shape. A failed custom or user layer throws `INVALID_JSONC` instead of treating that file as empty. A failed project layer is skipped so a valid user/custom entry can still be found.
 - `getJsonWriteTarget(layers, preferredScope)`: Determines write target for config updates. Throws `INVALID_JSONC` when the chosen target file is the unparseable layer.
 - `getAncestors(startDir, stopDir)`, `findWorktreeRoot(startDir)`: Git worktree helpers.
@@ -918,6 +920,73 @@ within a ten-minute overall deadline.
     back to the active project / `lastDirectory` so repository-local
     `.agents/skills` and `.opencode/skills` remain discoverable when the client
     omits `directory`. Requests without any project still list user-scoped skills.
+  - Every listed skill carries `id`, OpenCode's skill id: the `id` OpenCode reports, else the folder of `SKILL.md` (`skillIdFromPath`). The display `name` is the frontmatter `name`. The OpenCode list and the disk scan merge by id, so two ids sharing a display name stay two entries and the copies of one id collapse into the one OpenCode loads; an entry without an id falls back to the name match.
+  - `GET /api/config/skills` also answers `skillPolicy` (below), or `skillPolicy: { error }` when it could not be read; the skill list itself never fails for it.
+
+## Per-skill switches
+`skill-policy.js` turns a skill off with one statement in an OpenCode config file,
+`{ "action": "integration.use", "resource": "skill:<id>", "effect": "deny" }`.
+OpenCode then drops the skill from its registry, from the model's skill list and
+from explicit `session.skill` calls and prompt attachments, live and without a
+restart. The skill files stay where they are. Verified for #3075 against
+isolated OpenCode 2.0.20 through 2.0.30 servers.
+
+- **Config key by version.** 2.0.25 to 2.0.28 enforce only `experimental.policies`;
+  2.0.29 and newer also read top-level `policies`, and the switch writes there.
+  Older servers enforce neither, which is why `MINIMUM_OPENCODE_VERSION` is 2.0.25.
+  The version comes from the running OpenCode (`GET /api/info`) on every write; with
+  no version the write answers 503 and nothing is written.
+- **Id, not name.** The resource is OpenCode's path-derived skill id. One id covers
+  every source copy of a skill, so switching it off removes all of them; a deny that
+  names a display name has no effect in OpenCode, and the route answers 404 for an id
+  no installed skill has. Ids with `*`, `?`, separators or control characters are
+  refused, so an owned statement can match only its own id.
+- **Scopes.** `global` writes the user's OpenCode config (`opencode.json[c]` in the
+  OpenCode config directory), `project` the project config file OpenChamber writes for
+  the directory (`.opencode/opencode.json` first, as for every project write). The
+  skill's own location does not choose the scope. The project scope needs an explicit
+  `directory`; a directory whose project file is the global one has no project scope.
+- **Ownership.** A switch owns exactly the exact-id deny in its scope's file. Off
+  appends it to the end of the version's array unless an owned deny already decides
+  the id in that file; on removes every copy of it there and nothing else. It never
+  writes an allow, a wildcard, another action or another file, so a restriction it did
+  not create stays in force. JSONC comments and layout survive, and off then on gives
+  back the original text.
+- **Effective state.** OpenCode evaluates config documents reversed and the last
+  matching statement wins, so a global rule beats a project rule in either direction
+  and a root `opencode.json` beats `.opencode/opencode.jsonc`. The effective state is
+  computed from OpenCode's own `GET /api/config` documents for the directory. When that
+  read fails the state is `unknown`; a skill missing from OpenCode's skill list is never
+  taken as switched off (a cold location answers an empty list first). Statements
+  from a connected Console workspace are not in `/api/config` and are not shown.
+- **Writes.** Read, change and write of a file run one at a time per process, and the
+  file write is atomic with the usual comment-preserving writer. A failed read or write
+  changes nothing and answers an error. After a write the service reads OpenCode's
+  documents up to 8 times, 250 ms apart, and reports `confirmed: false` when OpenCode has
+  not shown the saved rule yet; the rule is saved either way.
+
+Contract, identical on web (`skill-routes.js`) and VS Code (`api:config/skill-policy`):
+
+- `GET /api/config/skills` adds `skillPolicy`:
+  `{ version, location: 'experimental.policies' | 'policies' | null, writable,
+  effectiveAvailable, scopes: { global: { path, error }, project: { path, error } | null },
+  skills: { [id]: { disabledIn: { global, project }, effective, decidedBy } } }`.
+  `disabledIn.<scope>` is whether that scope's file holds the switch's own deny (`null`
+  when the scope has no file or it could not be read). `effective` is `enabled`,
+  `disabled` or `unknown`. `decidedBy` is the deciding statement
+  `{ path, resource, effect, scope: 'global' | 'project' | 'other', owned }` or `null`
+  (no rule: enabled). `skills` also lists ids a scope switches off that no installed
+  skill has any more, so they can still be switched back on. `writable: false` means
+  OpenCode could not be read or does not enforce skill policies.
+- `PUT /api/config/skill-policy` (directory in the query or `x-opencode-directory`),
+  body `{ id, scope: 'global' | 'project', enabled: boolean }`, answers
+  `{ ok: true, id, saved: { scope, path, disabled, changed }, confirmed, state, policy }`
+  with `state` the summary above and `policy` the id's entry. Errors answer
+  `{ ok: false, error: { code, message } }`: 400 `invalid_id`, `invalid_scope`,
+  `invalid_enabled`, `invalid_directory`, `directory_required` (VS Code also
+  `invalid_request`); 404 `unknown_skill`; 409 `unsupported_version`,
+  `scope_unavailable`, `invalid_config`, `read_failed`; 503 `opencode_unavailable`;
+  500 `write_failed`.
 
 ## Public exports (proxy.js)
 - `registerOpenCodeProxy(app, dependencies)`: registers OpenCode proxy routes and middleware.
@@ -962,7 +1031,7 @@ The VS Code extension owns its separate Git and proxy implementation.
 ## Storage and configuration
 - Provider auth: read from the running OpenCode over `GET /api/credential` (2.0.20+); OpenCode 2.x owns credentials.
 - Session archive state: `sessions-archive.json` under the OpenChamber data dir.
-- Session metadata (goal progress, the assist recap, the obligatory-context cursor, pinned notes) lives on the OpenCode session record, written with `PATCH /api/session/{id}` (OpenCode 2.0.15+, the minimum `compatibility.js` enforces). OpenCode replaces the whole object, so `sessionMetadataStore.setSessionMetadata` reads the record, applies the JSON Merge Patch and writes the result, one write per session at a time; a record that cannot be read stops the write. Every reader and writer (routes, goal loop, session assist, session knowledge, obligatory context, notifications) goes through `sessionMetadataStore.get` / `setSessionMetadata`. Older OpenChamber versions kept this state in `sessions-metadata.json` under the data dir. Its entries are the newest metadata their sessions have: the proxy lays them over OpenCode's records, a session's next write pushes its entry, and a sweep after OpenCode starts pushes the rest (a session OpenCode no longer knows is dropped, any other failure waits for the next write or start). The emptied file is renamed to `sessions-metadata.json.migrated`. Archive mutations still run one transaction at a time in the archive store.
+- Session metadata (goal progress, the assist recap, the obligatory-context cursor, pinned notes) lives on the OpenCode session record, written with `PATCH /api/session/{id}` (OpenCode 2.0.15+; `compatibility.js` enforces 2.0.25). OpenCode replaces the whole object, so `sessionMetadataStore.setSessionMetadata` reads the record, applies the JSON Merge Patch and writes the result, one write per session at a time; a record that cannot be read stops the write. Every reader and writer (routes, goal loop, session assist, session knowledge, obligatory context, notifications) goes through `sessionMetadataStore.get` / `setSessionMetadata`. Older OpenChamber versions kept this state in `sessions-metadata.json` under the data dir. Its entries are the newest metadata their sessions have: the proxy lays them over OpenCode's records, a session's next write pushes its entry, and a sweep after OpenCode starts pushes the rest (a session OpenCode no longer knows is dropped, any other failure waits for the next write or start). The emptied file is renamed to `sessions-metadata.json.migrated`. Archive mutations still run one transaction at a time in the archive store.
 - User config: `<config dir>/opencode.json(c)` where the config dir is `OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`. The v1 `config.json` is not read.
 - Project config: `<workingDirectory>/.opencode/opencode.json(c)` first, else `<workingDirectory>/opencode.json(c)`.
 - Custom config: `OPENCODE_CONFIG` env var path.

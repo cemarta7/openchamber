@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parse as parseJsonc } from 'jsonc-parser';
 
 mock.module('vscode', () => ({
   workspace: {
@@ -42,6 +43,10 @@ const deps = {
   resetMagicPromptOverride: async () => ({ version: 1, overrides: {} }),
   resetAllMagicPromptOverrides: async () => ({ version: 1, overrides: {} }),
   fetchOpenCodeSkillsFromApi: async () => null,
+  createOpenCodePolicyReader: () => ({
+    readVersion: async () => { throw new Error('OpenCode is not running'); },
+    readConfigEntries: async () => { throw new Error('OpenCode is not running'); },
+  }),
   clientReloadDelayMs: 800,
 };
 
@@ -329,5 +334,110 @@ describe('VS Code config bridge plugin parity', () => {
       // v1 `enabled: false` becomes the inverse v2 `disabled: true`.
       disabled: true,
     });
+  });
+});
+
+describe('VS Code skill policy parity', () => {
+  const globalConfigPath = path.join(process.env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+
+  const setup = () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-policy-')));
+    tempRoots.push(root);
+    fs.mkdirSync(path.join(root, '.git'));
+    const skillFile = path.join(root, '.opencode', 'skills', 'alpha-skill', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillFile), { recursive: true });
+    fs.writeFileSync(skillFile, '---\nname: Alpha Display\ndescription: Alpha\n---\nBody\n');
+    const projectConfigPath = path.join(root, '.opencode', 'opencode.json');
+    // A watching OpenCode: it serves whatever the config files hold now.
+    const policyDeps = {
+      ...deps,
+      createOpenCodePolicyReader: () => ({
+        readVersion: async () => '2.0.29',
+        readConfigEntries: async () => [globalConfigPath, projectConfigPath]
+          .filter((file) => fs.existsSync(file))
+          .map((file) => ({ type: 'document', path: file, info: parseJsonc(fs.readFileSync(file, 'utf8')) })),
+      }),
+    };
+    const send = (payload) => handleConfigBridgeMessage({ id: 'policy', type: 'api:config/skill-policy', payload }, createCtx(root), policyDeps);
+    const list = () => handleConfigBridgeMessage({ id: 'list', type: 'api:config/skills', payload: { method: 'GET' } }, createCtx(root), policyDeps);
+    return { root, projectConfigPath, send, list };
+  };
+
+  afterEach(() => {
+    fs.rmSync(globalConfigPath, { force: true });
+  });
+
+  test('switches a skill off and on in the project config by its OpenCode id', async () => {
+    const { root, projectConfigPath, send, list } = setup();
+
+    const byName = await send({ directory: root, body: { id: 'Alpha Display', scope: 'project', enabled: false } });
+    expect(byName.data).toMatchObject({ status: 404, body: { ok: false, error: { code: 'unknown_skill' } } });
+
+    const off = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } });
+    expect(off.data).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        id: 'alpha-skill',
+        confirmed: true,
+        saved: { scope: 'project', path: projectConfigPath, disabled: true, changed: true },
+        policy: { effective: 'disabled', decidedBy: { scope: 'project', owned: true } },
+      },
+    });
+    expect(readJson(projectConfigPath)).toEqual({
+      policies: [{ action: 'integration.use', resource: 'skill:alpha-skill', effect: 'deny' }],
+    });
+    expect(fs.existsSync(globalConfigPath)).toBe(false);
+
+    const listed = await list();
+    expect(listed.data.skills.find((skill) => skill.id === 'alpha-skill')).toMatchObject({ name: 'Alpha Display' });
+    expect(listed.data.skillPolicy.skills['alpha-skill']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+
+    const on = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: true } });
+    expect(on.data).toMatchObject({ status: 200, body: { ok: true, saved: { changed: true }, policy: { effective: 'enabled' } } });
+    expect(readJson(projectConfigPath)).toEqual({});
+  });
+
+  test('gives back the project JSONC byte for byte after a switch goes off and on again', async () => {
+    const { root, projectConfigPath, send } = setup();
+    const text = '{\n  // project rules\n  "policies": [\n    { "action": "integration.use", "resource": "skill:wild-*", "effect": "deny" }, // keep\n  ],\n}\n';
+    fs.writeFileSync(projectConfigPath, text);
+    const readJsonc = () => fs.readFileSync(projectConfigPath, 'utf8');
+    expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } })).data.status).toBe(200);
+    expect(readJsonc()).toContain('// keep');
+    expect(readJsonc()).toContain('skill:alpha-skill');
+    expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: true } })).data.status).toBe(200);
+    expect(readJsonc()).toBe(text);
+  });
+
+  test('writes the global switch to the user config and reports it over the project one', async () => {
+    const { root, send } = setup();
+    expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'global', enabled: false } })).data.status).toBe(200);
+    expect(readJson(globalConfigPath)).toEqual({
+      policies: [{ action: 'integration.use', resource: 'skill:alpha-skill', effect: 'deny' }],
+    });
+    const project = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: true } });
+    expect(project.data.body).toMatchObject({ policy: { effective: 'disabled', decidedBy: { scope: 'global', owned: true } } });
+  });
+
+  test('refuses malformed requests, unknown directories and a project switch without a directory', async () => {
+    const { root, send } = setup();
+    expect((await send({ directory: 42 })).data).toMatchObject({ status: 400, body: { error: { code: 'invalid_request' } } });
+    expect((await send({ directory: path.join(root, 'missing'), body: { id: 'alpha-skill', scope: 'global', enabled: false } })).data)
+      .toMatchObject({ status: 400, body: { error: { code: 'invalid_directory' } } });
+    expect((await send({ body: { id: 'alpha-skill', scope: 'project', enabled: false } })).data)
+      .toMatchObject({ status: 400, body: { error: { code: 'directory_required' } } });
+  });
+
+  test('answers 503 without writing when OpenCode cannot be read', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-policy-down-'));
+    tempRoots.push(root);
+    const result = await handleConfigBridgeMessage({
+      id: 'policy',
+      type: 'api:config/skill-policy',
+      payload: { directory: root, body: { id: 'alpha-skill', scope: 'global', enabled: true } },
+    }, createCtx(root), deps);
+    expect(result.data).toMatchObject({ status: 503, body: { error: { code: 'opencode_unavailable' } } });
+    expect(fs.existsSync(globalConfigPath)).toBe(false);
   });
 });
