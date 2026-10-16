@@ -211,7 +211,7 @@ describe('useSkillsStore directory resolution', () => {
     };
 
     const renamed = await useSkillsStore.getState().renameSkill({ id: 'old-skill', name: 'old-skill' }, 'new-skill');
-    expect(renamed).toBe(true);
+    expect(renamed).toEqual({ ok: true, id: 'new-skill', oldRuleCleanupFailed: [] });
 
     const renameCall = runtimeFetchCalls.find((call) => String(call.url).includes('/api/config/skills/old-skill'));
     expect(renameCall).toBeTruthy();
@@ -391,7 +391,7 @@ describe('useSkillsStore skill identity', () => {
       expect(await store.writeSupportingFile(skill, 'notes.md', 'text')).toBe(true);
       expect(await store.deleteSupportingFile(skill, 'notes.md')).toBe(true);
       expect(await store.updateSkill(skill, { description: 'Edited' })).toBe(true);
-      expect(await store.renameSkill(skill, `${listed.id}-renamed`)).toBe(true);
+      expect((await store.renameSkill(skill, `${listed.id}-renamed`)).ok).toBe(true);
       expect(await store.deleteSkill(skill)).toBe(true);
 
       // Every call keeps the display name in the path and selects by id.
@@ -635,5 +635,48 @@ describe('useSkillsStore availability and switches', () => {
     expect(state.skillsByDirectory[activeProjectPath]?.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
     expect(state.skills).toEqual([]);
     expect(state.availableSkills).toEqual([]);
+  });
+});
+
+describe('useSkillsStore rename result', () => {
+  const target = { id: 'old-skill', name: 'old-skill' };
+
+  beforeEach(() => {
+    runtimeFetchCalls = [];
+    currentProjectPath = activeProjectPath;
+    useSkillsStore.getState().resetForRuntimeSwitch();
+  });
+
+  test('a rename that could not remove the old switch rule is done, and names the file', async () => {
+    runtimeFetchImpl = async (_url, init) => jsonResponse(JSON.stringify(init?.method === 'PATCH'
+      ? {
+        success: true,
+        name: 'new-skill',
+        id: 'new-skill',
+        switches: {
+          carried: [{ scope: 'global', path: '/config/opencode.json' }],
+          oldRuleRemoved: [],
+          oldRuleKept: [],
+          oldRuleCleanupFailed: [{ scope: 'global', path: '/config/opencode.json', error: 'EACCES: permission denied' }],
+        },
+      }
+      : { skills: [] }));
+    expect(await useSkillsStore.getState().renameSkill(target, 'new-skill')).toEqual({
+      ok: true,
+      id: 'new-skill',
+      oldRuleCleanupFailed: [{ scope: 'global', path: '/config/opencode.json' }],
+    });
+  });
+
+  test('a refused rename is a failure', async () => {
+    runtimeFetchImpl = async () => new Response(JSON.stringify({ error: 'Skill new-skill already exists' }), { status: 500 });
+    expect(await useSkillsStore.getState().renameSkill(target, 'new-skill')).toEqual({ ok: false });
+  });
+
+  test('a list that fails to reload after a done rename does not turn it into a failure', async () => {
+    runtimeFetchImpl = async (_url, init) => (init?.method === 'PATCH'
+      ? jsonResponse(JSON.stringify({ success: true, id: 'new-skill', switches: null }))
+      : new Response('boom', { status: 500 }));
+    expect(await useSkillsStore.getState().renameSkill(target, 'new-skill')).toEqual({ ok: true, id: 'new-skill', oldRuleCleanupFailed: [] });
   });
 });

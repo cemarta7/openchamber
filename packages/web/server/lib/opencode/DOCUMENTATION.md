@@ -1002,18 +1002,26 @@ Code:
    hook inside `renameSkill`), every scope file of the directory is read: the
    user's global config and the project config the switches write. One that
    cannot be read stops the rename with 409 and nothing is written or moved.
+   This also blocks renaming a skill no switch turned off while one of those
+   files is unreadable or invalid JSONC; fixing the file allows the rename.
 2. In each of those files holding the switch's deny for the old id, the
    switch's deny for the new id is appended next to it, in the same array
    (`experimental.policies` or top-level `policies`), so it keeps the format the
    old rule was written for. A failed write restores the files already written
-   and stops the rename (500). OpenCode never sees the new id without its rule.
+   and stops the rename (500). The deny is written before the folder moves,
+   but OpenCode picks up both changes through file watchers that run
+   asynchronously, so this order is best effort: OpenCode can briefly list the
+   new id before it applies the deny. The rule is in force once OpenCode has
+   reloaded the config.
 3. The folder moves. If the move or the frontmatter write fails, the folder is
    moved back and the rules from step 2 are taken out again; when the folder
    cannot be moved back, the new rules stay, so the skill stays off either way.
 4. The old id's switch rule is removed, unless another copy of the old id is
    still installed (any skill file on disk with that id, `discoverSkills(dir, {
    allCopies: true })`): that copy keeps the old id and stays off. A failed
-   removal leaves a harmless rule for the old id and is reported, not hidden.
+   removal leaves a harmless rule for the old id and is reported, not hidden:
+   the rename still answers 200 with the file in `oldRuleCleanupFailed`, and
+   the Skills page shows a warning that names the file.
 
 The answer's `switches` is `{ carried, oldRuleRemoved, oldRuleKept,
 oldRuleCleanupFailed }`, each a list of `{ scope, path }` (`error` on a failed

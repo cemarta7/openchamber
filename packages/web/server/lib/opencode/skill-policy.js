@@ -545,9 +545,11 @@ export function createSkillPolicyService({
    * Called before the folder moves. Every scope file is read first; one that
    * cannot be read stops the rename (409) before anything is written, since
    * it may hold a switch's deny the rename would otherwise lose. Then the new
-   * deny is written next to the old one, so OpenCode never sees the new id
-   * without it. A failed write restores the files already written and stops
-   * the rename.
+   * deny is written next to the old one before the folder moves. OpenCode
+   * applies both through its own file watchers, which run asynchronously, so
+   * the order of the writes is not a guarantee of what OpenCode loads first:
+   * for a short time it may list the new id before it applies the deny. A
+   * failed write restores the files already written and stops the rename.
    *
    * Answers a handle: `owning` lists the scope files holding the old id's
  * switch rule, `carried` the ones the new rule was written to (a file that

@@ -20,6 +20,7 @@ import {
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { selectSkillPolicyForDirectory, selectSkillsForDirectory, useSkillsStore, type DiscoveredSkill } from '@/stores/useSkillsStore';
 import { unlistedSwitchedOffIds, type SkillPolicyEntry } from '@/stores/skillAvailability';
+import { reportRenameResult } from './renameFeedback';
 import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
 import { useShallow } from 'zustand/react/shallow';
 import { cn } from '@/lib/utils';
@@ -197,14 +198,8 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
     }
 
     // Rename in place on disk so SKILL.md body and supporting files are preserved.
-    const success = await renameSkill(renameDialogSkill, sanitizedName, settingsDirectory);
-    if (success) {
-      toast.success(t('settings.skills.sidebar.toast.skillRenamed', { name: sanitizedName }));
-      // Rename moves the folder to the new name, which is the new id.
-      setSelectedSkill(sanitizedName);
-    } else {
-      toast.error(t('settings.skills.sidebar.toast.renameFailed'));
-    }
+    const result = await renameSkill(renameDialogSkill, sanitizedName, settingsDirectory);
+    reportRenameResult(result, sanitizedName, { t, toast, select: setSelectedSkill });
 
     setRenameDialogSkill(null);
   };

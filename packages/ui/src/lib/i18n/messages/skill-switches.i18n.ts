@@ -27,6 +27,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'Off',
     'settings.skills.sidebar.switchedOffHint': "Switched off, so agents can't use it.",
     'settings.skills.sidebar.section.unlisted': 'Switched off',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "Renamed, and the skill stays switched off under its new name. The switch rule for the old name could not be removed from {paths}; a new skill with the old name would start switched off until you remove it.",
   },
   de: {
     'settings.skills.switches.title': 'Verfügbarkeit',
@@ -55,6 +56,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'Aus',
     'settings.skills.sidebar.switchedOffHint': 'Ausgeschaltet, Agents können ihn nicht verwenden.',
     'settings.skills.sidebar.section.unlisted': 'Ausgeschaltet',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "Umbenannt, und der Skill bleibt unter dem neuen Namen ausgeschaltet. Die Schalterregel für den alten Namen konnte nicht aus {paths} entfernt werden; ein neuer Skill mit dem alten Namen wäre ausgeschaltet, bis Sie sie entfernen.",
   },
   fr: {
     'settings.skills.switches.title': 'Disponibilité',
@@ -83,6 +85,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'Désactivé',
     'settings.skills.sidebar.switchedOffHint': 'Désactivé : les agents ne peuvent pas l’utiliser.',
     'settings.skills.sidebar.section.unlisted': 'Désactivés',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "Renommé, et le skill reste désactivé sous son nouveau nom. La règle d'interrupteur de l'ancien nom n'a pas pu être retirée de {paths} ; un nouveau skill portant l'ancien nom serait désactivé jusqu'à ce que vous la retiriez.",
   },
   nl: {
     'settings.skills.switches.title': 'Beschikbaarheid',
@@ -111,6 +114,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'Uit',
     'settings.skills.sidebar.switchedOffHint': 'Uitgeschakeld, dus agents kunnen hem niet gebruiken.',
     'settings.skills.sidebar.section.unlisted': 'Uitgeschakeld',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "Hernoemd, en de skill blijft onder de nieuwe naam uitgeschakeld. De schakelaarregel voor de oude naam kon niet uit {paths} worden verwijderd; een nieuwe skill met de oude naam staat uit totdat u die regel verwijdert.",
   },
   es: {
     'settings.skills.switches.title': 'Disponibilidad',
@@ -139,6 +143,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'Desactivada',
     'settings.skills.sidebar.switchedOffHint': 'Desactivada, así que los agentes no pueden usarla.',
     'settings.skills.sidebar.section.unlisted': 'Desactivadas',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "Renombrada, y la habilidad sigue desactivada con su nuevo nombre. No se pudo quitar la regla del interruptor del nombre anterior de {paths}; una habilidad nueva con el nombre anterior empezaría desactivada hasta que la quites.",
   },
   ja: {
     'settings.skills.switches.title': '利用可否',
@@ -167,6 +172,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'オフ',
     'settings.skills.sidebar.switchedOffHint': 'オフのため、エージェントは使えません。',
     'settings.skills.sidebar.section.unlisted': 'オフ',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "名前を変更しました。skill は新しい名前でもオフのままです。古い名前のスイッチのルールを {paths} から削除できませんでした。そのルールを削除するまで、古い名前の新しい skill はオフで始まります。",
   },
   'pt-BR': {
     'settings.skills.switches.title': 'Disponibilidade',
@@ -195,6 +201,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'Desligada',
     'settings.skills.sidebar.switchedOffHint': 'Desligada, então os agentes não podem usá-la.',
     'settings.skills.sidebar.section.unlisted': 'Desligadas',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "Renomeada, e a habilidade continua desligada com o novo nome. Não foi possível remover a regra da chave do nome antigo de {paths}; uma nova habilidade com o nome antigo começaria desligada até você removê-la.",
   },
   uk: {
     'settings.skills.switches.title': 'Доступність',
@@ -223,6 +230,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'Вимкнено',
     'settings.skills.sidebar.switchedOffHint': 'Вимкнено, тож агенти не можуть її використовувати.',
     'settings.skills.sidebar.section.unlisted': 'Вимкнені',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "Перейменовано, і навичка залишається вимкненою під новою назвою. Правило перемикача для старої назви не вдалося видалити з {paths}; нова навичка зі старою назвою буде вимкнена, доки ви його не видалите.",
   },
   ko: {
     'settings.skills.switches.title': '사용 가능 여부',
@@ -251,6 +259,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': '꺼짐',
     'settings.skills.sidebar.switchedOffHint': '꺼져 있어 에이전트가 사용할 수 없습니다.',
     'settings.skills.sidebar.section.unlisted': '꺼진 스킬',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "이름을 바꿨고 스킬은 새 이름으로도 꺼진 상태입니다. 예전 이름의 스위치 규칙을 {paths}에서 제거하지 못했습니다. 그 규칙을 제거하기 전까지 예전 이름의 새 스킬은 꺼진 상태로 시작합니다.",
   },
   pl: {
     'settings.skills.switches.title': 'Dostępność',
@@ -279,6 +288,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'Wyłączona',
     'settings.skills.sidebar.switchedOffHint': 'Wyłączona, więc agenci nie mogą jej używać.',
     'settings.skills.sidebar.section.unlisted': 'Wyłączone',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "Zmieniono nazwę, a umiejętność pozostaje wyłączona pod nową nazwą. Nie udało się usunąć reguły przełącznika dla starej nazwy z {paths}; nowa umiejętność o starej nazwie będzie wyłączona, dopóki jej nie usuniesz.",
   },
   'zh-CN': {
     'settings.skills.switches.title': '可用性',
@@ -307,6 +317,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': '已关闭',
     'settings.skills.sidebar.switchedOffHint': '已关闭，智能体无法使用。',
     'settings.skills.sidebar.section.unlisted': '已关闭的技能',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "已重命名，技能在新名称下仍保持关闭。无法从 {paths} 中移除旧名称的开关规则；在你移除它之前，使用旧名称的新技能会处于关闭状态。",
   },
   'zh-TW': {
     'settings.skills.switches.title': '可用性',
@@ -335,6 +346,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': '已關閉',
     'settings.skills.sidebar.switchedOffHint': '已關閉，代理無法使用。',
     'settings.skills.sidebar.section.unlisted': '已關閉的 skill',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "已重新命名，skill 在新名稱下仍保持關閉。無法從 {paths} 移除舊名稱的開關規則；在你移除它之前，使用舊名稱的新 skill 會處於關閉狀態。",
   },
   tr: {
     'settings.skills.switches.title': 'Kullanılabilirlik',
@@ -363,6 +375,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'Kapalı',
     'settings.skills.sidebar.switchedOffHint': 'Kapalı, bu yüzden agent’lar kullanamaz.',
     'settings.skills.sidebar.section.unlisted': 'Kapalı skill’ler',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "Yeniden adlandırıldı ve skill yeni adıyla kapalı kalıyor. Eski adın anahtar kuralı {paths} içinden kaldırılamadı; siz kaldırana kadar eski adla oluşturulan yeni bir skill kapalı başlar.",
   },
   ar: {
     'settings.skills.switches.title': 'التوفّر',
@@ -391,6 +404,7 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'متوقفة',
     'settings.skills.sidebar.switchedOffHint': 'متوقفة، لذا لا يستطيع الوكلاء استخدامها.',
     'settings.skills.sidebar.section.unlisted': 'المهارات المتوقفة',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "تمت إعادة التسمية، وتبقى المهارة متوقفة باسمها الجديد. تعذّرت إزالة قاعدة المفتاح الخاصة بالاسم القديم من {paths}؛ ستبدأ أي مهارة جديدة بالاسم القديم متوقفة إلى أن تزيلها.",
   },
   he: {
     'settings.skills.switches.title': 'זמינות',
@@ -419,5 +433,6 @@ export const skillSwitchesI18n = {
     'settings.skills.sidebar.switchedOff': 'כבויה',
     'settings.skills.sidebar.switchedOffHint': 'כבויה, ולכן סוכנים לא יכולים להשתמש בה.',
     'settings.skills.sidebar.section.unlisted': 'מיומנויות כבויות',
+    'settings.skills.sidebar.toast.renameOldSwitchRuleKept': "השם שונה, והמיומנות נשארת כבויה תחת השם החדש. לא ניתן היה להסיר את כלל המתג של השם הישן מ-{paths}; מיומנות חדשה בשם הישן תתחיל כבויה עד שתסירו אותו.",
   },
 } as const;

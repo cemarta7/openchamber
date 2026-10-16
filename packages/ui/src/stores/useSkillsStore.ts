@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { z } from "zod";
 import type { StoreApi, UseBoundStore } from "zustand";
 import { devtools, persist } from "zustand/middleware";
 import { emitConfigChange, scopeMatches, subscribeToConfigChanges } from "@/lib/configSync";
@@ -195,6 +196,24 @@ type SkillTarget = Pick<DiscoveredSkill, 'id' | 'name'>;
 /** A skill target with the file it was listed at. */
 type SkillRef = SkillTarget & Pick<DiscoveredSkill, 'path'>;
 
+const renameAnswerSchema = z.object({
+  id: z.string().min(1).optional(),
+  switches: z.object({
+    oldRuleCleanupFailed: z.array(z.object({ scope: z.enum(['global', 'project']), path: z.string() })),
+  }).nullable().optional(),
+});
+
+/**
+ * What a rename did. `ok` follows the server's answer alone: a list that
+ * fails to reload afterwards does not make a done rename look failed.
+ * `oldRuleCleanupFailed` names the config files that still hold the switch
+ * rule for the old id after the skill moved: the rename and the carried rule
+ * for the new id are in place, only that leftover could not be removed.
+ */
+export type SkillRenameResult =
+  | { ok: true; id: string; oldRuleCleanupFailed: Array<{ scope: SkillPolicyScope; path: string }> }
+  | { ok: false };
+
 /** The policy state Settings shows for one directory. */
 export interface SkillPolicyView {
   /** The latest state read, or the last one known when the latest read failed; null before any. */
@@ -246,7 +265,7 @@ interface SkillsStore {
   getSkillDetail: (skill: SkillRef, directory?: string | null) => Promise<SkillDetail | null>;
   createSkill: (config: SkillConfig, directory?: string | null) => Promise<boolean>;
   updateSkill: (skill: SkillRef, config: Partial<SkillConfig>, directory?: string | null) => Promise<boolean>;
-  renameSkill: (skill: SkillTarget, newName: string, directory?: string | null) => Promise<boolean>;
+  renameSkill: (skill: SkillTarget, newName: string, directory?: string | null) => Promise<SkillRenameResult>;
   deleteSkill: (skill: SkillTarget, directory?: string | null) => Promise<boolean>;
   getSkillById: (id: string, directory?: string | null) => DiscoveredSkill | undefined;
   /**
@@ -956,28 +975,33 @@ export const useSkillsStore = create<SkillsStore>()(
             }));
 
             const payload = await response.json().catch(() => null);
-            if (!response.ok) {
-              const message = payload?.error || 'Failed to rename skill';
-              throw new Error(message);
-            }
-
-            const needsReload = payload?.requiresReload ?? false;
+            if (!response.ok) return { ok: false };
             invalidateSkillsLoadCache(directory);
-            if (needsReload) {
+
+            // The folder takes the new name, so that is the new id unless the
+            // server says otherwise.
+            const answer = renameAnswerSchema.safeParse(payload);
+            const result: SkillRenameResult = {
+              ok: true,
+              id: (answer.success ? answer.data.id : undefined) ?? newName,
+              oldRuleCleanupFailed: (answer.success ? answer.data.switches?.oldRuleCleanupFailed : undefined) ?? [],
+            };
+
+            // The rename is done; refreshing the list is best effort and the
+            // next load shows the skill if this one fails.
+            if (payload?.requiresReload) {
               await refreshSkillsAfterOpenCodeRestart({
                 message: payload?.message,
                 delayMs: payload?.reloadDelayMs,
-              });
-              return true;
+              }).catch(() => undefined);
+              return result;
             }
-
-            const loaded = await get().loadSkills(directory);
-            if (loaded) {
+            if (await get().loadSkills(directory)) {
               emitConfigChange("skills", { source: CONFIG_EVENT_SOURCE });
             }
-            return loaded;
+            return result;
           } catch {
-            return false;
+            return { ok: false };
           }
         },
 

@@ -191,6 +191,14 @@ server answers; a failed save shows its reason, and a saved but unconfirmed one
 says so with a "Check again" button. The model-invocation checkbox is a
 separate setting in the skill file itself.
 
+Renaming a skill keeps a switch's "off" under the new id (the server carries
+the rule). `useSkillsStore.renameSkill` answers `{ ok, id, oldRuleCleanupFailed }`
+from the server's answer alone, so a list that fails to reload afterwards does
+not report a done rename as failed. `skills/renameFeedback.ts` shows the usual
+success toast and selects the new id; when the server could not remove the old
+id's rule (`switches.oldRuleCleanupFailed`), a warning toast beside it names the
+files that still hold it. Only a refused rename shows the error.
+
 ## Entity shapes: OpenCode 2 only
 
 Every OpenCode entity these pages read and write speaks the v2 shape defined in
