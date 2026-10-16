@@ -21,6 +21,9 @@ const isEnvFlagEnabled = (value) => {
   return normalized.length > 0 && normalized !== '0' && normalized !== 'false';
 };
 
+// Directories whose last known skill policy is kept for queued deliveries.
+const MAX_KNOWN_POLICY_DIRECTORIES = 50;
+
 export const registerSkillRoutes = (app, dependencies) => {
   const {
     fs,
@@ -338,12 +341,32 @@ export const registerSkillRoutes = (app, dependencies) => {
     return { directory: null, error: null };
   };
 
+  // The last effective state OpenCode reported per directory and skill id,
+  // from the list, the switch and queued deliveries. A queued delivery that
+  // cannot read the policy uses it, so a skill last seen switched off stays
+  // out. A failed read never replaces it.
+  const knownEffective = new Map(); // directory key → Map(id → 'enabled' | 'disabled')
+  const effectiveKey = (directory) => (directory ? path.resolve(directory) : '');
+  const rememberEffective = (directory, skills) => {
+    const key = effectiveKey(directory);
+    const known = knownEffective.get(key) ?? new Map();
+    for (const [id, state] of Object.entries(skills)) {
+      if (state?.effective === 'enabled' || state?.effective === 'disabled') known.set(id, state.effective);
+    }
+    // Most recently read last, so the bound drops the directory read longest ago.
+    knownEffective.delete(key);
+    knownEffective.set(key, known);
+    if (knownEffective.size > MAX_KNOWN_POLICY_DIRECTORIES) knownEffective.delete(knownEffective.keys().next().value);
+  };
+
   // Policy state for the listed skills, keyed by OpenCode skill id. A failure
   // here answers `{ error }` and leaves the skill list intact.
   const readSkillPolicyForList = async (directory, skills) => {
     try {
       const ids = skills.map((skill) => skill.id).filter(isString);
-      return await skillPolicyService.readState({ directory, ids, openCode: openCodePolicyReader });
+      const state = await skillPolicyService.readState({ directory, ids, openCode: openCodePolicyReader });
+      rememberEffective(directory, state.skills);
+      return state;
     } catch (error) {
       console.error('Failed to read skill policies:', error);
       return { error: error instanceof Error ? error.message : String(error) };
@@ -360,6 +383,55 @@ export const registerSkillRoutes = (app, dependencies) => {
   const listInstalledSkillIds = async (directory) => new Set(
     (await listSkillInventory(directory)).map((skill) => skill.id).filter(isString),
   );
+
+  /**
+   * For the message queue's delivery: the effective state of the skills a
+   * queued instruction names in the item's `directory`, by id (`ids`) and,
+   * for instructions queued without ids, by display name or id (`names`).
+   *
+   * Answers `{ states, inventory }`. `states` maps an id to `enabled` or
+   * `disabled`: what OpenCode's config says now, else the last state it
+   * reported for that directory; an id it cannot answer is left out
+   * (unknown). `inventory` lists `{ id, name }` of the installed skills when
+   * `names` asked for it, and is null when OpenCode's own skill list could not
+   * be read: the disk scan alone misses built-in skills, so a name cannot be
+   * resolved completely. Never throws for a failed read.
+   */
+  const readQueuedSkillPolicy = async ({ directory, ids, names }) => {
+    const candidateIds = new Set(ids);
+    let inventory = null;
+    if (names.length > 0) {
+      try {
+        const openCodeSkills = await fetchOpenCodeDiscoveredSkills(directory);
+        if (openCodeSkills) {
+          inventory = mergeDiscoveredSkills(openCodeSkills, await discoverSkills(directory))
+            .filter((skill) => isString(skill.id))
+            .map((skill) => ({ id: skill.id, name: skill.name }));
+        }
+      } catch (error) {
+        console.error('Failed to list skills for a queued message:', error);
+      }
+      for (const skill of inventory ?? []) {
+        if (names.includes(skill.name) || names.includes(skill.id)) candidateIds.add(skill.id);
+      }
+    }
+
+    let current = null;
+    try {
+      current = (await skillPolicyService.readState({ directory, ids: [...candidateIds], openCode: openCodePolicyReader })).skills;
+      rememberEffective(directory, current);
+    } catch (error) {
+      console.error('Failed to read skill policies for a queued message:', error);
+    }
+    const known = knownEffective.get(effectiveKey(directory));
+    const states = new Map();
+    for (const id of candidateIds) {
+      const effective = current?.[id]?.effective;
+      const decided = effective === 'enabled' || effective === 'disabled' ? effective : known?.get(id);
+      if (decided) states.set(id, decided);
+    }
+    return { states, inventory };
+  };
 
   // The name-keyed routes take an optional `?id=` (OpenCode skill id). With it
   // they act on that exact listed skill or answer 404, never on another skill
@@ -410,6 +482,7 @@ export const registerSkillRoutes = (app, dependencies) => {
       openCode: openCodePolicyReader,
       listInstalledSkillIds,
     });
+    if (result.body.ok && isString(result.body.id)) rememberEffective(directory, { [result.body.id]: result.body.policy });
     return res.status(result.status).json(result.body);
   });
 
@@ -1049,4 +1122,6 @@ export const registerSkillRoutes = (app, dependencies) => {
       res.status(500).json({ error: error.message || 'Failed to delete skill' });
     }
   });
+
+  return { readQueuedSkillPolicy };
 };

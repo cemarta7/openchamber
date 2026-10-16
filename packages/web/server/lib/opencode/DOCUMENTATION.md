@@ -821,6 +821,7 @@ headers }` or v1 `{ npm, options }`. The stored entry is always a
 - Returned API:
   - `registerRoutes(app, routeDependencies)`
   - `hydrateBoundCheckout({ directory, parentDirectory, parentRemoteName })`: resolves the parent repository's current binding authority at call time, then delegates local inspection and any explicit hydration to the runtime's existing Git network-operation service.
+  - `readQueuedSkillPolicy({ directory, ids, names })`: the skill routes' lookup for the message queue (below). Before the skill routes are registered it answers every skill unknown (`{ states: new Map(), inventory: null }`).
 
 ## Public exports (opencode-resolution-runtime.js)
 - `createOpenCodeResolutionRuntime(dependencies)`: creates runtime for OpenCode binary/source snapshot resolution.
@@ -928,6 +929,10 @@ within a ten-minute overall deadline.
     - `PATCH { renameTo }` with `?id=` renames exactly the selected folder, nested group folders included, and sets frontmatter `name`. The folder takes the new name, so the OpenCode id changes to `renameTo`; the answer is `{ name, id, path }` of the renamed file. A new name another skill already uses as display name or id is refused. A switch's deny for the old id stays in its config file and shows as a switched-off id with no installed skill.
     - `DELETE` with `?id=` removes exactly the selected skill's folder: a `SKILL.md` strictly inside a managed skill root, nested groups included, never the root itself (409 outside managed roots). Other copies of the id and other skills with the display name stay. The install provenance record, keyed by install folder name (the id), is removed only when no copy of the id is left on disk. Answers `{ ..., id, path }`. Without `?id=` the legacy delete removes every folder named `:name` in the known locations, as before.
     - Supporting files resolve only inside the selected skill's folder; a path that leaves it answers 403.
+  - Returns `{ readQueuedSkillPolicy }`, which the message queue calls right before it delivers a queued skill instruction (`message-queue/DOCUMENTATION.md`). `readQueuedSkillPolicy({ directory, ids, names })` answers `{ states, inventory }` for the queued item's own directory:
+    - `states` maps an OpenCode skill id to `enabled` or `disabled`: what `skillPolicy.readState` reports now, else the last state OpenCode reported for that directory and id. An id with neither is left out, which means unknown. The last known states come from the skill list, the switch route and earlier lookups, kept for the 50 directories read most recently; a failed read never replaces them.
+    - `inventory` is the `{ id, name }` list of installed skills (OpenCode's list merged with the disk scan), read only when `names` is not empty, so a name from an instruction queued without ids resolves to every id that has it. It is null when OpenCode's own list could not be read: the disk scan alone misses built-in skills. A skill missing from OpenCode's list never counts as switched off.
+    - It never throws for a failed read.
 
 ## Per-skill switches
 `skill-policy.js` turns a skill off with one statement in an OpenCode config file,

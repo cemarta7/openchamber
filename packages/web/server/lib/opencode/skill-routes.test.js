@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import fs from 'fs';
 import os from 'os';
@@ -25,6 +25,7 @@ import {
   writeSkillSupportingFile,
 } from './shared.js';
 import { createSkillPolicyService } from './skill-policy.js';
+import { createMessageQueueRuntime } from '../message-queue/runtime.js';
 
 const createTempProject = () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-skill-routes-'));
@@ -36,7 +37,7 @@ const startSkillsApp = ({ projectRoot, overrides = {} }) => {
   const app = express();
   app.use(express.json());
 
-  registerSkillRoutes(app, {
+  const skillRoutes = registerSkillRoutes(app, {
     fs,
     path,
     os,
@@ -88,6 +89,7 @@ const startSkillsApp = ({ projectRoot, overrides = {} }) => {
   const { port } = server.address();
   return {
     baseUrl: `http://127.0.0.1:${port}`,
+    skillRoutes,
     close: () => new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     }),
@@ -681,7 +683,7 @@ describe('skill policy routes', () => {
   // A stand-in OpenCode serving what the routes read: its version, its config
   // documents (read from the files on every request, as a watching OpenCode
   // would), and the skills those documents leave enabled.
-  const startOpenCodeStub = async ({ globalPath, projectPath, projectRoot, listEmpty }) => {
+  const startOpenCodeStub = async ({ globalPath, projectPath, projectRoot, listEmpty, outage }) => {
     // OpenCode serves statements without the provenance key (measured on 2.0.25, 2.0.28, 2.0.29 and 2.0.30).
     const served = (info) => {
       const copy = { ...info };
@@ -700,6 +702,8 @@ describe('skill policy routes', () => {
       { id: 'beta-two', name: 'Same Name', path: path.join(projectRoot, '.opencode', 'skills', 'beta-two', 'SKILL.md'), description: 'b2' },
     ];
     const stub = express();
+    // While `outage.down`, every read fails the way an unreachable OpenCode does.
+    stub.use((_req, res, next) => (outage.down ? res.status(503).json({ error: 'down' }) : next()));
     stub.get('/api/info', (_req, res) => res.json({ version: '2.0.29', pid: 1, urls: [], paths: { tmp: os.tmpdir() } }));
     stub.get('/api/config', (_req, res) => res.json(readDocuments()));
     stub.get('/api/skill', (_req, res) => {
@@ -727,7 +731,8 @@ describe('skill policy routes', () => {
     const globalText = '{\n  "theme": "dark"\n}\n';
     fs.writeFileSync(globalPath, globalText);
     const projectPath = path.join(projectRoot, '.opencode', 'opencode.json');
-    const port = await startOpenCodeStub({ globalPath, projectPath, projectRoot, listEmpty });
+    const outage = { down: false };
+    const port = await startOpenCodeStub({ globalPath, projectPath, projectRoot, listEmpty, outage });
     const handle = startSkillsApp({
       projectRoot,
       overrides: {
@@ -749,8 +754,95 @@ describe('skill policy routes', () => {
       body: JSON.stringify(body),
     });
     const list = async () => (await fetch(`${handle.baseUrl}/api/config/skills${query}`)).json();
-    return { projectRoot, globalPath, globalText, projectPath, put, list };
+    return { projectRoot, globalPath, globalText, projectPath, put, list, outage, lookup: handle.skillRoutes.readQueuedSkillPolicy };
   };
+
+  it('answers queued deliveries by id, and by name with every skill sharing it', async () => {
+    const { projectRoot, put, lookup } = await setupApp();
+    expect((await put({ id: 'alpha-skill', scope: 'project', enabled: false })).status).toBe(200);
+
+    const byId = await lookup({ directory: projectRoot, ids: ['alpha-skill', 'beta-one'], names: [] });
+    expect(byId.inventory).toBeNull();
+    expect(Object.fromEntries(byId.states)).toEqual({ 'alpha-skill': 'disabled', 'beta-one': 'enabled' });
+
+    // OpenCode no longer lists the switched-off skill; the disk scan still
+    // has it, so its name resolves to its id.
+    const byName = await lookup({ directory: projectRoot, ids: [], names: ['Alpha Display', 'Same Name', 'gone'] });
+    expect(byName.inventory).toEqual(expect.arrayContaining([
+      { id: 'alpha-skill', name: 'Alpha Display' },
+      { id: 'beta-one', name: 'Same Name' },
+      { id: 'beta-two', name: 'Same Name' },
+    ]));
+    expect(Object.fromEntries(byName.states)).toEqual({ 'alpha-skill': 'disabled', 'beta-one': 'enabled', 'beta-two': 'enabled' });
+  });
+
+  it('keeps the last known state through an OpenCode outage and never counts the failure as a state', async () => {
+    const { projectRoot, put, lookup, outage } = await setupApp();
+    expect((await put({ id: 'alpha-skill', scope: 'project', enabled: false })).status).toBe(200);
+
+    outage.down = true;
+    const during = await lookup({ directory: projectRoot, ids: ['alpha-skill', 'beta-one'], names: ['Same Name'] });
+    // The switch reported alpha-skill off; nothing was ever reported for
+    // beta-one, so it stays unknown, and the names cannot be resolved.
+    expect(Object.fromEntries(during.states)).toEqual({ 'alpha-skill': 'disabled' });
+    expect(during.inventory).toBeNull();
+
+    outage.down = false;
+    expect((await put({ id: 'alpha-skill', scope: 'project', enabled: true })).status).toBe(200);
+    outage.down = true;
+    expect(Object.fromEntries((await lookup({ directory: projectRoot, ids: ['alpha-skill'], names: [] })).states)).toEqual({ 'alpha-skill': 'enabled' });
+  });
+
+  it('leaves a skill switched off after queueing out of the server queue delivery', async () => {
+    const { projectRoot, put, lookup } = await setupApp();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-skill-queue-'));
+    cleanups.push(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const sent = [];
+    // The queue's own OpenCode calls: idle session, empty tail, accepted sends.
+    const queueFetch = async (url, init = {}) => {
+      const { pathname } = new URL(url);
+      if (pathname === '/api/session/active') return Response.json({ data: {} });
+      if (pathname.endsWith('/message')) return Response.json({ data: [], cursor: {} });
+      if (init.method === 'POST' && (pathname.endsWith('/model') || pathname.endsWith('/agent'))) return new Response(null, { status: 204 });
+      if (init.method === 'POST') {
+        sent.push({ path: pathname, body: JSON.parse(init.body) });
+        return Response.json({ data: { id: `msg_${sent.length}` } });
+      }
+      return new Response('not found', { status: 404 });
+    };
+    let onEvent = () => {};
+    const queue = createMessageQueueRuntime({
+      globalEventHub: { subscribeEvent: (handler) => { onEvent = handler; return () => {}; }, subscribeStatus: () => () => {} },
+      buildOpenCodeUrl: (fetchPath) => `http://opencode.test${fetchPath}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      readQueuedSkillPolicy: lookup,
+      dataDir,
+      fetchImpl: queueFetch,
+      dispatchQuietMs: 0,
+    });
+    cleanups.push(() => queue.stop());
+    queue.start();
+    const instruction = 'The user explicitly mentioned these skills in their message: $Alpha Display, $Same Name. Use the corresponding skill tool when it is relevant to accomplishing the user\'s request.';
+    queue.setHold('ses_skill_queue', true, 60_000);
+    await queue.enqueue('ses_skill_queue', projectRoot, {
+      content: 'go',
+      text: 'go',
+      attachments: [],
+      context: [{ kind: 'instruction', text: instruction, skills: [{ id: 'alpha-skill', name: 'Alpha Display' }, { id: 'beta-one', name: 'Same Name' }] }],
+      sendConfig: { providerID: 'p', modelID: 'm' },
+    });
+
+    expect((await put({ id: 'alpha-skill', scope: 'project', enabled: false })).status).toBe(200);
+    queue.setHold('ses_skill_queue', false);
+    const translated = { type: 'session.status', properties: { sessionID: 'ses_skill_queue', status: { type: 'idle' } } };
+    onEvent({ payload: translated, directory: projectRoot, translated: () => [translated] });
+    await vi.waitFor(() => expect(sent.map((entry) => entry.path)).toContain('/api/session/ses_skill_queue/prompt'));
+
+    expect(sent.map((entry) => entry.body)).toEqual([
+      { text: instruction.replace('$Alpha Display, ', ''), resume: false },
+      { text: 'go' },
+    ]);
+  });
 
   it('lists skills by OpenCode id, switches one off and on in the project, and keeps it listed while off', async () => {
     const { globalPath, globalText, projectPath, put, list } = await setupApp();

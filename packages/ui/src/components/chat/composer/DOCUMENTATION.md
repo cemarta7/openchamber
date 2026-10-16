@@ -531,12 +531,14 @@ and the send path reading the same grammar.
   sending taken messages and the VS Code auto-send, pass the context through
   `withoutSwitchedOffQueuedSkills` first: a skill the session directory's last
   known policy switches off is left out of the instruction, and an
-  instruction naming none left is dropped. A part without ids (the server
-  keeps only the text, and older queues never had them) is checked by the
-  names in its text when that text is one `buildSkillMentionInstruction`
-  wrote; anything else is delivered as captured. The message text, attached
-  context and attachments are never changed. The server's own delivery on
-  web, desktop and mobile does not run this check. A `$skill` in a message that routes to
+  instruction naming none left is dropped. A part without ids (queued before
+  they existed) is checked by the names in its text when that text is one
+  `buildSkillMentionInstruction` wrote; anything else is delivered as
+  captured. The message text, attached context and attachments are never
+  changed. The server keeps `skills` with the queued item and runs the same
+  check on its own delivery on web, desktop and mobile, against the policy
+  OpenCode reports for the item's directory
+  (`packages/web/server/lib/message-queue/DOCUMENTATION.md`). A `$skill` in a message that routes to
   `session.command` (a leading `/command`) keeps the instruction too: that
   route takes no skill attachments. A hand-typed leading `/name` that matches
   a skill and no command still attaches the skill (`session-ui-store`), so the

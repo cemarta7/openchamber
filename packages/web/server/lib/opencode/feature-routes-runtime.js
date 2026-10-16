@@ -112,6 +112,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
   let gitRepositoryCredentialRuntime = null;
   let networkOperations = null;
   let gitWorktreeCreation = null;
+  let skillRoutes = null;
   const getWalkthroughService = async () => {
     if (!walkthroughService) {
       const [service, pullRequest] = await Promise.all([
@@ -578,7 +579,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       fsImpl: fsPromises,
       snapshotRoot: path.join(openchamberDataDir, 'git-ssh-operation-keys'),
     });
-    registerSkillRoutes(app, {
+    skillRoutes = registerSkillRoutes(app, {
       fs,
       path,
       os,
@@ -731,6 +732,14 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     registerRoutes,
     hydrateBoundCheckout,
     createChangeRequestWorktree,
+    /**
+     * The skill policy lookup for queued deliveries (skill-routes.js). Before
+     * the skill routes are registered every skill is unknown, so instructions
+     * go out as captured.
+     */
+    readQueuedSkillPolicy: async (input) => (skillRoutes
+      ? skillRoutes.readQueuedSkillPolicy(input)
+      : { states: new Map(), inventory: null }),
     /** Writes the Git credential helper's endpoint file; a no-op until the Git routes are registered. */
     publishRepositoryCredentialEndpoint: async () => { await gitRepositoryCredentialRuntime?.publish(); },
   };

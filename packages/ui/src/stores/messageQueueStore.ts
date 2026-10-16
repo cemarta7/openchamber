@@ -87,9 +87,8 @@ export type QueuedContextPart =
         text: string;
         /**
          * The skills `text` names, by OpenCode id, so delivery can leave out
-         * one switched off since. Absent on items queued before it existed,
-         * and on items the server hands back (it keeps only the text); those
-         * are checked by the names in `text`.
+         * one switched off since. Absent on items queued before it existed;
+         * those are checked by the names in `text`.
          */
         skills?: Array<{ id: string; name: string }>;
     }
