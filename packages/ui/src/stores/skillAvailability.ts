@@ -11,6 +11,7 @@
  * because absence from a cold OpenCode list proves nothing.
  */
 import { z } from 'zod';
+import { isPrefixTokenName } from '@/components/chat/composer/language/prefixTokens';
 
 export type SkillPolicyScope = 'global' | 'project';
 
@@ -150,20 +151,25 @@ export const filterAvailableSkills = <T extends SkillIdentity>(
 };
 
 /**
- * The one skill a typed `$token` or `/token` names. A display name names a
- * skill when no other skill shares it; otherwise only the id does. A name two
- * skills share and no id matches names none, so the send never picks one of
- * them at random.
+ * The one skill a typed `$token` or `/token` names. An id always names its own
+ * skill, since ids are unique; otherwise a display name names a skill when no
+ * other skill shares it. A name two skills share names none, so the send never
+ * picks one of them at random.
  */
 export const resolveSkillToken = <T extends SkillIdentity>(skills: readonly T[], token: string): T | null => {
+  const byId = skills.find((skill) => skill.id === token);
+  if (byId) return byId;
   const byName = skills.filter((skill) => skill.name === token);
-  if (byName.length === 1) return byName[0];
-  return skills.find((skill) => skill.id === token) ?? null;
+  return byName.length === 1 ? byName[0] : null;
 };
 
-/** The token the composer inserts for a skill: its name, or its id when the name would resolve elsewhere. */
+/**
+ * The token the composer inserts for a skill: its name when the name can be
+ * typed as one token (`isPrefixTokenName`) and selects this skill, otherwise
+ * its id. "Alpha Display" would end at the space and select nothing.
+ */
 export const skillTokenFor = <T extends SkillIdentity>(skills: readonly T[], skill: T): string => (
-  resolveSkillToken(skills, skill.name)?.id === skill.id ? skill.name : skill.id
+  isPrefixTokenName(skill.name) && resolveSkillToken(skills, skill.name)?.id === skill.id ? skill.name : skill.id
 );
 
 /** The skills a message's tokens name, in order, once each; tokens naming no single skill are left out. */

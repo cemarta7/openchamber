@@ -504,10 +504,13 @@ and the send path reading the same grammar.
   order) as `skillNames`. `ChatInput` resolves them at send time against the
   directory's available skills (`selectAvailableSkillsForDirectory`, so a
   skill switched off since it was typed is not attached) with
-  `resolveSkillMentions` (`stores/skillAvailability.ts`): a display name names
-  a skill only when no other skill shares it, otherwise the id does, and a
-  shared name with no matching id names nothing. The `$` picker inserts the id
-  for a skill whose name is shared. The send gets `SkillMentions` with each
+  `resolveSkillMentions` (`stores/skillAvailability.ts`): an id always names
+  its own skill, and a display name names a skill only when no other skill
+  shares it and no skill has it as id. A shared name names nothing. The `$`
+  picker inserts the display name only when it can be typed as one token
+  (`isPrefixTokenName`: letters, digits, `-` and `_`) and names that skill;
+  otherwise it inserts the id, so "Alpha Display" goes in as `$alpha-skill`.
+  The picker searches ids as well as display names. The send gets `SkillMentions` with each
   skill's OpenCode id (its folder, which can differ from its frontmatter name),
   and `opencodeClient.sendMessage` sends them in the prompt's `skills` field. OpenCode then loads each skill's content into that user message. It
   rides the prompt's delivery, so a new-session draft (after the session is

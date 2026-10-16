@@ -54,11 +54,19 @@ describe('skill tokens', () => {
     expect(resolveSkillToken(skills, 'code-audit')).toBe(audit);
   });
 
-  test('a unique display name wins over another skill whose id matches it', () => {
+  test('an id names its own skill even when another skill shows it as its name', () => {
     const named = { id: 'other-folder', name: 'review' };
     const folder = { id: 'review', name: 'Review helper' };
-    expect(resolveSkillToken([named, folder], 'review')).toBe(named);
-    expect(skillTokenFor([named, folder], folder)).toBe('Review helper');
+    expect(resolveSkillToken([named, folder], 'review')).toBe(folder);
+    // Each skill still gets a token that names it.
+    expect(skillTokenFor([named, folder], named)).toBe('other-folder');
+    expect(skillTokenFor([named, folder], folder)).toBe('review');
+  });
+
+  test('a display name that cannot be typed as one token is inserted as the id', () => {
+    const alpha = { id: 'alpha-skill', name: 'Alpha Display' };
+    expect(skillTokenFor([alpha, audit], alpha)).toBe('alpha-skill');
+    expect([...knownSkillTokens([alpha])]).toEqual(['alpha-skill']);
   });
 
   test('the picker inserts the id where the name is shared', () => {
