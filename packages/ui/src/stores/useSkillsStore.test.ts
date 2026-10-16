@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { RuntimeFetchOptions } from '@/lib/runtime-fetch';
-import type { SkillPolicyEntry, SkillPolicyState } from './skillAvailability';
+import type { SkillPolicyEntry } from './skillAvailability';
 
 const activeProjectPath = '/workspace/project-with-agents-skills';
 // The project the app is on; tests that switch projects change it.
@@ -62,7 +62,14 @@ mock.module('./utils/safeStorage', () => ({
   }),
 }));
 
-const { invalidateSkillsLoadCache, selectAvailableSkillsForDirectory, skillSwitchKey, useSkillsStore } = await import('./useSkillsStore');
+const {
+  invalidateSkillsLoadCache,
+  selectAvailableSkillsForDirectory,
+  skillSwitchKey,
+  useSkillsStore,
+  withoutSwitchedOffQueuedSkills,
+} = await import('./useSkillsStore');
+const { buildSkillMentionInstruction } = await import('@/lib/skillMentionInstruction');
 
 describe('useSkillsStore directory resolution', () => {
   beforeEach(() => {
@@ -462,7 +469,8 @@ const offGlobally: SkillPolicyEntry = {
   effective: 'disabled',
   decidedBy: { path: '/config/opencode.json', resource: 'skill:deploy-api', effect: 'deny', scope: 'global', owned: true },
 };
-const policyState = (skills: Record<string, SkillPolicyEntry>): SkillPolicyState => ({
+/** A `skillPolicy` as the server sends it: entries listed with their id. */
+const policyState = (skills: Record<string, SkillPolicyEntry>) => ({
   version: '2.0.29',
   location: 'policies',
   writable: true,
@@ -471,9 +479,9 @@ const policyState = (skills: Record<string, SkillPolicyEntry>): SkillPolicyState
     global: { path: '/config/opencode.json', error: null },
     project: { path: `${activeProjectPath}/.opencode/opencode.json`, error: null },
   },
-  skills,
+  skills: Object.entries(skills).map(([id, entry]) => ({ id, ...entry })),
 });
-const listWithPolicy = (skillPolicy: SkillPolicyState | { error: string }) => JSON.stringify({ skills: [deployWeb, deployApi], skillPolicy });
+const listWithPolicy = (skillPolicy: ReturnType<typeof policyState> | { error: string }) => JSON.stringify({ skills: [deployWeb, deployApi], skillPolicy });
 
 /** A response the test releases when it chooses, to hold a read in flight. */
 const heldResponse = () => {
@@ -510,7 +518,7 @@ describe('useSkillsStore availability and switches', () => {
 
     const view = useSkillsStore.getState().policyByDirectory[activeProjectPath];
     expect(view?.error).toBe('OpenCode is not running');
-    expect(view?.state?.skills['deploy-api']?.effective).toBe('disabled');
+    expect(view?.state?.skills.get('deploy-api')?.effective).toBe('disabled');
     expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web']);
   });
 
@@ -524,6 +532,60 @@ describe('useSkillsStore availability and switches', () => {
     invalidateSkillsLoadCache();
     expect(await useSkillsStore.getState().loadSkills()).toBe(true);
     expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
+  });
+
+  test('queued delivery keeps a skill last seen off through an unknown read; Settings and the composer show unknown', async () => {
+    const web = { id: 'deploy-web', name: 'deploy-web' };
+    const api = { id: 'deploy-api', name: 'deploy-api' };
+    const queued = [{ kind: 'instruction' as const, text: buildSkillMentionInstruction(['deploy-web', 'deploy-api']) ?? '', skills: [web, api] }];
+    const webOnly = [{ kind: 'instruction', text: buildSkillMentionInstruction(['deploy-web']), skills: [web] }];
+    const reload = async (skills: Record<string, SkillPolicyEntry>, directory?: string) => {
+      runtimeFetchImpl = async () => jsonResponse(listWithPolicy(policyState(skills)));
+      invalidateSkillsLoadCache(directory);
+      expect(await useSkillsStore.getState().loadSkills(directory)).toBe(true);
+    };
+    const unknownEntry: SkillPolicyEntry = { disabledIn: { global: null, project: null }, effective: 'unknown', decidedBy: null };
+    const other = '/workspace/other';
+
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+    expect(withoutSwitchedOffQueuedSkills(queued, activeProjectPath)).toEqual(webOnly);
+
+    await reload({ 'deploy-web': enabledEntry, 'deploy-api': unknownEntry });
+    expect(useSkillsStore.getState().policyByDirectory[activeProjectPath]?.state?.skills.get('deploy-api')?.effective).toBe('unknown');
+    expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
+    expect(withoutSwitchedOffQueuedSkills(queued, activeProjectPath)).toEqual(webOnly);
+
+    // Another directory has its own history: unknown there names the skill.
+    await reload({ 'deploy-web': enabledEntry, 'deploy-api': unknownEntry }, other);
+    expect(withoutSwitchedOffQueuedSkills(queued, other)).toEqual(queued);
+
+    await reload({ 'deploy-web': enabledEntry, 'deploy-api': enabledEntry });
+    expect(withoutSwitchedOffQueuedSkills(queued, activeProjectPath)).toEqual(queued);
+    await reload({ 'deploy-web': enabledEntry, 'deploy-api': unknownEntry });
+    expect(withoutSwitchedOffQueuedSkills(queued, activeProjectPath)).toEqual(queued);
+
+    useSkillsStore.getState().resetForRuntimeSwitch();
+    expect(useSkillsStore.getState().lastDecidedByDirectory).toEqual({});
+  });
+
+  test('a skill id that names an Object.prototype key survives the JSON answer', async () => {
+    const skill = (id: string) => ({ ...deployWeb, id, name: id, path: `${activeProjectPath}/.agents/skills/${id}/SKILL.md` });
+    runtimeFetchImpl = async () => jsonResponse(JSON.stringify({
+      skills: [skill('__proto__'), skill('constructor'), skill('toString')],
+      skillPolicy: { ...policyState({}), skills: [{ id: '__proto__', ...offGlobally }, { id: 'constructor', ...enabledEntry }] },
+    }));
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+
+    const state = useSkillsStore.getState();
+    const policy = state.policyByDirectory[activeProjectPath]?.state;
+    expect([...(policy?.skills.keys() ?? [])]).toEqual(['__proto__', 'constructor']);
+    expect(policy?.skills.get('__proto__')?.effective).toBe('disabled');
+    expect(policy?.skills.get('toString')).toBeUndefined();
+    expect(state.availableSkills.map((entry) => entry.id)).toEqual(['constructor', 'toString']);
+    const queued = [{ kind: 'instruction' as const, text: '', skills: [{ id: '__proto__', name: '__proto__' }, { id: 'toString', name: 'toString' }] }];
+    expect(withoutSwitchedOffQueuedSkills(queued, activeProjectPath)).toEqual([
+      { kind: 'instruction', text: buildSkillMentionInstruction(['toString']), skills: [{ id: 'toString', name: 'toString' }] },
+    ]);
   });
 
   test('a read started before a switch write cannot bring back the old state', async () => {
@@ -561,7 +623,7 @@ describe('useSkillsStore availability and switches', () => {
     // The late answer was read again, not committed.
     expect(listReads).toBeGreaterThanOrEqual(2);
     expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web']);
-    expect(useSkillsStore.getState().policyByDirectory[activeProjectPath]?.state?.skills['deploy-api']?.effective).toBe('disabled');
+    expect(useSkillsStore.getState().policyByDirectory[activeProjectPath]?.state?.skills.get('deploy-api')?.effective).toBe('disabled');
   });
 
   test('a failed write keeps the confirmed state and reports the reason', async () => {
@@ -571,7 +633,7 @@ describe('useSkillsStore availability and switches', () => {
     const result = await useSkillsStore.getState().setSkillEnabled('deploy-api', 'global', true);
     expect(result).toEqual({ ok: false, code: 'opencode_unavailable', message: 'OpenCode is not running' });
     const state = useSkillsStore.getState();
-    expect(state.policyByDirectory[activeProjectPath]?.state?.skills['deploy-api']?.effective).toBe('disabled');
+    expect(state.policyByDirectory[activeProjectPath]?.state?.skills.get('deploy-api')?.effective).toBe('disabled');
     expect(state.availableSkills.map((skill) => skill.id)).toEqual(['deploy-web']);
     expect(state.switchStatus[skillSwitchKey(undefined, 'deploy-api')]).toEqual({ phase: 'failed', scope: 'global', message: 'OpenCode is not running' });
   });

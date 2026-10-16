@@ -970,8 +970,12 @@ isolated OpenCode 2.0.20 through 2.0.30 servers.
   wrote: a switch never adds it to a rule it did not write and never takes over a
   user's rule, even an identical one. The switch never writes an allow,
   a wildcard, another action or another file, so a restriction it did not create stays
-  in force. JSONC comments and layout survive, and off then on gives back the original
-  text.
+  in force. On, and the rename steps below, leave every `policies` list and
+  `experimental` object in place, also when it is now empty: the file cannot tell a
+  list the switch added from one the user wrote empty, and a user's list is never
+  removed. Off then on in a file without a list leaves an empty `"policies": []` (or
+  `"experimental": { "policies": [] }`) behind; JSONC comments and the rest of the
+  layout survive.
 - **Effective state.** OpenCode evaluates config documents reversed and the last
   matching statement wins, so a global rule beats a project rule in either direction
   and a root `opencode.json` beats `.opencode/opencode.jsonc`. The effective state is
@@ -984,8 +988,9 @@ isolated OpenCode 2.0.20 through 2.0.30 servers.
   own file cannot be parsed (`scopes.<scope>.error`), the state is `unknown` too unless
   a deny still decides the skill: OpenCode still answers `GET /api/config`, but without
   that file, so a switch's deny in it is missing and no rule, or an allow, proves
-  nothing. A deny from a file it does serve keeps the skill `disabled`. The message
-  queue keeps the last known state through such an `unknown` (`readQueuedSkillPolicy`).
+  nothing. A deny from a file it does serve keeps the skill `disabled`. Queued
+  delivery keeps the last `enabled` or `disabled` through such an `unknown`, on the
+  server (`readQueuedSkillPolicy`) and in the UI (`withoutSwitchedOffQueuedSkills`).
   Statements
   from a connected Console workspace are not in `/api/config` and are not shown.
 - **Writes.** Read, change and write of a file run one at a time per process, and the
@@ -1042,7 +1047,10 @@ Contract, identical on web (`skill-routes.js`) and VS Code (`api:config/skill-po
 - `GET /api/config/skills` adds `skillPolicy`:
   `{ version, location: 'experimental.policies' | 'policies' | null, writable,
   effectiveAvailable, scopes: { global: { path, error }, project: { path, error } | null },
-  skills: { [id]: { disabledIn: { global, project }, effective, decidedBy } } }`.
+  skills: [{ id, disabledIn: { global, project }, effective, decidedBy }] }`.
+  `skills` is a list with the id as a value, so every valid id, `__proto__` included,
+  reaches the UI: an object keyed by id loses that one in a plain object and in zod's
+  record parser.
   `disabledIn.<scope>` is whether that scope's file holds the switch's own marked deny (`null`
   when the scope has no file or it could not be read). `effective` is `enabled`,
   `disabled` or `unknown` (also while a scope file cannot be parsed and no deny decides,

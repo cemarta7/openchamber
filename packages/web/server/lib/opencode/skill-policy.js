@@ -214,10 +214,11 @@ class SkillPolicyConfigError extends Error {
  * Off appends the switch's marked deny to the version's write array unless a
  * deny (the switch's own, the user's exact one, or a wildcard) already decides
  * `id` in this file. On removes the marked denies for `id` from the arrays the
- * version enforces, dropping an array (and an `experimental` object) it
- * emptied. A statement without the provenance key is never removed, so a
- * user's exact deny survives an off/on round trip. Nothing else in the file
- * moves.
+ * version enforces. An array it empties stays, empty, and so does its
+ * `experimental` object: the file cannot tell an array the switch added from
+ * one the user wrote. A statement without the provenance key is never
+ * removed, so a user's exact deny survives an off/on round trip. Nothing else
+ * in the file moves.
  */
 export function setSkillDisabled(config, id, disabled, location) {
   if (!isPlainObject(config)) throw new SkillPolicyConfigError('The config file is not an object');
@@ -250,12 +251,7 @@ export function setSkillDisabled(config, id, disabled, location) {
     const kept = parent[key].filter((statement) => !isOwnedStatement(statement, id));
     if (kept.length === parent[key].length) continue;
     changed = true;
-    if (kept.length > 0) {
-      parent[key] = kept;
-      continue;
-    }
-    delete parent[key];
-    if (keyPath.length === 2 && Object.keys(parent).length === 0) delete config[keyPath[0]];
+    parent[key] = kept;
   }
   return changed;
 }
@@ -282,7 +278,7 @@ export function carryOwnedSkillDeny(config, oldId, newId) {
 }
 
 // Undo of `carryOwnedSkillDeny`: drop the last switch-owned deny for `id` from
-// each array it appended to, and an array (and `experimental`) it empties.
+// each array it appended to. The arrays stay, as in `setSkillDisabled`.
 const removeCarriedDeny = (config, id, keyPaths) => {
   let changed = false;
   for (const keyPath of keyPaths) {
@@ -293,9 +289,6 @@ const removeCarriedDeny = (config, id, keyPaths) => {
     if (index === -1) continue;
     parent[key].splice(index, 1);
     changed = true;
-    if (parent[key].length > 0) continue;
-    delete parent[key];
-    if (keyPath.length === 2 && Object.keys(parent).length === 0) delete config[keyPath[0]];
   }
   return changed;
 };
@@ -466,8 +459,9 @@ export function createSkillPolicyService({
     const configs = readConfigs(scopes);
     const allIds = new Set(ids.filter(isValidSkillPolicyId));
     for (const config of Object.values(configs)) for (const id of config ? listOwnedSkillDenies(config, location) : []) allIds.add(id);
-    const skills = {};
-    for (const id of allIds) skills[id] = describeSkillPolicy(id, { entries, scopes, configs, location, samePath });
+    // A list with the id as a value: every valid id, `__proto__` included,
+    // survives JSON and the UI's parser, which an object keyed by id does not.
+    const skills = [...allIds].map((id) => ({ id, ...describeSkillPolicy(id, { entries, scopes, configs, location, samePath }) }));
     return { ...summarize({ version, location, entries, scopes }), skills };
   };
 

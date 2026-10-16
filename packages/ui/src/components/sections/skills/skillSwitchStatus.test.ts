@@ -11,7 +11,7 @@ const summary = (overrides: Partial<SkillPolicyState> = {}): SkillPolicyState =>
     global: { path: '/config/opencode.json', error: null },
     project: { path: '/repo/.opencode/opencode.json', error: null },
   },
-  skills: {},
+  skills: new Map(),
   ...overrides,
 });
 const view = (state: SkillPolicyState | null, error: string | null = null) => ({ state, error });

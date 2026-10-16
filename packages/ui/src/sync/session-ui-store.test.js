@@ -1506,13 +1506,13 @@ describe('routeMessage skill invocation', () => {
             writable: true,
             effectiveAvailable: true,
             scopes: { global: { path: '/config/opencode.json', error: null }, project: null },
-            skills: {
-              'grill-with-docs': {
+            skills: new Map([
+              ['grill-with-docs', {
                 disabledIn: { global: true, project: null },
                 effective: 'disabled',
                 decidedBy: { path: '/config/opencode.json', resource: 'skill:grill-with-docs', effect: 'deny', scope: 'global', owned: true },
-              },
-            },
+              }],
+            ]),
           },
         },
       },

@@ -680,7 +680,16 @@ starters, `/name` routing and the work-status count read it. Only the policy
 says "off" (`stores/skillAvailability.ts`): an `unknown` state, a skill the
 policy does not mention, a cold empty OpenCode list or a failed read keeps a
 skill available. `policyByDirectory` keeps the last state read; a failed policy
-read keeps that state and records the error beside it.
+read keeps that state and records the error beside it. A state's `skills` is a
+`Map` by id, read from the server's list, so an id such as `__proto__` is kept.
+
+`lastDecidedByDirectory` holds, per directory and id, the last `enabled` or
+`disabled` any committed policy reported, and is kept through later `unknown`
+answers. Only queued delivery (`withoutSwitchedOffQueuedSkills`) reads it: a
+skill last seen off stays out of a queued instruction while the policy says
+`unknown`, as on the server, and comes back once a read says `enabled`.
+Settings, the composer and the available lists still show `unknown` as
+unknown. A runtime switch clears it.
 
 `setSkillEnabled` writes one scope's switch through `PUT
 /api/config/skill-policy` for an explicit directory, the Settings one, which can

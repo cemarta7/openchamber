@@ -48,8 +48,12 @@ const summarySchema = z.object({
   }),
 });
 
+// The server lists entries with their id as a value, and they are kept in a
+// Map: every valid id, `__proto__` included, is a key there, while a zod
+// record and a plain object both lose that one.
 const stateSchema = summarySchema.extend({
-  skills: z.record(z.string(), entrySchema),
+  skills: z.array(entrySchema.extend({ id: z.string() }))
+    .transform((entries) => new Map(entries.map(({ id, ...entry }) => [id, entry]))),
 });
 
 /** One skill's policy: the switch's own rule per scope, and what OpenCode applies. */
@@ -116,7 +120,7 @@ export const parseSkillPolicyWrite = (
 
 /** Whether OpenCode lets agents use the skill, as far as the policy state knows. */
 export const isSkillSwitchedOff = (policy: SkillPolicyState | null, id: string): boolean => (
-  policy?.skills[id]?.effective === 'disabled'
+  policy?.skills.get(id)?.effective === 'disabled'
 );
 
 type SkillIdentity = { id: string; name: string };
@@ -132,7 +136,7 @@ export const unlistedSwitchedOffIds = (
 ): string[] => {
   if (!policy) return [];
   const listed = new Set(skills.map((skill) => skill.id));
-  return Object.entries(policy.skills)
+  return [...policy.skills]
     .filter(([id, entry]) => !listed.has(id) && (entry.disabledIn.global === true || entry.disabledIn.project === true))
     .map(([id]) => id)
     .sort((a, b) => a.localeCompare(b));

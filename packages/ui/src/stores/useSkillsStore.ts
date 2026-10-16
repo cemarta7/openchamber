@@ -22,7 +22,6 @@ import { filterSkillsByRuntimeFlags } from './skillVisibility';
 import {
   filterAvailableSkills,
   isSkillSwitchedOff,
-  resolveSkillToken,
   parseSkillPolicyRead,
   parseSkillPolicyWrite,
   type SkillPolicyRead,
@@ -222,6 +221,8 @@ export interface SkillPolicyView {
   error: string | null;
 }
 
+type DecidedSkillState = 'enabled' | 'disabled';
+
 /** A switch write for one skill in one directory, from the click until the next policy read. */
 type SkillSwitchStatus =
   | { phase: 'pending'; scope: SkillPolicyScope }
@@ -241,6 +242,13 @@ interface SkillsStore {
   /** Per directory, the installed skills minus the ones a policy switches off. */
   availableSkillsByDirectory: Record<string, DiscoveredSkill[]>;
   policyByDirectory: Record<string, SkillPolicyView>;
+  /**
+   * Per directory and skill id, the last `enabled` or `disabled` a policy read
+   * or switch reported, kept through later `unknown` answers. Only queued
+   * delivery reads it, so a skill last seen off stays out of a queued
+   * instruction; Settings and the composer show the latest state as it is.
+   */
+  lastDecidedByDirectory: Record<string, ReadonlyMap<string, DecidedSkillState>>;
   /** Keyed by `skillSwitchKey(directory, id)`. */
   switchStatus: Record<string, SkillSwitchStatus>;
   isLoading: boolean;
@@ -409,6 +417,18 @@ export const invalidateAllSkillsLoads = (): string[] => {
   return keys.filter((key) => key !== DEFAULT_SKILLS_CACHE_KEY);
 };
 
+/** `lastDecided` updated with the `enabled` and `disabled` states of `policy`; null when that changes nothing. */
+const withDecided = (
+  lastDecided: ReadonlyMap<string, DecidedSkillState> | undefined,
+  policy: SkillPolicyState | null,
+): ReadonlyMap<string, DecidedSkillState> | null => {
+  const changes: Array<[string, DecidedSkillState]> = [];
+  for (const [id, { effective }] of policy?.skills ?? []) {
+    if (effective !== 'unknown' && lastDecided?.get(id) !== effective) changes.push([id, effective]);
+  }
+  return changes.length > 0 ? new Map([...(lastDecided ?? []), ...changes]) : null;
+};
+
 /**
  * One directory's lists after a change to its inventory or policy, with the
  * available list derived from both and the ambient mirrors following when the
@@ -426,7 +446,11 @@ const commitDirectory = (
     skillsByDirectory: { ...state.skillsByDirectory, [cacheKey]: skills },
     availableSkillsByDirectory: { ...state.availableSkillsByDirectory, [cacheKey]: available },
   };
-  if (patch.policy) next.policyByDirectory = { ...state.policyByDirectory, [cacheKey]: patch.policy };
+  if (patch.policy) {
+    next.policyByDirectory = { ...state.policyByDirectory, [cacheKey]: patch.policy };
+    const lastDecided = withDecided(state.lastDecidedByDirectory[cacheKey], patch.policy.state);
+    if (lastDecided) next.lastDecidedByDirectory = { ...state.lastDecidedByDirectory, [cacheKey]: lastDecided };
+  }
   if (cacheKey === ambientCacheKey()) {
     next.skills = skills;
     next.availableSkills = available;
@@ -544,27 +568,14 @@ const findDirectoryKey = (state: SkillsStore, directory: string | null | undefin
 };
 
 /**
- * Whether a skill token from a queued instruction names a skill the policy
- * switches off. A token naming an available skill, nothing known, or several
- * skills of which one is not switched off is kept: only a known "off" drops it.
- */
-const tokenIsSwitchedOff = (
-  token: string,
-  installed: readonly DiscoveredSkill[],
-  available: readonly DiscoveredSkill[],
-  policy: SkillPolicyState | null,
-): boolean => {
-  if (resolveSkillToken(available, token)) return false;
-  const candidates = installed.filter((skill) => skill.name === token || skill.id === token);
-  return candidates.length > 0 && candidates.every((skill) => isSkillSwitchedOff(policy, skill.id));
-};
-
-/**
  * A queued message's captured context, checked again when it is delivered:
- * its skill instruction leaves out skills the directory's last known policy
- * switches off, and goes when it names none left. Everything else, and an
- * instruction this check cannot read, is delivered as captured. The message
- * text itself is never changed.
+ * its skill instruction leaves out skills switched off in the directory, and
+ * goes when it names none left. A skill is off when the latest policy read
+ * says so, or says `unknown` and the last `enabled` or `disabled` before it
+ * was `disabled` (the server queue's rule). A token from an instruction
+ * queued without ids is dropped only when every installed skill it names by
+ * name or id is off. Everything else, and an instruction this check cannot
+ * read, is delivered as captured. The message text itself is never changed.
  */
 export const withoutSwitchedOffQueuedSkills = (
   context: readonly QueuedContextPart[],
@@ -573,9 +584,17 @@ export const withoutSwitchedOffQueuedSkills = (
   const state = useSkillsStore.getState();
   const cacheKey = findDirectoryKey(state, directory);
   const policy = state.policyByDirectory[cacheKey]?.state ?? null;
-  if (!policy) return [...context];
+  const lastDecided = state.lastDecidedByDirectory[cacheKey];
+  if (!policy && !lastDecided) return [...context];
   const installed = state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
-  const available = state.availableSkillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
+  const isOff = (id: string): boolean => {
+    const effective = policy?.skills.get(id)?.effective;
+    return (effective === 'enabled' || effective === 'disabled' ? effective : lastDecided?.get(id)) === 'disabled';
+  };
+  const tokenIsOff = (token: string): boolean => {
+    const candidates = installed.filter((skill) => skill.name === token || skill.id === token);
+    return candidates.length > 0 && candidates.every((skill) => isOff(skill.id));
+  };
 
   const revised: QueuedContextPart[] = [];
   for (const part of context) {
@@ -584,7 +603,7 @@ export const withoutSwitchedOffQueuedSkills = (
       continue;
     }
     if (part.skills) {
-      const kept = part.skills.filter((skill) => !isSkillSwitchedOff(policy, skill.id));
+      const kept = part.skills.filter((skill) => !isOff(skill.id));
       if (kept.length === part.skills.length) revised.push(part);
       else if (kept.length > 0) revised.push({ kind: 'instruction', text: buildSkillMentionInstruction(kept.map((skill) => skill.name)) ?? '', skills: kept });
       continue;
@@ -594,7 +613,7 @@ export const withoutSwitchedOffQueuedSkills = (
       revised.push(part);
       continue;
     }
-    const kept = tokens.filter((token) => !tokenIsSwitchedOff(token, installed, available, policy));
+    const kept = tokens.filter((token) => !tokenIsOff(token));
     if (kept.length === tokens.length) revised.push(part);
     else if (kept.length > 0) revised.push({ kind: 'instruction', text: buildSkillMentionInstruction(kept) ?? '' });
   }
@@ -673,6 +692,7 @@ export const useSkillsStore = create<SkillsStore>()(
         availableSkills: [],
         availableSkillsByDirectory: {},
         policyByDirectory: {},
+        lastDecidedByDirectory: {},
         switchStatus: {},
         isLoading: false,
         skillDraft: null,
@@ -689,6 +709,7 @@ export const useSkillsStore = create<SkillsStore>()(
             availableSkills: [],
             availableSkillsByDirectory: {},
             policyByDirectory: {},
+            lastDecidedByDirectory: {},
             switchStatus: {},
             isLoading: false,
           });
@@ -818,7 +839,7 @@ export const useSkillsStore = create<SkillsStore>()(
           set((state) => {
             const previous = state.policyByDirectory[cacheKey]?.state ?? null;
             const policy: SkillPolicyView = {
-              state: { ...write.state, skills: { ...previous?.skills, [id]: write.policy } },
+              state: { ...write.state, skills: new Map(previous?.skills).set(id, write.policy) },
               error: null,
             };
             const next = commitDirectory(state, cacheKey, { policy });

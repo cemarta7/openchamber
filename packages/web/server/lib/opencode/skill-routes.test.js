@@ -27,6 +27,9 @@ import {
 import { createSkillPolicyService } from './skill-policy.js';
 import { createMessageQueueRuntime } from '../message-queue/runtime.js';
 
+// A `skillPolicy` answer's entries by id.
+const byId = (skillPolicy) => new Map(skillPolicy.skills.map(({ id, ...entry }) => [id, entry]));
+
 const createTempProject = () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-skill-routes-'));
   fs.mkdirSync(path.join(projectRoot, '.git'));
@@ -795,7 +798,7 @@ describe('skill policy routes', () => {
     const listed = await list();
     expect(listed.skillPolicy.effectiveAvailable).toBe(true);
     expect(listed.skillPolicy.scopes.project.error).toMatch(/invalid JSONC/);
-    expect(listed.skillPolicy.skills['alpha-skill']).toEqual({ disabledIn: { global: false, project: null }, effective: 'unknown', decidedBy: null });
+    expect(byId(listed.skillPolicy).get('alpha-skill')).toEqual({ disabledIn: { global: false, project: null }, effective: 'unknown', decidedBy: null });
     expect(await queued()).toEqual({ 'alpha-skill': 'disabled' });
 
     fs.writeFileSync(projectPath, validText);
@@ -880,7 +883,7 @@ describe('skill policy routes', () => {
     expect(ids).toEqual(expect.arrayContaining(['alpha-skill', 'beta-one', 'beta-two']));
     expect(before.skills.filter((skill) => skill.name === 'Same Name').map((skill) => skill.id).sort()).toEqual(['beta-one', 'beta-two']);
     expect(before.skillPolicy).toMatchObject({ version: '2.0.29', location: 'policies', writable: true, effectiveAvailable: true });
-    expect(before.skillPolicy.skills['alpha-skill']).toEqual({ disabledIn: { global: false, project: false }, effective: 'enabled', decidedBy: null });
+    expect(byId(before.skillPolicy).get('alpha-skill')).toEqual({ disabledIn: { global: false, project: false }, effective: 'enabled', decidedBy: null });
 
     // The display name is not an id OpenCode policies know.
     const byName = await put({ id: 'Alpha Display', scope: 'project', enabled: false });
@@ -904,11 +907,11 @@ describe('skill policy routes', () => {
     const whileOff = await list();
     const alpha = whileOff.skills.find((skill) => skill.id === 'alpha-skill');
     expect(alpha).toMatchObject({ name: 'Alpha Display', scope: 'project' });
-    expect(whileOff.skillPolicy.skills['alpha-skill']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    expect(byId(whileOff.skillPolicy).get('alpha-skill')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
 
     const on = await put({ id: 'alpha-skill', scope: 'project', enabled: true });
     expect(await on.json()).toMatchObject({ ok: true, confirmed: true, saved: { disabled: false, changed: true }, policy: { effective: 'enabled' } });
-    expect(readConfigFile(projectPath)).toEqual({});
+    expect(readConfigFile(projectPath)).toEqual({ policies: [] });
   });
 
   it('switches a skill off globally and reports the project switch as overridden', async () => {
@@ -936,13 +939,13 @@ describe('skill policy routes', () => {
     const listed = await list();
     const sameName = listed.skills.filter((skill) => skill.name === 'Same Name');
     expect(sameName.map((skill) => skill.id).sort()).toEqual(['beta-one', 'beta-two']);
-    expect(listed.skillPolicy.skills['beta-one']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
-    expect(listed.skillPolicy.skills['beta-two']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    expect(byId(listed.skillPolicy).get('beta-one')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    expect(byId(listed.skillPolicy).get('beta-two')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
 
     for (const id of ['beta-one', 'beta-two']) {
       expect(await (await put({ id, scope: 'project', enabled: true })).json()).toMatchObject({ ok: true, saved: { changed: true } });
     }
-    expect(readConfigFile(projectPath)).toEqual({});
+    expect(readConfigFile(projectPath)).toEqual({ policies: [] });
   });
 
   describe('renaming a switched-off skill keeps it off (#3075 decision)', () => {
@@ -983,9 +986,9 @@ describe('skill policy routes', () => {
 
       const listed = await app.list();
       expect(listed.skills.map((skill) => skill.id)).toContain('beta-renamed');
-      expect(listed.skillPolicy.skills['beta-renamed']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+      expect(byId(listed.skillPolicy).get('beta-renamed')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
       // No switch rule is left for the old id (the stub's skill list still names it).
-      expect(listed.skillPolicy.skills['beta-two']?.disabledIn.project ?? false).toBe(false);
+      expect(byId(listed.skillPolicy).get('beta-two')?.disabledIn.project ?? false).toBe(false);
 
       const queued = await app.lookup({ directory: app.projectRoot, ids: ['beta-renamed'], names: [] });
       expect(queued.states.get('beta-renamed')).toBe('disabled');

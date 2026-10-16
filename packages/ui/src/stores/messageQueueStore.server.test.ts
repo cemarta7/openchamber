@@ -433,13 +433,13 @@ describe("server-owned message queue", () => {
             writable: true,
             effectiveAvailable: true,
             scopes: { global: { path: "/config/opencode.json", error: null }, project: null },
-            skills: {
-              "deploy-api": {
+            skills: new Map([
+              ["deploy-api", {
                 disabledIn: { global: true, project: false },
                 effective: "disabled",
                 decidedBy: { path: "/config/opencode.json", resource: "skill:deploy-api", effect: "deny", scope: "global", owned: true },
-              },
-            },
+              }],
+            ]),
           },
         },
       },

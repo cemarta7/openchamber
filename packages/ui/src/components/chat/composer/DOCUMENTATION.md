@@ -532,8 +532,9 @@ and the send path reading the same grammar.
   without the composer's registry. The instruction part carries the ids of
   the skills it names (`skills`), and the UI's own deliveries, the composer
   sending taken messages and the VS Code auto-send, pass the context through
-  `withoutSwitchedOffQueuedSkills` first: a skill the session directory's last
-  known policy switches off is left out of the instruction, and an
+  `withoutSwitchedOffQueuedSkills` first: a skill the session directory's
+  latest policy read switches off, or reports `unknown` after it was last seen
+  off, is left out of the instruction, and an
   instruction naming none left is dropped. A part without ids (queued before
   they existed) is checked by the names in its text when that text is one
   `buildSkillMentionInstruction` wrote; anything else is delivered as

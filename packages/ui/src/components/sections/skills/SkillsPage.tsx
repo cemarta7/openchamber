@@ -153,7 +153,7 @@ const SkillsInstalledPage: React.FC = () => {
   // its switches, also for the moment after it is switched back on and before
   // the list shows it again.
   const isUnlistedSwitchedOff = Boolean(
-    selectedSkillId && !selectedSkill && policyView?.state?.skills[selectedSkillId],
+    selectedSkillId && !selectedSkill && policyView?.state?.skills.get(selectedSkillId),
   );
   const hasStaleSelection = Boolean(selectedSkillId && !selectedSkill && !skillDraft && !isUnlistedSwitchedOff);
   const isReadOnlySkill = selectedSkill?.path === '<built-in>';

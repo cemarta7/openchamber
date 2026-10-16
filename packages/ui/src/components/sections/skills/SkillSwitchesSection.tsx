@@ -37,7 +37,7 @@ export const SkillSwitchesSection: React.FC<SkillSwitchesSectionProps> = ({ id, 
   const setSkillEnabled = useSkillsStore((state) => state.setSkillEnabled);
   const loadSkills = useSkillsStore((state) => state.loadSkills);
 
-  const entry = view?.state?.skills[id];
+  const entry = view?.state?.skills.get(id);
   const availability = describeSkillAvailability(view, entry);
   const unavailable = describeSwitchesUnavailable(view);
   const pending = status?.phase === 'pending';

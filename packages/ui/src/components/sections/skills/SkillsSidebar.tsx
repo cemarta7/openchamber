@@ -281,7 +281,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                       <SkillListItem
                         key={skill.id}
                         skill={skill}
-                        policy={policyState?.skills[skill.id]}
+                        policy={policyState?.skills.get(skill.id)}
                         showId={sharedNames.has(skill.name)}
                         isSelected={selectedSkillId === skill.id}
                         onSelect={() => {
@@ -302,7 +302,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                   <SkillListItem
                     key={skill.id}
                     skill={skill}
-                    policy={policyState?.skills[skill.id]}
+                    policy={policyState?.skills.get(skill.id)}
                     showId={sharedNames.has(skill.name)}
                     isSelected={selectedSkillId === skill.id}
                     onSelect={() => {
@@ -336,7 +336,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                       <SkillListItem
                         key={skill.id}
                         skill={skill}
-                        policy={policyState?.skills[skill.id]}
+                        policy={policyState?.skills.get(skill.id)}
                         showId={sharedNames.has(skill.name)}
                         isSelected={selectedSkillId === skill.id}
                         onSelect={() => {
@@ -357,7 +357,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                   <SkillListItem
                     key={skill.id}
                     skill={skill}
-                    policy={policyState?.skills[skill.id]}
+                    policy={policyState?.skills.get(skill.id)}
                     showId={sharedNames.has(skill.name)}
                     isSelected={selectedSkillId === skill.id}
                     onSelect={() => {

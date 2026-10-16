@@ -63,6 +63,8 @@ afterEach(() => {
 });
 
 const readJson = (filePath) => JSON.parse(fs.readFileSync(filePath, 'utf8'));
+// A `skillPolicy` answer's entries by id.
+const byId = (skillPolicy) => new Map(skillPolicy.skills.map(({ id, ...entry }) => [id, entry]));
 
 describe('VS Code config bridge plugin parity', () => {
   test('explicit config reload restarts OpenCode', async () => {
@@ -413,11 +415,11 @@ describe('VS Code skill policy parity', () => {
 
     const listed = await list(root);
     expect(listed.data.skills.find((skill) => skill.id === 'alpha-skill')).toMatchObject({ name: 'Alpha Display' });
-    expect(listed.data.skillPolicy.skills['alpha-skill']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    expect(byId(listed.data.skillPolicy).get('alpha-skill')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
 
     const on = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: true } });
     expect(on.data).toMatchObject({ status: 200, body: { ok: true, saved: { changed: true }, policy: { effective: 'enabled' } } });
-    expect(readJson(projectConfigPath)).toEqual({});
+    expect(readJson(projectConfigPath)).toEqual({ policies: [] });
   });
 
   test('reports a switched-off skill as unknown while its project file cannot be parsed, as the web runtime does', async () => {
@@ -429,10 +431,10 @@ describe('VS Code skill policy parity', () => {
     const broken = (await list(root)).data.skillPolicy;
     expect(broken.effectiveAvailable).toBe(true);
     expect(broken.scopes.project.error).toBeTruthy();
-    expect(broken.skills['alpha-skill']).toEqual({ disabledIn: { global: false, project: null }, effective: 'unknown', decidedBy: null });
+    expect(byId(broken).get('alpha-skill')).toEqual({ disabledIn: { global: false, project: null }, effective: 'unknown', decidedBy: null });
 
     fs.writeFileSync(projectConfigPath, validText);
-    expect((await list(root)).data.skillPolicy.skills['alpha-skill']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    expect(byId((await list(root)).data.skillPolicy).get('alpha-skill')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
   });
 
   test('gives back the project JSONC byte for byte after a switch goes off and on again', async () => {
@@ -462,7 +464,7 @@ describe('VS Code skill policy parity', () => {
     expect(fromHost.data.skills.map((skill) => skill.id)).toContain('host-only');
 
     expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } })).data.status).toBe(200);
-    expect((await list(root)).data.skillPolicy.skills['alpha-skill']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    expect(byId((await list(root)).data.skillPolicy).get('alpha-skill')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
   });
 
   test('keeps two switched-off ids that share a display name listed and switchable when OpenCode lists none', async () => {
@@ -475,13 +477,13 @@ describe('VS Code skill policy parity', () => {
 
     const listed = await list(root);
     expect(listed.data.skills.filter((skill) => skill.name === 'Same Name').map((skill) => skill.id).sort()).toEqual(['beta-one', 'beta-two']);
-    expect(listed.data.skillPolicy.skills['beta-one']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
-    expect(listed.data.skillPolicy.skills['beta-two']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    expect(byId(listed.data.skillPolicy).get('beta-one')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    expect(byId(listed.data.skillPolicy).get('beta-two')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
 
     for (const id of ['beta-one', 'beta-two']) {
       expect((await send({ directory: root, body: { id, scope: 'project', enabled: true } })).data.body).toMatchObject({ ok: true, saved: { changed: true } });
     }
-    expect(readJson(projectConfigPath)).toEqual({});
+    expect(readJson(projectConfigPath)).toEqual({ policies: [] });
   });
 
   test('keeps a user exact deny through off and on, like the web server', async () => {
@@ -511,7 +513,7 @@ describe('VS Code skill policy parity', () => {
         switches: { carried: [{ scope: 'project', path: projectConfigPath }], oldRuleRemoved: [{ scope: 'project' }] },
       });
       expect(readJson(projectConfigPath)).toEqual({ policies: [userDeny('skill:zz-*'), userDeny('skill:other'), ownedDeny('alpha-renamed')] });
-      expect((await list(root)).data.skillPolicy.skills['alpha-renamed']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+      expect(byId((await list(root)).data.skillPolicy).get('alpha-renamed')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
     });
 
     test('keeps the old switch while another copy of the old id stays installed', async () => {

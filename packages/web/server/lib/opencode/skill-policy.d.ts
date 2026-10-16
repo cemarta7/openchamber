@@ -69,7 +69,7 @@ export type SkillPolicyService = {
     directory: string | null;
     ids: string[];
     openCode: SkillPolicyOpenCodeReader;
-  }) => Promise<SkillPolicySummary & { skills: Record<string, SkillPolicyState> }>;
+  }) => Promise<SkillPolicySummary & { skills: Array<SkillPolicyState & { id: string }> }>;
   setEnabled: (input: {
     directory: string | null;
     id: JsonValue | undefined;

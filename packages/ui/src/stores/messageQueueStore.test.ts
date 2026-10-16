@@ -140,13 +140,17 @@ describe("queued skill instructions at delivery", () => {
   // Two ids share the display name "deploy".
   const skill = (id: string, name: string) => ({ id, name, path: `/repo/.agents/skills/${id}/SKILL.md`, scope: "project" as const, source: "agents" as const })
   const installed = [skill("deploy-web", "deploy"), skill("deploy-api", "deploy"), skill("code-audit", "audit")]
-  const entry = (off: boolean) => ({
-    disabledIn: { global: off, project: false },
-    effective: off ? "disabled" as const : "enabled" as const,
-    decidedBy: off ? { path: "/config/opencode.json", resource: "skill:x", effect: "deny" as const, scope: "global" as const, owned: true } : null,
+  const entry = (effective: "enabled" | "disabled" | "unknown") => ({
+    disabledIn: { global: effective === "disabled", project: false },
+    effective,
+    decidedBy: effective === "disabled" ? { path: "/config/opencode.json", resource: "skill:x", effect: "deny" as const, scope: "global" as const, owned: true } : null,
   })
+  const effectiveOf = (id: string, off: readonly string[], unknown: readonly string[]) => {
+    if (unknown.includes(id)) return "unknown" as const
+    return off.includes(id) ? "disabled" as const : "enabled" as const
+  }
   /** The skills store as a policy read for `directory` left it. */
-  const seedPolicy = (directory: string, off: readonly string[]) => {
+  const seedPolicy = (directory: string, off: readonly string[], unknown: readonly string[] = []) => {
     const state = useSkillsStore.getState()
     useSkillsStore.setState({
       skillsByDirectory: { ...state.skillsByDirectory, [directory]: installed },
@@ -161,7 +165,7 @@ describe("queued skill instructions at delivery", () => {
             writable: true,
             effectiveAvailable: true,
             scopes: { global: { path: "/config/opencode.json", error: null }, project: null },
-            skills: Object.fromEntries(installed.map((s) => [s.id, entry(off.includes(s.id))])),
+            skills: new Map(installed.map((s) => [s.id, entry(effectiveOf(s.id, off, unknown))])),
           },
         },
       },
@@ -178,7 +182,27 @@ describe("queued skill instructions at delivery", () => {
   }
 
   beforeEach(() => {
-    useSkillsStore.setState({ skillsByDirectory: {}, availableSkillsByDirectory: {}, policyByDirectory: {} })
+    useSkillsStore.setState({ skillsByDirectory: {}, availableSkillsByDirectory: {}, policyByDirectory: {}, lastDecidedByDirectory: {} })
+  })
+
+  test("a skill last seen off stays out of auto-send and the composer's send while the policy reads unknown", async () => {
+    const target = createMessageQueueTarget("session-1", "/repo", "runtime-a")!
+    seedPolicy("/repo", [])
+    queueWithSkills(target)
+    // The latest read could not decide deploy-api (an unparsable scope file);
+    // the read before it said off. useSkillsStore.test.ts covers how the store gets here.
+    seedPolicy("/repo", [], ["deploy-api"])
+    useSkillsStore.setState({ lastDecidedByDirectory: { "/repo": new Map([["deploy-api", "disabled"], ["code-audit", "enabled"]]) } })
+    const onlyAudit = { text: instructionFor([mentioned[1]]), synthetic: true }
+
+    const payload = buildQueuedAutoSendPayload(useMessageQueueStore.getState().getSendableQueue(target), target.directory)
+    expect(payload?.additionalParts).toEqual([{ text: "conflict payload", synthetic: true }, onlyAudit])
+
+    const [taken] = await useMessageQueueStore.getState().takeForSend(target)
+    expect(withoutSwitchedOffQueuedSkills(taken?.context ?? [], target.directory)).toEqual([
+      { kind: "synthetic", text: "conflict payload" },
+      { kind: "instruction", text: onlyAudit.text, skills: [mentioned[1]] },
+    ])
   })
 
   test("auto-send leaves out a skill switched off while the message waited, and keeps it after re-enable", () => {

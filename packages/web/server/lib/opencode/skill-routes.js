@@ -351,8 +351,8 @@ export const registerSkillRoutes = (app, dependencies) => {
   const rememberEffective = (directory, skills) => {
     const key = effectiveKey(directory);
     const known = knownEffective.get(key) ?? new Map();
-    for (const [id, state] of Object.entries(skills)) {
-      if (state?.effective === 'enabled' || state?.effective === 'disabled') known.set(id, state.effective);
+    for (const { id, effective } of skills) {
+      if (effective === 'enabled' || effective === 'disabled') known.set(id, effective);
     }
     // Most recently read last, so the bound drops the directory read longest ago.
     knownEffective.delete(key);
@@ -417,17 +417,18 @@ export const registerSkillRoutes = (app, dependencies) => {
       }
     }
 
-    let current = null;
+    const current = new Map();
     try {
-      current = (await skillPolicyService.readState({ directory, ids: [...candidateIds], openCode: openCodePolicyReader })).skills;
-      rememberEffective(directory, current);
+      const { skills } = await skillPolicyService.readState({ directory, ids: [...candidateIds], openCode: openCodePolicyReader });
+      rememberEffective(directory, skills);
+      for (const skill of skills) current.set(skill.id, skill.effective);
     } catch (error) {
       console.error('Failed to read skill policies for a queued message:', error);
     }
     const known = knownEffective.get(effectiveKey(directory));
     const states = new Map();
     for (const id of candidateIds) {
-      const effective = current?.[id]?.effective;
+      const effective = current.get(id);
       const decided = effective === 'enabled' || effective === 'disabled' ? effective : known?.get(id);
       if (decided) states.set(id, decided);
     }
@@ -483,7 +484,7 @@ export const registerSkillRoutes = (app, dependencies) => {
       openCode: openCodePolicyReader,
       listInstalledSkillIds,
     });
-    if (result.body.ok && isString(result.body.id)) rememberEffective(directory, { [result.body.id]: result.body.policy });
+    if (result.body.ok && isString(result.body.id)) rememberEffective(directory, [{ id: result.body.id, ...result.body.policy }]);
     return res.status(result.status).json(result.body);
   });
 

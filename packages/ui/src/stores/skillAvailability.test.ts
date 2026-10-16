@@ -24,7 +24,7 @@ const state = (skills: Record<string, SkillPolicyEntry>): SkillPolicyState => ({
   writable: true,
   effectiveAvailable: true,
   scopes: { global: { path: '/config/opencode.json', error: null }, project: null },
-  skills,
+  skills: new Map(Object.entries(skills)),
 });
 
 const web = { id: 'deploy-web', name: 'deploy' };
@@ -88,7 +88,7 @@ describe('policy parsing', () => {
   test('an error and an unknown shape are not a state', () => {
     expect(parseSkillPolicyRead({ error: 'boom' })).toEqual({ kind: 'error', message: 'boom' });
     expect(parseSkillPolicyRead(undefined)).toEqual({ kind: 'absent' });
-    expect(parseSkillPolicyRead(state({})).kind).toBe('state');
+    expect(parseSkillPolicyRead({ ...state({}), skills: [] }).kind).toBe('state');
   });
 
   test('a write answer that is neither success nor error is a failure', () => {
