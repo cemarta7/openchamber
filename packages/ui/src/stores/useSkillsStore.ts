@@ -13,8 +13,19 @@ import { runtimeFetch, type RuntimeFetchOptions } from "@/lib/runtime-fetch";
 import { runBackgroundNetworkTask } from "@/lib/background-network";
 import { useProjectsStore } from "@/stores/useProjectsStore";
 
-import { opencodeClient } from '@/lib/opencode/client';
+import { opencodeClient, type SkillAttachmentRef } from '@/lib/opencode/client';
+import { buildSkillMentionInstruction } from '@/lib/skillMentionInstruction';
 import { filterSkillsByRuntimeFlags } from './skillVisibility';
+import {
+  filterAvailableSkills,
+  isSkillSwitchedOff,
+  parseSkillPolicyRead,
+  parseSkillPolicyWrite,
+  type SkillPolicyRead,
+  type SkillPolicyScope,
+  type SkillPolicyState,
+  type SkillPolicyWriteResult,
+} from './skillAvailability';
 
 // Prefer the active project path so Settings/Skills discovery matches the
 // project selector (and Commands/Agents). Falling back only to the session
@@ -181,19 +192,53 @@ type SkillTarget = Pick<DiscoveredSkill, 'id' | 'name'>;
 /** A skill target with the file it was listed at. */
 type SkillRef = SkillTarget & Pick<DiscoveredSkill, 'path'>;
 
+/** The policy state Settings shows for one directory. */
+export interface SkillPolicyView {
+  /** The latest state read, or the last one known when the latest read failed; null before any. */
+  state: SkillPolicyState | null;
+  /** Why the latest read failed; null when it succeeded. */
+  error: string | null;
+}
+
+/** A switch write for one skill in one directory, from the click until the next policy read. */
+type SkillSwitchStatus =
+  | { phase: 'pending'; scope: SkillPolicyScope }
+  /** Saved in the file, but OpenCode had not applied it when the write answered. */
+  | { phase: 'unconfirmed'; scope: SkillPolicyScope }
+  | { phase: 'failed'; scope: SkillPolicyScope; message: string };
+
 interface SkillsStore {
   /** Id of the skill Settings shows, or the name of an unsaved draft. */
   selectedSkillId: string | null;
-  /** Skills of the project the app is on. Chat and autocompletes read this one. */
+  /** Installed skills of the project the app is on. */
   skills: DiscoveredSkill[];
-  /** Every directory loaded so far, including the ambient one. */
+  /** Installed skills of every directory loaded so far, including the ambient one. Settings reads this. */
   skillsByDirectory: Record<string, DiscoveredSkill[]>;
+  /** The ambient directory's skills agents can use: chat and autocompletes read this one. */
+  availableSkills: DiscoveredSkill[];
+  /** Per directory, the installed skills minus the ones a policy switches off. */
+  availableSkillsByDirectory: Record<string, DiscoveredSkill[]>;
+  policyByDirectory: Record<string, SkillPolicyView>;
+  /** Keyed by `skillSwitchKey(directory, id)`. */
+  switchStatus: Record<string, SkillSwitchStatus>;
   isLoading: boolean;
   skillDraft: SkillDraft | null;
 
   setSelectedSkill: (id: string | null) => void;
   setSkillDraft: (draft: SkillDraft | null) => void;
   loadSkills: (directory?: string | null) => Promise<boolean>;
+  /**
+   * Switches a skill on or off in one scope's config file. One write per skill
+   * and directory at a time; a second call while one runs answers `pending`.
+   * The policy the server answers replaces the shown one, failed or not saved
+   * alike: nothing is assumed before the answer.
+   */
+  setSkillEnabled: (
+    id: string,
+    scope: SkillPolicyScope,
+    enabled: boolean,
+    directory?: string | null,
+  ) => Promise<SkillPolicyWriteResult>;
   /** Null when the read failed or the server answered for another file. */
   getSkillDetail: (skill: SkillRef, directory?: string | null) => Promise<SkillDetail | null>;
   createSkill: (config: SkillConfig, directory?: string | null) => Promise<boolean>;
@@ -230,6 +275,21 @@ const skillsLoadInFlight = new Map<string, Promise<boolean>>();
 // instance and cached by directory, which two instances can share, so a load
 // already in flight for the previous instance must not write into the new one.
 let skillsGeneration = 0;
+// Bumped per directory whenever its skills or policies may have changed: a
+// write from here, or an event announcing one. A read that started before the
+// bump can answer with the old state, so it is not committed; the load reads
+// again instead.
+const skillsRevision = new Map<string, number>();
+const LOAD_RESTARTS = 3;
+// Switch writes running, by `skillSwitchKey`.
+const skillSwitchesInFlight = new Set<string>();
+
+const revisionOf = (cacheKey: string): number => skillsRevision.get(cacheKey) ?? 0;
+
+const markSkillsChanged = (cacheKey: string): void => {
+  skillsRevision.set(cacheKey, revisionOf(cacheKey) + 1);
+  skillsLastLoadedAt.delete(cacheKey);
+};
 
 /**
  * Merge a partial list (OpenCode's own skill list failed, only the disk scan
@@ -269,12 +329,18 @@ const skillRoute = (skill: SkillTarget, subPath = ''): string => (
   `/api/config/skills/${encodeURIComponent(skill.name)}${subPath}`
 );
 
-const skillRouteInit = (skill: SkillTarget, directory: string | null, init: RequestInit = {}): RuntimeFetchOptions => {
+const directoryHeaders = (directory: string | null, hasBody: boolean): Headers => {
   const headers = new Headers();
-  if (init.body) headers.set('Content-Type', 'application/json');
+  if (hasBody) headers.set('Content-Type', 'application/json');
   if (directory) headers.set('x-opencode-directory', directory);
-  return { ...init, query: { id: skill.id, directory }, headers };
+  return headers;
 };
+
+const skillRouteInit = (skill: SkillTarget, directory: string | null, init: RequestInit = {}): RuntimeFetchOptions => ({
+  ...init,
+  query: { id: skill.id, directory },
+  headers: directoryHeaders(directory, Boolean(init.body)),
+});
 
 const supportingFilePath = (filePath: string): string => `/files/${encodeURIComponent(filePath)}`;
 
@@ -293,42 +359,93 @@ const getSkillsCacheKey = (directory: string | null): string => {
   return directory?.trim() || DEFAULT_SKILLS_CACHE_KEY;
 };
 
+const ambientCacheKey = (): string => getSkillsCacheKey(getRequestDirectory());
+
+/** The `switchStatus` key of one skill in one directory. */
+export const skillSwitchKey = (directory: string | null | undefined, id: string): string => (
+  `${getSkillsCacheKey(resolveDirectory(directory))}\n${id}`
+);
+
+/**
+ * Marks a directory's skills as possibly changed: the next load reads again,
+ * and a load already running reads again before it commits, so an answer
+ * started before the change cannot land.
+ */
 export const invalidateSkillsLoadCache = (directory: string | null = getRequestDirectory()) => {
-  skillsLastLoadedAt.delete(getSkillsCacheKey(directory));
+  markSkillsChanged(getSkillsCacheKey(directory));
+};
+
+/**
+ * Marks every directory read so far as possibly changed, without reading any:
+ * a global config file applies to all of them, and each re-reads when it is
+ * next shown. Returns the directories that hold a list.
+ */
+export const invalidateAllSkillsLoads = (): string[] => {
+  const keys = Object.keys(useSkillsStore.getState().skillsByDirectory);
+  for (const key of keys) markSkillsChanged(key);
+  markSkillsChanged(ambientCacheKey());
+  return keys.filter((key) => key !== DEFAULT_SKILLS_CACHE_KEY);
+};
+
+/**
+ * One directory's lists after a change to its inventory or policy, with the
+ * available list derived from both and the ambient mirrors following when the
+ * directory is the one the app is on now.
+ */
+const commitDirectory = (
+  state: SkillsStore,
+  cacheKey: string,
+  patch: { skills?: DiscoveredSkill[]; policy?: SkillPolicyView },
+): Partial<SkillsStore> => {
+  const skills = patch.skills ?? state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
+  const policy = patch.policy ?? state.policyByDirectory[cacheKey] ?? null;
+  const available = filterAvailableSkills(skills, policy?.state ?? null);
+  const next: Partial<SkillsStore> = {
+    skillsByDirectory: { ...state.skillsByDirectory, [cacheKey]: skills },
+    availableSkillsByDirectory: { ...state.availableSkillsByDirectory, [cacheKey]: available },
+  };
+  if (patch.policy) next.policyByDirectory = { ...state.policyByDirectory, [cacheKey]: patch.policy };
+  if (cacheKey === ambientCacheKey()) {
+    next.skills = skills;
+    next.availableSkills = available;
+  }
+  return next;
+};
+
+/** Drops the `unconfirmed` notes of a directory once a fresh policy read replaced them. */
+const withoutUnconfirmed = (statuses: Record<string, SkillSwitchStatus>, cacheKey: string): Record<string, SkillSwitchStatus> => {
+  const prefix = `${cacheKey}\n`;
+  const entries = Object.entries(statuses);
+  const kept = entries.filter(([key, status]) => !(key.startsWith(prefix) && status.phase === 'unconfirmed'));
+  return kept.length === entries.length ? statuses : Object.fromEntries(kept);
 };
 
 /** A new skill's folder, and so its id, is the name it is created with. */
 const upsertSkillLocal = (
   set: (updater: (state: SkillsStore) => Partial<SkillsStore>) => void,
-  get: () => SkillsStore,
   skill: Pick<DiscoveredSkill, 'id' | 'name'> & { path?: string },
   config: Partial<SkillConfig>,
   directory: string | null,
 ) => {
   const cacheKey = getSkillsCacheKey(directory);
-  const isAmbient = cacheKey === getSkillsCacheKey(getRequestDirectory());
-  const current = get().skillsByDirectory[cacheKey] ?? [];
-  const existing = current.find((entry) => entry.id === skill.id);
-  const path = skill.path ?? existing?.path ?? '';
-  const nextSkill: DiscoveredSkill = {
-    ...existing,
-    id: skill.id,
-    name: skill.name,
-    path,
-    scope: config.scope ?? existing?.scope ?? 'user',
-    source: config.source ?? existing?.source ?? 'opencode',
-    description: config.description ?? existing?.description ?? '',
-    group: parseSkillGroup(path),
-  };
-  const nextSkills = existing
-    ? current.map((entry) => (entry.id === skill.id ? nextSkill : entry))
-    : [...current, nextSkill];
   set((state) => {
-    const next: Partial<SkillsStore> = {
-      skillsByDirectory: { ...state.skillsByDirectory, [cacheKey]: nextSkills },
+    const current = state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
+    const existing = current.find((entry) => entry.id === skill.id);
+    const path = skill.path ?? existing?.path ?? '';
+    const nextSkill: DiscoveredSkill = {
+      ...existing,
+      id: skill.id,
+      name: skill.name,
+      path,
+      scope: config.scope ?? existing?.scope ?? 'user',
+      source: config.source ?? existing?.source ?? 'opencode',
+      description: config.description ?? existing?.description ?? '',
+      group: parseSkillGroup(path),
     };
-    if (isAmbient) next.skills = nextSkills;
-    return next;
+    const nextSkills = existing
+      ? current.map((entry) => (entry.id === skill.id ? nextSkill : entry))
+      : [...current, nextSkill];
+    return commitDirectory(state, cacheKey, { skills: nextSkills });
   });
 };
 
@@ -338,13 +455,9 @@ const removeSkillLocal = (
   directory: string | null,
 ) => {
   const cacheKey = getSkillsCacheKey(directory);
-  const isAmbient = cacheKey === getSkillsCacheKey(getRequestDirectory());
   set((state) => {
     const nextSkills = (state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS).filter((skill) => skill.id !== id);
-    const next: Partial<SkillsStore> = {
-      skillsByDirectory: { ...state.skillsByDirectory, [cacheKey]: nextSkills },
-    };
-    if (isAmbient) next.skills = nextSkills;
+    const next = commitDirectory(state, cacheKey, { skills: nextSkills });
     if (state.selectedSkillId === id) next.selectedSkillId = null;
     return next;
   });
@@ -353,8 +466,9 @@ const removeSkillLocal = (
 const EMPTY_SKILLS: DiscoveredSkill[] = [];
 
 /**
- * Skills of one project. Returns a stored array so components can select it
- * directly; an omitted directory means the project the app is on.
+ * Installed skills of one project, switched off or not: what Settings lists.
+ * Returns a stored array so components can select it directly; an omitted
+ * directory means the project the app is on.
  */
 export const selectSkillsForDirectory = (
   state: Pick<SkillsStore, 'skillsByDirectory'>,
@@ -364,6 +478,99 @@ export const selectSkillsForDirectory = (
   return state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
 };
 
+/** Skills of one project agents can use: what the composer offers and sends. */
+export const selectAvailableSkillsForDirectory = (
+  state: Pick<SkillsStore, 'availableSkillsByDirectory'>,
+  directory?: string | null,
+): DiscoveredSkill[] => {
+  const cacheKey = getSkillsCacheKey(resolveDirectory(directory));
+  return state.availableSkillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
+};
+
+export const selectSkillPolicyForDirectory = (
+  state: Pick<SkillsStore, 'policyByDirectory'>,
+  directory?: string | null,
+): SkillPolicyView | null => {
+  const cacheKey = getSkillsCacheKey(resolveDirectory(directory));
+  return state.policyByDirectory[cacheKey] ?? null;
+};
+
+/**
+ * The instruction that names skills a prompt could not attach. A skill the
+ * directory's policy switches off is never named: the model would be told to
+ * use a skill OpenCode refuses to load.
+ */
+export const skillFallbackInstruction = (directory: string | null | undefined) => (
+  skills: readonly SkillAttachmentRef[],
+): string | null => {
+  const policy = selectSkillPolicyForDirectory(useSkillsStore.getState(), directory)?.state ?? null;
+  return buildSkillMentionInstruction(
+    skills.filter((skill) => !isSkillSwitchedOff(policy, skill.id)).map((skill) => skill.name),
+  );
+};
+
+/** What one `GET /api/config/skills` gave, before it is committed. */
+type SkillsSnapshot = {
+  skills: DiscoveredSkill[];
+  /** Only the disk scan answered; known skills it cannot vouch for are kept. */
+  partial: boolean;
+  policy: SkillPolicyRead;
+};
+
+/** Reads one directory's skills, retrying twice; null when every attempt failed. */
+const fetchSkillsSnapshot = async (directory: string | null): Promise<SkillsSnapshot | null> => {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const queryParams = directory ? `?directory=${encodeURIComponent(directory)}` : '';
+      const response = await runBackgroundNetworkTask(() => runtimeFetch(`/api/config/skills${queryParams}`, {
+        priority: 'low',
+        headers: directory ? { 'x-opencode-directory': directory } : undefined,
+      }));
+      if (!response.ok) {
+        throw new Error(`Failed to list skills: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const rawSkills: RawSkillResponse[] = data.skills || [];
+      // OpenCode loads a narrower set than this scan finds, and the
+      // rules live in server-side env flags the browser cannot read.
+      // The route reports them; `filterSkillsByRuntimeFlags` mirrors
+      // OpenCode's discovery, including the `.agents`-wins dedup that
+      // matters when `.claude/skills` are symlinks back into it.
+      //
+      // Deliberately not OpenCode's own skill endpoint: measured
+      // against 1.18.14 it lists only global and builtin skills and
+      // omits the project skills the agent actually has. On 2.x it also
+      // drops a switched-off skill, which Settings still lists.
+      const skills = filterSkillsByRuntimeFlags(rawSkills.map(toDiscoveredSkill), data.externalSkills ?? null);
+      return {
+        skills,
+        // The server answers with only its disk scan when OpenCode's
+        // own list could not be read. That is not a complete list.
+        partial: data.openCodeSkillsUnavailable === true,
+        policy: parseSkillPolicyRead(data.skillPolicy),
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      await sleep(200 * (attempt + 1));
+    }
+  }
+  console.error("Failed to load skills:", lastError);
+  return null;
+};
+
+/**
+ * The policy view after a read: a fresh state replaces the shown one, a failed
+ * read keeps the last known state and says why, and an answer without policy
+ * (an older server) keeps what was known.
+ */
+const nextPolicyView = (previous: SkillPolicyView | null, read: SkillPolicyRead): SkillPolicyView => {
+  if (read.kind === 'state') return { state: read.state, error: null };
+  if (read.kind === 'error') return { state: previous?.state ?? null, error: read.message };
+  return previous ?? { state: null, error: null };
+};
+
 export const useSkillsStore = create<SkillsStore>()(
   devtools(
     persist(
@@ -371,6 +578,10 @@ export const useSkillsStore = create<SkillsStore>()(
         selectedSkillId: null,
         skills: [],
         skillsByDirectory: {},
+        availableSkills: [],
+        availableSkillsByDirectory: {},
+        policyByDirectory: {},
+        switchStatus: {},
         isLoading: false,
         skillDraft: null,
 
@@ -378,7 +589,17 @@ export const useSkillsStore = create<SkillsStore>()(
           skillsGeneration += 1;
           skillsLastLoadedAt.clear();
           skillsLoadInFlight.clear();
-          set({ skills: [], skillsByDirectory: {}, isLoading: false });
+          skillsRevision.clear();
+          skillSwitchesInFlight.clear();
+          set({
+            skills: [],
+            skillsByDirectory: {},
+            availableSkills: [],
+            availableSkillsByDirectory: {},
+            policyByDirectory: {},
+            switchStatus: {},
+            isLoading: false,
+          });
         },
 
         setSelectedSkill: (id: string | null) => {
@@ -392,12 +613,15 @@ export const useSkillsStore = create<SkillsStore>()(
         loadSkills: async (requestedDirectory?: string | null) => {
           const directory = resolveDirectory(requestedDirectory);
           const cacheKey = getSkillsCacheKey(directory);
-          const isAmbient = cacheKey === getSkillsCacheKey(getRequestDirectory());
-          const now = Date.now();
           const loadedAt = skillsLastLoadedAt.get(cacheKey) ?? 0;
-          const hasCachedSkills = (get().skillsByDirectory[cacheKey] ?? (isAmbient ? get().skills : [])).length > 0;
+          const cached = get().skillsByDirectory[cacheKey];
 
-          if (hasCachedSkills && now - loadedAt < SKILLS_LOAD_CACHE_TTL_MS) {
+          if (cached && cached.length > 0 && Date.now() - loadedAt < SKILLS_LOAD_CACHE_TTL_MS) {
+            // The app may have moved to this directory since it was read:
+            // the mirrors follow the directory the app is on now.
+            if (cacheKey === ambientCacheKey() && get().skills !== cached) {
+              set((state) => commitDirectory(state, cacheKey, {}));
+            }
             return true;
           }
 
@@ -409,80 +633,40 @@ export const useSkillsStore = create<SkillsStore>()(
           const generation = skillsGeneration;
           const request = (async () => {
             set({ isLoading: true });
-            // Failure must never look like an empty project. The mirror is the
-            // fallback so a directory loaded before this map existed still counts.
-            const previousSkills = get().skillsByDirectory[cacheKey] ?? (isAmbient ? get().skills : []);
-            let lastError: unknown = null;
-
-            for (let attempt = 0; attempt < 3; attempt++) {
-              try {
-                const queryParams = directory ? `?directory=${encodeURIComponent(directory)}` : '';
-
-                const response = await runBackgroundNetworkTask(() => runtimeFetch(`/api/config/skills${queryParams}`, {
-                  priority: 'low',
-                  headers: directory ? { 'x-opencode-directory': directory } : undefined,
-                }));
-                if (!response.ok) {
-                  throw new Error(`Failed to list skills: ${response.status}`);
-                }
-
-                const data = await response.json();
-                const rawSkills: RawSkillResponse[] = data.skills || [];
-                const configSkills = rawSkills.map(toDiscoveredSkill);
-
-                // OpenCode loads a narrower set than this scan finds, and the
-                // rules live in server-side env flags the browser cannot read.
-                // The route reports them; `filterSkillsByRuntimeFlags` mirrors
-                // OpenCode's discovery, including the `.agents`-wins dedup that
-                // matters when `.claude/skills` are symlinks back into it.
-                //
-                // Deliberately not OpenCode's own skill endpoint: measured
-                // against 1.18.14 it lists only global and builtin skills and
-                // omits the project skills the agent actually has.
-                const scannedSkills = filterSkillsByRuntimeFlags(
-                  configSkills,
-                  data.externalSkills ?? null,
-                );
-                // The server answers with only its disk scan when OpenCode's
-                // own list could not be read. That is not a complete list:
-                // keep what was known and retry on the next load.
-                const isPartial = data.openCodeSkillsUnavailable === true;
-                const visibleSkills = isPartial
-                  ? mergePartialSkills(scannedSkills, previousSkills)
-                  : scannedSkills;
-
-                if (generation !== skillsGeneration) return false;
-                set((state) => {
-                  const next: Partial<SkillsStore> = {
-                    skillsByDirectory: { ...state.skillsByDirectory, [cacheKey]: visibleSkills },
-                    isLoading: false,
-                  };
-                  if (isAmbient) next.skills = visibleSkills;
-                  return next;
-                });
-                if (isPartial) {
-                  skillsLastLoadedAt.delete(cacheKey);
-                } else {
-                  skillsLastLoadedAt.set(cacheKey, Date.now());
-                }
-                return true;
-              } catch (error) {
-                lastError = error;
-                const waitMs = 200 * (attempt + 1);
-                await new Promise((resolve) => setTimeout(resolve, waitMs));
+            for (let restart = 0; restart < LOAD_RESTARTS; restart++) {
+              const revision = revisionOf(cacheKey);
+              const snapshot = await fetchSkillsSnapshot(directory);
+              if (generation !== skillsGeneration) return false;
+              // Something changed while this read was out; its answer may
+              // predate the change. Read again.
+              if (revision !== revisionOf(cacheKey)) continue;
+              // Failure must never look like an empty project: the lists
+              // stay as they are.
+              if (!snapshot) {
+                set({ isLoading: false });
+                return false;
               }
+              set((state) => {
+                const previousSkills = state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
+                const policy = nextPolicyView(state.policyByDirectory[cacheKey] ?? null, snapshot.policy);
+                const next = commitDirectory(state, cacheKey, {
+                  skills: snapshot.partial ? mergePartialSkills(snapshot.skills, previousSkills) : snapshot.skills,
+                  policy,
+                });
+                next.isLoading = false;
+                if (snapshot.policy.kind === 'state') next.switchStatus = withoutUnconfirmed(state.switchStatus, cacheKey);
+                return next;
+              });
+              if (snapshot.partial) {
+                skillsLastLoadedAt.delete(cacheKey);
+              } else {
+                skillsLastLoadedAt.set(cacheKey, Date.now());
+              }
+              return true;
             }
-
-            console.error("Failed to load skills:", lastError);
-            if (generation !== skillsGeneration) return false;
-            set((state) => {
-              const next: Partial<SkillsStore> = {
-                skillsByDirectory: { ...state.skillsByDirectory, [cacheKey]: previousSkills },
-                isLoading: false,
-              };
-              if (isAmbient) next.skills = previousSkills;
-              return next;
-            });
+            // Changes kept landing while reading; leave the lists for the
+            // next load rather than commit an answer that may be stale.
+            if (generation === skillsGeneration) set({ isLoading: false });
             return false;
           })();
 
@@ -490,8 +674,80 @@ export const useSkillsStore = create<SkillsStore>()(
           try {
             return await request;
           } finally {
-            skillsLoadInFlight.delete(cacheKey);
+            if (skillsLoadInFlight.get(cacheKey) === request) skillsLoadInFlight.delete(cacheKey);
           }
+        },
+
+        setSkillEnabled: async (id, scope, enabled, requestedDirectory) => {
+          const directory = resolveDirectory(requestedDirectory);
+          const cacheKey = getSkillsCacheKey(directory);
+          const switchKey = `${cacheKey}\n${id}`;
+          if (skillSwitchesInFlight.has(switchKey)) {
+            return { ok: false, code: 'pending', message: 'A change to this skill is still being saved' };
+          }
+          skillSwitchesInFlight.add(switchKey);
+          const generation = skillsGeneration;
+          const setStatus = (status: SkillSwitchStatus | null) => set((state) => {
+            const switchStatus = { ...state.switchStatus };
+            if (status) switchStatus[switchKey] = status;
+            else delete switchStatus[switchKey];
+            return { switchStatus };
+          });
+          setStatus({ phase: 'pending', scope });
+
+          let result: SkillPolicyWriteResult;
+          try {
+            const response = await runtimeFetch('/api/config/skill-policy', {
+              method: 'PUT',
+              query: { directory },
+              headers: directoryHeaders(directory, true),
+              body: JSON.stringify({ id, scope, enabled }),
+            });
+            result = parseSkillPolicyWrite(await response.json().catch(() => null), response.status);
+          } catch (error) {
+            result = { ok: false, code: 'network', message: error instanceof Error ? error.message : String(error) };
+          } finally {
+            skillSwitchesInFlight.delete(switchKey);
+          }
+          if (generation !== skillsGeneration) return result;
+
+          if (!result.ok) {
+            // Nothing was written: the shown policy stays the last confirmed one.
+            setStatus({ phase: 'failed', scope, message: result.message });
+            return result;
+          }
+
+          const { write } = result;
+          // A global file applies to every directory; a project file to its own.
+          const affected = scope === 'global'
+            ? new Set([cacheKey, ambientCacheKey(), ...Object.keys(get().skillsByDirectory)])
+            : new Set([cacheKey]);
+          for (const key of affected) markSkillsChanged(key);
+          set((state) => {
+            const previous = state.policyByDirectory[cacheKey]?.state ?? null;
+            const policy: SkillPolicyView = {
+              state: { ...write.state, skills: { ...previous?.skills, [id]: write.policy } },
+              error: null,
+            };
+            const next = commitDirectory(state, cacheKey, { policy });
+            const switchStatus = { ...state.switchStatus };
+            if (write.confirmed) delete switchStatus[switchKey];
+            else switchStatus[switchKey] = { phase: 'unconfirmed', scope };
+            next.switchStatus = switchStatus;
+            return next;
+          });
+          emitConfigChange("skills", { source: CONFIG_EVENT_SOURCE });
+          // OpenCode applied it: re-read the lists it changes. Switching a
+          // built-in skill back on brings it back into the list, and chat
+          // reads the directory the app is on, which a global change reaches
+          // too. An unconfirmed write is re-read when OpenCode announces the
+          // config change, or when the user asks to check again.
+          if (write.confirmed) {
+            void get().loadSkills(directory);
+            const ambient = ambientCacheKey();
+            if (affected.has(ambient) && ambient !== cacheKey) void get().loadSkills();
+          }
+          return result;
         },
 
         getSkillDetail: async (skill: SkillRef, requestedDirectory?: string | null) => {
@@ -545,7 +801,7 @@ export const useSkillsStore = create<SkillsStore>()(
             invalidateSkillsLoadCache(directory);
 
             if (payload?.requiresManualRestart) {
-              upsertSkillLocal(set, get, { id: config.name, name: config.name }, config, directory);
+              upsertSkillLocal(set, { id: config.name, name: config.name }, config, directory);
               return true;
             }
 
@@ -595,7 +851,7 @@ export const useSkillsStore = create<SkillsStore>()(
             invalidateSkillsLoadCache(directory);
 
             if (payload?.requiresManualRestart) {
-              upsertSkillLocal(set, get, skill, config, directory);
+              upsertSkillLocal(set, skill, config, directory);
               return true;
             }
 

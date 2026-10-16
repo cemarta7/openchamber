@@ -18,7 +18,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu';
-import { selectSkillsForDirectory, useSkillsStore, type DiscoveredSkill } from '@/stores/useSkillsStore';
+import { selectSkillPolicyForDirectory, selectSkillsForDirectory, useSkillsStore, type DiscoveredSkill } from '@/stores/useSkillsStore';
+import { unlistedSwitchedOffIds, type SkillPolicyEntry } from '@/stores/skillAvailability';
 import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
 import { useShallow } from 'zustand/react/shallow';
 import { cn } from '@/lib/utils';
@@ -30,7 +31,6 @@ import { SidebarGroup } from '@/components/sections/shared/SidebarGroup';
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
 import { SETTINGS_SECTION_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
-import { useIntegrationPolicyBlock } from '@/components/sections/shared/useIntegrationPolicyBlock';
 
 interface SkillsSidebarProps {
   onItemSelect?: () => void;
@@ -72,7 +72,19 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
   // stays where it is.
   const settingsDirectory = useSettingsDirectory();
   const skills = useSkillsStore((state) => selectSkillsForDirectory(state, settingsDirectory));
-  const isBlocked = useIntegrationPolicyBlock(settingsDirectory);
+  const policyView = useSkillsStore((state) => selectSkillPolicyForDirectory(state, settingsDirectory));
+  const policyState = policyView?.state ?? null;
+  const unlistedIds = useMemo(() => unlistedSwitchedOffIds(skills, policyState), [skills, policyState]);
+  // Display names two skills share get the id beside them.
+  const sharedNames = useMemo(() => {
+    const seen = new Set<string>();
+    const shared = new Set<string>();
+    for (const skill of skills) {
+      if (seen.has(skill.name)) shared.add(skill.name);
+      seen.add(skill.name);
+    }
+    return shared;
+  }, [skills]);
   const loadSkills = useSkillsStore((state) => state.loadSkills);
 
   React.useEffect(() => {
@@ -198,7 +210,8 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
   };
 
   // Separate project and user skills
-  const shownSkills = skills.filter((skill) => matchesRankQuery([skill.name, skill.description], query));
+  const shownSkills = skills.filter((skill) => matchesRankQuery([skill.name, skill.id, skill.description], query));
+  const shownUnlistedIds = unlistedIds.filter((id) => matchesRankQuery([id], query));
   const projectSkills = shownSkills.filter((s) => s.scope === 'project');
   const userSkills = shownSkills.filter((s) => s.scope === 'user');
 
@@ -247,13 +260,13 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
       </div>
 
       <ScrollableOverlay outerClassName="flex-1 min-h-0" className="space-y-1 px-3 py-2 overflow-x-hidden">
-        {skills.length === 0 ? (
+        {skills.length === 0 && unlistedIds.length === 0 ? (
           <div className="py-12 px-4 text-center text-muted-foreground">
             <Icon name="book-open" className="mx-auto mb-3 h-10 w-10 opacity-50" />
             <p className="typography-ui-label font-medium">{t('settings.skills.sidebar.empty.title')}</p>
             <p className="typography-meta mt-1 opacity-75">{t('settings.skills.sidebar.empty.description')}</p>
           </div>
-        ) : shownSkills.length === 0 ? (
+        ) : shownSkills.length === 0 && shownUnlistedIds.length === 0 ? (
           <SettingsSidebarNoMatches query={query} />
         ) : (
           <>
@@ -273,7 +286,8 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                       <SkillListItem
                         key={skill.id}
                         skill={skill}
-                        blocked={isBlocked(`skill:${skill.id}`)}
+                        policy={policyState?.skills[skill.id]}
+                        showId={sharedNames.has(skill.name)}
                         isSelected={selectedSkillId === skill.id}
                         onSelect={() => {
                           setSelectedSkill(skill.id);
@@ -293,7 +307,8 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                   <SkillListItem
                     key={skill.id}
                     skill={skill}
-                    blocked={isBlocked(`skill:${skill.id}`)}
+                    policy={policyState?.skills[skill.id]}
+                    showId={sharedNames.has(skill.name)}
                     isSelected={selectedSkillId === skill.id}
                     onSelect={() => {
                       setSelectedSkill(skill.id);
@@ -326,7 +341,8 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                       <SkillListItem
                         key={skill.id}
                         skill={skill}
-                        blocked={isBlocked(`skill:${skill.id}`)}
+                        policy={policyState?.skills[skill.id]}
+                        showId={sharedNames.has(skill.name)}
                         isSelected={selectedSkillId === skill.id}
                         onSelect={() => {
                           setSelectedSkill(skill.id);
@@ -346,7 +362,8 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                   <SkillListItem
                     key={skill.id}
                     skill={skill}
-                    blocked={isBlocked(`skill:${skill.id}`)}
+                    policy={policyState?.skills[skill.id]}
+                    showId={sharedNames.has(skill.name)}
                     isSelected={selectedSkillId === skill.id}
                     onSelect={() => {
                       setSelectedSkill(skill.id);
@@ -359,6 +376,39 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                     isMenuOpen={openMenuSkill === skill.id}
                     onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.id : null)}
                   />
+                ))}
+              </>
+            )}
+
+            {shownUnlistedIds.length > 0 && (
+              <>
+                <div className="px-2 pb-1.5 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t('settings.skills.sidebar.section.unlisted')}
+                </div>
+                {shownUnlistedIds.map((id) => (
+                  <div
+                    key={id}
+                    className={cn(
+                      'flex items-center rounded-md px-1.5 py-1 transition-all duration-200 select-none',
+                      selectedSkillId === id ? 'bg-interactive-selection' : 'hover:bg-interactive-hover',
+                    )}
+                  >
+                    <button
+                      onClick={() => {
+                        setSelectedSkill(id);
+                        onItemSelect?.();
+                      }}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <span className="typography-ui-label truncate font-normal text-muted-foreground" dir="ltr">{id}</span>
+                      <span
+                        className="typography-micro shrink-0 text-[var(--status-warning)]"
+                        title={t('settings.skills.sidebar.switchedOffHint')}
+                      >
+                        {t('settings.skills.sidebar.switchedOff')}
+                      </span>
+                    </button>
+                  </div>
                 ))}
               </>
             )}
@@ -439,8 +489,10 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
 
 interface SkillListItemProps {
   skill: DiscoveredSkill;
-  /** A policy in the OpenCode config keeps agents from loading this skill. */
-  blocked: boolean;
+  /** The skill's policy state, when it has been read. */
+  policy: SkillPolicyEntry | undefined;
+  /** Another skill has the same display name: show the id too. */
+  showId: boolean;
   isSelected: boolean;
   onSelect: () => void;
   onDelete: () => void;
@@ -452,7 +504,8 @@ interface SkillListItemProps {
 
 const SkillListItem: React.FC<SkillListItemProps> = ({
   skill,
-  blocked,
+  policy,
+  showId,
   isSelected,
   onSelect,
   onDelete,
@@ -466,6 +519,9 @@ const SkillListItem: React.FC<SkillListItemProps> = ({
   const isBuiltIn = isBuiltInSkill(skill);
   const canRename = isRenamableSkill(skill);
   const [isContextMenuOpen, setIsContextMenuOpen] = React.useState(false);
+  const off = policy?.effective === 'disabled';
+  // A switch here turned it off, or a rule the switches did not write.
+  const switchedOff = off && policy?.decidedBy?.owned === true;
   const renderMenuItems = (Item: React.ElementType) => (
     <>
       {canRename ? (
@@ -494,15 +550,18 @@ const SkillListItem: React.FC<SkillListItemProps> = ({
           tabIndex={0}
         >
           <div className="flex items-center gap-1.5">
-            <span className={cn('typography-ui-label font-normal truncate', blocked ? 'text-muted-foreground' : 'text-foreground')}>
+            <span className={cn('typography-ui-label font-normal truncate', off ? 'text-muted-foreground' : 'text-foreground')}>
               {skill.name}
             </span>
-            {blocked ? (
+            {showId ? (
+              <span className="typography-micro shrink truncate text-muted-foreground" dir="ltr">{skill.id}</span>
+            ) : null}
+            {off ? (
               <span
                 className="typography-micro shrink-0 text-[var(--status-warning)]"
-                title={t('settings.skills.sidebar.blockedByPolicyHint')}
+                title={switchedOff ? t('settings.skills.sidebar.switchedOffHint') : t('settings.skills.sidebar.blockedByPolicyHint')}
               >
-                {t('settings.skills.sidebar.blockedByPolicy')}
+                {switchedOff ? t('settings.skills.sidebar.switchedOff') : t('settings.skills.sidebar.blockedByPolicy')}
               </span>
             ) : null}
           </div>

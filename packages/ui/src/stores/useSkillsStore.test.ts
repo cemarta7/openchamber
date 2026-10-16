@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { RuntimeFetchOptions } from '@/lib/runtime-fetch';
+import type { SkillPolicyEntry, SkillPolicyState } from './skillAvailability';
 
 const activeProjectPath = '/workspace/project-with-agents-skills';
+// The project the app is on; tests that switch projects change it.
+let currentProjectPath = activeProjectPath;
 
 let runtimeFetchCalls: Array<{ url: string; init?: RuntimeFetchOptions }> = [];
 let runtimeFetchImpl: (url: string, init?: RuntimeFetchOptions) => Promise<Response> = async () => (
@@ -26,7 +29,7 @@ mock.module('@/lib/opencode/client', () => ({
 mock.module('@/stores/useProjectsStore', () => ({
   useProjectsStore: {
     getState: () => ({
-      getActiveProject: () => ({ path: activeProjectPath }),
+      getActiveProject: () => ({ path: currentProjectPath }),
     }),
   },
 }));
@@ -59,7 +62,7 @@ mock.module('./utils/safeStorage', () => ({
   }),
 }));
 
-const { invalidateSkillsLoadCache, useSkillsStore } = await import('./useSkillsStore');
+const { invalidateSkillsLoadCache, selectAvailableSkillsForDirectory, skillSwitchKey, useSkillsStore } = await import('./useSkillsStore');
 
 describe('useSkillsStore directory resolution', () => {
   beforeEach(() => {
@@ -446,5 +449,191 @@ describe('useSkillsStore skill identity', () => {
 
     runtimeFetchImpl = async () => detailFor(skill.path);
     expect((await useSkillsStore.getState().getSkillDetail(skill))?.sources.md.path).toBe(skill.path);
+  });
+});
+
+const enabledEntry: SkillPolicyEntry = {
+  disabledIn: { global: false, project: false },
+  effective: 'enabled',
+  decidedBy: null,
+};
+const offGlobally: SkillPolicyEntry = {
+  disabledIn: { global: true, project: false },
+  effective: 'disabled',
+  decidedBy: { path: '/config/opencode.json', resource: 'skill:deploy-api', effect: 'deny', scope: 'global', owned: true },
+};
+const policyState = (skills: Record<string, SkillPolicyEntry>): SkillPolicyState => ({
+  version: '2.0.29',
+  location: 'policies',
+  writable: true,
+  effectiveAvailable: true,
+  scopes: {
+    global: { path: '/config/opencode.json', error: null },
+    project: { path: `${activeProjectPath}/.opencode/opencode.json`, error: null },
+  },
+  skills,
+});
+const listWithPolicy = (skillPolicy: SkillPolicyState | { error: string }) => JSON.stringify({ skills: [deployWeb, deployApi], skillPolicy });
+
+/** A response the test releases when it chooses, to hold a read in flight. */
+const heldResponse = () => {
+  let release: (json: string) => void = () => undefined;
+  const response = new Promise<Response>((resolve) => {
+    release = (json) => resolve(jsonResponse(json));
+  });
+  return { response, release };
+};
+
+describe('useSkillsStore availability and switches', () => {
+  beforeEach(() => {
+    runtimeFetchCalls = [];
+    currentProjectPath = activeProjectPath;
+    getDirectoryImpl = () => undefined;
+    runtimeFetchImpl = async () => jsonResponse(listWithPolicy(policyState({ 'deploy-web': enabledEntry, 'deploy-api': offGlobally })));
+    useSkillsStore.getState().resetForRuntimeSwitch();
+    useSkillsStore.setState({ selectedSkillId: null, skillDraft: null });
+  });
+
+  test('a switched-off skill stays installed and leaves the available list', async () => {
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+    const state = useSkillsStore.getState();
+    expect(state.skills.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
+    expect(state.availableSkills.map((skill) => skill.id)).toEqual(['deploy-web']);
+    expect(selectAvailableSkillsForDirectory(state).map((skill) => skill.id)).toEqual(['deploy-web']);
+  });
+
+  test('a failed policy read keeps the last known state and says why', async () => {
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+    runtimeFetchImpl = async () => jsonResponse(listWithPolicy({ error: 'OpenCode is not running' }));
+    invalidateSkillsLoadCache();
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+
+    const view = useSkillsStore.getState().policyByDirectory[activeProjectPath];
+    expect(view?.error).toBe('OpenCode is not running');
+    expect(view?.state?.skills['deploy-api']?.effective).toBe('disabled');
+    expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web']);
+  });
+
+  test('without any policy read, nothing counts as switched off', async () => {
+    // A cold OpenCode can answer an empty list; only the policy says "off".
+    runtimeFetchImpl = async () => jsonResponse(JSON.stringify({ skills: [deployWeb, deployApi], openCodeSkillsUnavailable: true }));
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+    expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
+
+    runtimeFetchImpl = async () => jsonResponse(listWithPolicy(policyState({ 'deploy-web': { ...enabledEntry, effective: 'unknown' } })));
+    invalidateSkillsLoadCache();
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+    expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
+  });
+
+  test('a read started before a switch write cannot bring back the old state', async () => {
+    runtimeFetchImpl = async () => jsonResponse(listWithPolicy(policyState({ 'deploy-web': enabledEntry, 'deploy-api': enabledEntry })));
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+    expect(useSkillsStore.getState().availableSkills).toHaveLength(2);
+
+    // A read goes out while the skill is still on, and answers late.
+    const stale = heldResponse();
+    let listReads = 0;
+    runtimeFetchImpl = async (url) => {
+      if (url === '/api/config/skill-policy') {
+        return jsonResponse(JSON.stringify({
+          ok: true,
+          id: 'deploy-api',
+          saved: { scope: 'global', path: '/config/opencode.json', disabled: true, changed: true },
+          confirmed: true,
+          state: policyState({}),
+          policy: offGlobally,
+        }));
+      }
+      listReads += 1;
+      if (listReads === 1) return stale.response;
+      return jsonResponse(listWithPolicy(policyState({ 'deploy-web': enabledEntry, 'deploy-api': offGlobally })));
+    };
+    invalidateSkillsLoadCache();
+    const staleLoad = useSkillsStore.getState().loadSkills();
+
+    const write = await useSkillsStore.getState().setSkillEnabled('deploy-api', 'global', false);
+    expect(write.ok).toBe(true);
+    expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web']);
+
+    stale.release(listWithPolicy(policyState({ 'deploy-web': enabledEntry, 'deploy-api': enabledEntry })));
+    expect(await staleLoad).toBe(true);
+    // The late answer was read again, not committed.
+    expect(listReads).toBeGreaterThanOrEqual(2);
+    expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web']);
+    expect(useSkillsStore.getState().policyByDirectory[activeProjectPath]?.state?.skills['deploy-api']?.effective).toBe('disabled');
+  });
+
+  test('a failed write keeps the confirmed state and reports the reason', async () => {
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+    runtimeFetchImpl = async () => jsonResponse(JSON.stringify({ ok: false, error: { code: 'opencode_unavailable', message: 'OpenCode is not running' } }));
+
+    const result = await useSkillsStore.getState().setSkillEnabled('deploy-api', 'global', true);
+    expect(result).toEqual({ ok: false, code: 'opencode_unavailable', message: 'OpenCode is not running' });
+    const state = useSkillsStore.getState();
+    expect(state.policyByDirectory[activeProjectPath]?.state?.skills['deploy-api']?.effective).toBe('disabled');
+    expect(state.availableSkills.map((skill) => skill.id)).toEqual(['deploy-web']);
+    expect(state.switchStatus[skillSwitchKey(undefined, 'deploy-api')]).toEqual({ phase: 'failed', scope: 'global', message: 'OpenCode is not running' });
+  });
+
+  test('a saved but unconfirmed write says so until a fresh read', async () => {
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+    runtimeFetchImpl = async (url) => (url === '/api/config/skill-policy'
+      ? jsonResponse(JSON.stringify({
+        ok: true,
+        id: 'deploy-web',
+        saved: { scope: 'project', path: `${activeProjectPath}/.opencode/opencode.json`, disabled: true, changed: true },
+        confirmed: false,
+        state: policyState({}),
+        // OpenCode still applies the old state.
+        policy: { ...enabledEntry, disabledIn: { global: false, project: true } },
+      }))
+      : jsonResponse(listWithPolicy(policyState({ 'deploy-web': enabledEntry, 'deploy-api': offGlobally }))));
+    runtimeFetchCalls = [];
+
+    const result = await useSkillsStore.getState().setSkillEnabled('deploy-web', 'project', false);
+    expect(result.ok).toBe(true);
+    const key = skillSwitchKey(undefined, 'deploy-web');
+    expect(useSkillsStore.getState().switchStatus[key]).toEqual({ phase: 'unconfirmed', scope: 'project' });
+    // Nothing pretends it is off yet, and nothing is re-read on its own.
+    expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web']);
+    expect(runtimeFetchCalls.map((call) => call.url)).toEqual(['/api/config/skill-policy']);
+
+    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
+    expect(useSkillsStore.getState().switchStatus[key]).toBeUndefined();
+  });
+
+  test('one write per skill at a time, and the write names its directory', async () => {
+    const write = heldResponse();
+    runtimeFetchImpl = async () => write.response;
+    const first = useSkillsStore.getState().setSkillEnabled('deploy-web', 'project', false, '/workspace/other');
+    const second = await useSkillsStore.getState().setSkillEnabled('deploy-web', 'global', false, '/workspace/other');
+    expect(second).toMatchObject({ ok: false, code: 'pending' });
+    expect(useSkillsStore.getState().switchStatus[skillSwitchKey('/workspace/other', 'deploy-web')]).toEqual({ phase: 'pending', scope: 'project' });
+
+    write.release(JSON.stringify({ ok: false, error: { code: 'unknown_skill', message: 'No installed skill has that id' } }));
+    expect((await first).ok).toBe(false);
+    expect(runtimeFetchCalls).toHaveLength(1);
+    const [call] = runtimeFetchCalls;
+    expect(call?.init?.query).toEqual({ directory: '/workspace/other' });
+    expect(new Headers(call?.init?.headers).get('x-opencode-directory')).toBe('/workspace/other');
+    expect(JSON.parse(String(call?.init?.body))).toEqual({ id: 'deploy-web', scope: 'project', enabled: false });
+    // The app's own project was not touched.
+    expect(useSkillsStore.getState().availableSkills).toEqual([]);
+  });
+
+  test('the ambient lists follow the project the app is on when a late read lands', async () => {
+    const held = heldResponse();
+    runtimeFetchImpl = async () => held.response;
+    const load = useSkillsStore.getState().loadSkills();
+    // The app moves to another project before the read answers.
+    currentProjectPath = '/workspace/elsewhere';
+    held.release(listWithPolicy(policyState({})));
+    expect(await load).toBe(true);
+
+    const state = useSkillsStore.getState();
+    expect(state.skillsByDirectory[activeProjectPath]?.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
+    expect(state.skills).toEqual([]);
+    expect(state.availableSkills).toEqual([]);
   });
 });

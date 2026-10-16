@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { CodeMirrorEditor } from '@/components/ui/CodeMirrorEditor';
 import { toast } from '@/components/ui';
 import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
-import { selectSkillsForDirectory, useSkillsStore, type SkillConfig, type SkillScope, type SupportingFile, type PendingFile } from '@/stores/useSkillsStore';
+import { selectSkillPolicyForDirectory, selectSkillsForDirectory, useSkillsStore, type SkillConfig, type SkillScope, type SupportingFile, type PendingFile } from '@/stores/useSkillsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
@@ -43,6 +43,7 @@ import { Icon } from "@/components/icon/Icon";
 import { SimpleMarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { PreviewToggleButton } from '@/components/views/PreviewToggleButton';
 import { SkillsCatalogPage } from './catalog/SkillsCatalogPage';
+import { SkillSwitchesSection } from './SkillSwitchesSection';
 import {
   SKILL_LOCATION_OPTIONS,
   locationPartsFrom,
@@ -147,7 +148,14 @@ const SkillsInstalledPage: React.FC = () => {
   const selectedSkill = selectedSkillId ? getSkillById(selectedSkillId, settingsDirectory) : null;
   // A draft is selected by its name; once created, its folder (the id) has that name.
   const isNewSkill = Boolean(skillDraft && skillDraft.name === selectedSkillId && !selectedSkill);
-  const hasStaleSelection = Boolean(selectedSkillId && !selectedSkill && !skillDraft);
+  const policyView = useSkillsStore((state) => selectSkillPolicyForDirectory(state, settingsDirectory));
+  // An id OpenCode no longer lists while it is switched off keeps a page with
+  // its switches, also for the moment after it is switched back on and before
+  // the list shows it again.
+  const isUnlistedSwitchedOff = Boolean(
+    selectedSkillId && !selectedSkill && policyView?.state?.skills[selectedSkillId],
+  );
+  const hasStaleSelection = Boolean(selectedSkillId && !selectedSkill && !skillDraft && !isUnlistedSwitchedOff);
   const isReadOnlySkill = selectedSkill?.path === '<built-in>';
 
   React.useEffect(() => {
@@ -588,6 +596,17 @@ const SkillsInstalledPage: React.FC = () => {
     );
   }
 
+  if (isUnlistedSwitchedOff && selectedSkillId) {
+    return (
+      <SettingsPageLayout
+        title={selectedSkillId}
+        description={t('settings.skills.switches.unlisted.description')}
+      >
+        <SkillSwitchesSection id={selectedSkillId} name={selectedSkillId} directory={settingsDirectory} divider={false} />
+      </SettingsPageLayout>
+    );
+  }
+
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center px-4">
@@ -694,6 +713,10 @@ const SkillsInstalledPage: React.FC = () => {
             />
 
         </SettingsSection>
+
+        {selectedSkill && !isNewSkill ? (
+          <SkillSwitchesSection id={selectedSkill.id} name={selectedSkill.name} directory={settingsDirectory} />
+        ) : null}
 
         <SettingsSection
           title={t('settings.skills.page.section.instructions')}

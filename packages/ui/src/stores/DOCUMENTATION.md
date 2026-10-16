@@ -666,10 +666,39 @@ server matches exactly and never by name. Edits also send the listed file as
 `targetPath`, and a detail answer whose path is another file's is dropped, so an
 editor never shows one file and saves to another. Delete removes only the file
 OpenCode loads; the list is reloaded afterwards, a lower-priority copy of the
-same id can reappear in it, and the selection stays on an id the list still has. The persisted selection moved
-from `selectedSkillName` to `selectedSkillId`; an old saved name is not carried
-over, so the first start after the change opens Settings with no skill
-selected.
+same id can reappear in it, and the selection stays on an id the list still
+has. The persisted selection moved from `selectedSkillName` to
+`selectedSkillId`; an old saved name is not carried over, so the first start
+after the change opens Settings with no skill selected.
+
+`skillsByDirectory` is the installed inventory: it still holds a skill a policy
+switches off, which Settings lists with its switches. `availableSkillsByDirectory`
+(and its ambient mirror `availableSkills`) is that list minus the skills the
+directory's `skillPolicy` reports `effective: 'disabled'`, derived in
+`commitDirectory` whenever either changes; the composer, the `$` picker, draft
+starters, `/name` routing and the work-status count read it. Only the policy
+says "off" (`stores/skillAvailability.ts`): an `unknown` state, a skill the
+policy does not mention, a cold empty OpenCode list or a failed read keeps a
+skill available. `policyByDirectory` keeps the last state read; a failed policy
+read keeps that state and records the error beside it.
+
+`setSkillEnabled` writes one scope's switch through `PUT
+/api/config/skill-policy` for an explicit directory, the Settings one, which can
+differ from the app's. One write per skill and directory runs at a time
+(`switchStatus` holds `pending`). Nothing changes before the answer: a failed
+write leaves the shown policy as it was and records `failed` with the server's
+message; a success replaces the skill's policy with the one the server answers,
+and `confirmed: false` records `unconfirmed` until the next fresh policy read
+for that directory. Only a confirmed write re-reads the lists.
+
+Every write here, and every catalog event, bumps a per-directory revision
+(`invalidateSkillsLoadCache`, `invalidateAllSkillsLoads`). A load records the
+revision when its read starts and reads again instead of committing when it
+changed meanwhile, so an answer started before a write or an event never lands
+over it. A global switch bumps every directory read so far; only the open ones
+are read again (`catalogRefresh.ts`: the app's directory, the Settings one and
+those the event names). The ambient mirrors follow the directory the app is on
+when a load commits, not when it started.
 
 ## Selector Rules
 

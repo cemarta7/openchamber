@@ -17,6 +17,7 @@ import { projectActionsI18n } from './project-actions.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
+import { skillSwitchesI18n } from './skill-switches.i18n';
 import { pluginsGridI18n } from './plugins-grid.i18n';
 import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 
@@ -146,6 +147,7 @@ export const dict = {
   ...environmentI18n.de,
   ...providersI18n.de,
   ...mcpGridI18n.de,
+  ...skillSwitchesI18n.de,
   ...pluginsGridI18n.de,
   ...integrationsCatalogI18n['de'],
   'common.language.german': 'Deutsch',
