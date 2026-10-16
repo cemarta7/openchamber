@@ -316,8 +316,9 @@ const UNKNOWN = 'unknown';
 
 /**
  * One skill's policy state for the UI.
- * - `disabledIn`: whether the switch's own rule is saved in each scope's file
- *   (`null`: that scope has no file, or the file could not be read).
+ * - `disabledIn`: whether the switch's own rule is saved in each scope's file.
+ *   A file that does not exist yet reads as `{}`, so it is `false`; `null`
+ *   means the directory has no such scope, or its file could not be read.
  * - `effective`: what OpenCode applies (`unknown` when its config could not be
  *   read; never inferred from a missing skill). Also `unknown` while a scope's
  *   own file cannot be read (`scopes[scope].error`) and no deny decides the

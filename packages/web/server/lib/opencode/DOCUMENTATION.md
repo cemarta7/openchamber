@@ -1051,8 +1051,10 @@ Contract, identical on web (`skill-routes.js`) and VS Code (`api:config/skill-po
   `skills` is a list with the id as a value, so every valid id, `__proto__` included,
   reaches the UI: an object keyed by id loses that one in a plain object and in zod's
   record parser.
-  `disabledIn.<scope>` is whether that scope's file holds the switch's own marked deny (`null`
-  when the scope has no file or it could not be read). `effective` is `enabled`,
+  `disabledIn.<scope>` is whether that scope's file holds the switch's own marked deny. A
+  scope file that does not exist yet reads as an empty config, so it is `false`; it is
+  `null` when the directory has no such scope (`scopes.project` is `null`) or the file
+  could not be read (`scopes.<scope>.error`). `effective` is `enabled`,
   `disabled` or `unknown` (also while a scope file cannot be parsed and no deny decides,
   see "Effective state"). `decidedBy` is the deciding statement
   `{ path, resource, effect, scope: 'global' | 'project' | 'other', owned }` or `null`
