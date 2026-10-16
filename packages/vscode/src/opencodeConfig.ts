@@ -24,7 +24,7 @@ import {
   type ArrayItemEdit,
 } from '../../web/server/lib/opencode/jsonc-edits.js';
 import { createSkillPolicyService, skillIdFromPath } from '../../web/server/lib/opencode/skill-policy.js';
-import { skillFolderToDelete } from '../../web/server/lib/opencode/skill-identity.js';
+import { isSkillFolderName, removeSkillFolder, skillFolderToDelete } from '../../web/server/lib/opencode/skill-identity.js';
 import {
   toAgentEntity,
   fromAgentEntity,
@@ -3446,12 +3446,17 @@ const getSkillDirAt = (location: SkillLocation, skillName: string, workingDirect
  * elsewhere.
  */
 export const deleteSkill = (skillName: string, workingDirectory?: string, location?: SkillLocation): void => {
+  // The name is joined onto each root; one that is not a single folder name
+  // could reach outside it.
+  if (!isSkillFolderName(skillName)) {
+    throw new Error('Invalid skill name');
+  }
   if (location) {
     const dir = getSkillDirAt(location, skillName, workingDirectory);
     if (!dir || !fs.existsSync(dir)) {
       throw new Error(`Skill "${skillName}" not found`);
     }
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeSkillFolder(dir);
     return;
   }
 
@@ -3553,8 +3558,9 @@ export { isManagedSkillPath };
 
 /**
  * Mirror of the web server's `deleteSkillAt`: delete exactly the folder of one
- * `SKILL.md` strictly inside a managed skill root (nested groups included).
- * Returns the removed folder.
+ * `SKILL.md` strictly inside a managed skill root (nested groups included),
+ * reached without a symlink leading out of that root. A folder that is itself
+ * a symlink loses only the link. Returns the removed folder.
  */
 export const deleteSkillAt = (skillMdPath: string, workingDirectory?: string): string => {
   const folder = skillFolderToDelete(skillMdPath, getManagedSkillRoots(workingDirectory));
@@ -3564,7 +3570,7 @@ export const deleteSkillAt = (skillMdPath: string, workingDirectory?: string): s
   if (!fs.existsSync(path.join(folder, 'SKILL.md'))) {
     throw new Error('Skill not found');
   }
-  fs.rmSync(folder, { recursive: true, force: true });
+  removeSkillFolder(folder);
   return folder;
 };
 

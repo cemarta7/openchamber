@@ -23,7 +23,7 @@ import {
   isPlainObject,
 } from './shared.js';
 import { isString } from '../shared/guards.js';
-import { skillFolderToDelete } from './skill-identity.js';
+import { isSkillFolderName, removeSkillFolder, skillFolderToDelete } from './skill-identity.js';
 
 const BUILT_IN_SKILL_LOCATION = '<built-in>';
 
@@ -701,12 +701,17 @@ function getSkillDirAt(location, skillName, workingDirectory) {
  * a same-named skill the user keeps elsewhere.
  */
 function deleteSkill(skillName, workingDirectory, location) {
+  // The name is joined onto each root; one that is not a single folder name
+  // could reach outside it.
+  if (!isSkillFolderName(skillName)) {
+    throw new Error('Invalid skill name');
+  }
   if (location) {
     const dir = getSkillDirAt(location, skillName, workingDirectory);
     if (!dir || !fs.existsSync(dir)) {
       throw new Error(`Skill "${skillName}" not found`);
     }
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeSkillFolder(dir);
     console.log(`Deleted skill directory: ${dir}`);
     return;
   }
@@ -919,7 +924,9 @@ async function renameSkillNow(oldName, newName, workingDirectory, skillPath, bef
 
 /**
  * Delete exactly one skill: the folder of `skillMdPath`, which must be a
- * `SKILL.md` strictly inside a managed skill root (nested groups included).
+ * `SKILL.md` strictly inside a managed skill root (nested groups included),
+ * reached without a symlink leading out of that root (`skillFolderToDelete`).
+ * A folder that is itself a symlink loses only the link.
  * Resolves to the removed folder. The display-name `deleteSkill` above stays
  * for callers without an id.
  */
@@ -932,7 +939,7 @@ function deleteSkillAt(skillMdPath, workingDirectory) {
     if (!fs.existsSync(path.join(folder, 'SKILL.md'))) {
       throw new Error('Skill not found');
     }
-    fs.rmSync(folder, { recursive: true, force: true });
+    removeSkillFolder(folder);
     console.log(`Deleted skill directory: ${folder}`);
     return folder;
   });

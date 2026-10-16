@@ -774,3 +774,97 @@ describe('VS Code located skill delete, as the web route', () => {
     expect(fs.existsSync(path.join(projectCopy, 'SKILL.md'))).toBe(true);
   });
 });
+
+describe('VS Code skill delete through symlinks, as the web server', () => {
+  const writeSkill = (dir, name) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}\n---\nBody\n`);
+    fs.writeFileSync(path.join(dir, 'keep.txt'), 'keep');
+  };
+  let previous;
+
+  // A scratch home keeps the user skill roots and discovery off the real
+  // ~/.claude and ~/.agents; the user OpenCode root is the scratch XDG one.
+  const setup = () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-link-home-')));
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-link-')));
+    const library = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-link-library-')));
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-link-data-'));
+    tempRoots.push(home, root, library, dataDir);
+    previous = { HOME: process.env.HOME, OPENCHAMBER_DATA_DIR: process.env.OPENCHAMBER_DATA_DIR };
+    process.env.HOME = home;
+    process.env.OPENCHAMBER_DATA_DIR = dataDir;
+    fs.mkdirSync(path.join(root, '.git'));
+    const ctx = createCtx(root);
+    const skill = (payload) => handleConfigBridgeMessage({ id: 'skill', type: 'api:config/skills', payload: { directory: root, ...payload } }, ctx, deps);
+    return { root, library, skill };
+  };
+
+  afterEach(() => {
+    if (!previous) return;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    previous = undefined;
+  });
+
+  test('refuses a listed nested skill reached through a group symlink that leads out of the root', async () => {
+    const { root, library, skill } = setup();
+    writeSkill(path.join(library, 'example'), 'Example');
+    fs.mkdirSync(path.join(root, '.opencode', 'skills'), { recursive: true });
+    fs.symlinkSync(library, path.join(root, '.opencode', 'skills', 'group'), 'dir');
+
+    await expect(skill({ method: 'DELETE', name: 'Example', skillId: 'example' }))
+      .rejects.toThrow('outside managed skill directories');
+    expect(fs.readFileSync(path.join(library, 'example', 'keep.txt'), 'utf8')).toBe('keep');
+  });
+
+  test('deletes a nested skill in a real group folder and keeps its sibling', async () => {
+    const { root, skill } = setup();
+    writeSkill(path.join(root, '.opencode', 'skills', 'group', 'example'), 'Example');
+    writeSkill(path.join(root, '.opencode', 'skills', 'group', 'sibling'), 'Sibling');
+
+    expect(await skill({ method: 'DELETE', name: 'Example', skillId: 'example' })).toMatchObject({ success: true });
+    expect(fs.existsSync(path.join(root, '.opencode', 'skills', 'group', 'example'))).toBe(false);
+    expect(fs.existsSync(path.join(root, '.opencode', 'skills', 'group', 'sibling', 'SKILL.md'))).toBe(true);
+  });
+
+  test('removes only the link of a skill folder that is itself a symlink, by id and by location', async () => {
+    const { root, library, skill } = setup();
+    writeSkill(path.join(library, 'linked'), 'Linked');
+    writeSkill(path.join(library, 'located'), 'Located');
+    fs.mkdirSync(path.join(root, '.opencode', 'skills'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.claude', 'skills'), { recursive: true });
+    fs.symlinkSync(path.join(library, 'linked'), path.join(root, '.opencode', 'skills', 'linked'), 'dir');
+    fs.symlinkSync(path.join(library, 'located'), path.join(root, '.claude', 'skills', 'located'), 'dir');
+
+    expect(await skill({ method: 'DELETE', name: 'Linked', skillId: 'linked' })).toMatchObject({ success: true });
+    expect(await skill({ method: 'DELETE', name: 'Located', skillId: 'located', scope: 'project', source: 'claude' })).toMatchObject({ success: true });
+
+    expect(fs.existsSync(path.join(root, '.opencode', 'skills', 'linked'))).toBe(false);
+    expect(fs.existsSync(path.join(root, '.claude', 'skills', 'located'))).toBe(false);
+    expect(fs.readFileSync(path.join(library, 'linked', 'keep.txt'), 'utf8')).toBe('keep');
+    expect(fs.readFileSync(path.join(library, 'located', 'keep.txt'), 'utf8')).toBe('keep');
+  });
+
+  test('treats a managed root that is itself a symlink as its target', async () => {
+    const { root, library, skill } = setup();
+    writeSkill(path.join(library, 'group', 'example'), 'Example');
+    writeSkill(path.join(library, 'group', 'sibling'), 'Sibling');
+    fs.mkdirSync(path.join(root, '.opencode'));
+    fs.symlinkSync(library, path.join(root, '.opencode', 'skills'), 'dir');
+
+    expect(await skill({ method: 'DELETE', name: 'Example', skillId: 'example' })).toMatchObject({ success: true });
+    expect(fs.existsSync(path.join(library, 'group', 'example'))).toBe(false);
+    expect(fs.existsSync(path.join(library, 'group', 'sibling', 'SKILL.md'))).toBe(true);
+  });
+
+  test('refuses a located delete by a name that is not one folder name', async () => {
+    const { root, skill } = setup();
+    writeSkill(path.join(root, '.claude', 'skills', 'example'), 'Example');
+
+    await expect(skill({ method: 'DELETE', name: '..', scope: 'project', source: 'claude' })).rejects.toThrow('Invalid skill name');
+    expect(fs.existsSync(path.join(root, '.claude', 'skills', 'example', 'keep.txt'))).toBe(true);
+  });
+});

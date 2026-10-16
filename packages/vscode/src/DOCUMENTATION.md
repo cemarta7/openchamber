@@ -385,6 +385,11 @@ Bridge surface (`bridge-config-runtime.ts`), matching the web routes:
   fails and leaves other copies alone. Provenance follows the `?id=` rule, so
   it stays while another copy of the id is on disk. This is how the
   integrations catalog uninstalls its own user OpenCode copy.
+- Skill deletes share the web server's symlink rules (`skillFolderToDelete`,
+  `removeSkillFolder` and `isSkillFolderName` in `skill-identity.js`). A group
+  folder that links out of its root is refused, a symlinked skill folder loses
+  only the link, a symlinked root counts as its target, and a name that is not
+  one folder name is refused.
 - `api:config/skills` `PATCH { renameTo }` keeps a switched-off skill off under
   its new id through the web server's `renameSkillKeepingSwitches`, with the
   same steps and `switches` answer (see "Renaming a switched-off skill" in

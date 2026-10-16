@@ -7,3 +7,5 @@ export function selectSkillById<Skill extends { id?: string | null; name: string
   name: string,
 ): Skill | null;
 export function skillFolderToDelete(skillMdPath: string | null | undefined, managedRoots: string[]): string | null;
+export function isSkillFolderName(name: string | null | undefined): boolean;
+export function removeSkillFolder(folder: string): void;
