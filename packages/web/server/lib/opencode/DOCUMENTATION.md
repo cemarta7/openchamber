@@ -980,7 +980,13 @@ isolated OpenCode 2.0.20 through 2.0.30 servers.
   `policies` array is ignored. Because served statements lack the provenance key,
   `decidedBy.owned` is read from the scope's file itself. When that
   read fails the state is `unknown`; a skill missing from OpenCode's skill list is never
-  taken as switched off (a cold location answers an empty list first). Statements
+  taken as switched off (a cold location answers an empty list first). While a scope's
+  own file cannot be parsed (`scopes.<scope>.error`), the state is `unknown` too unless
+  a deny still decides the skill: OpenCode still answers `GET /api/config`, but without
+  that file, so a switch's deny in it is missing and no rule, or an allow, proves
+  nothing. A deny from a file it does serve keeps the skill `disabled`. The message
+  queue keeps the last known state through such an `unknown` (`readQueuedSkillPolicy`).
+  Statements
   from a connected Console workspace are not in `/api/config` and are not shown.
 - **Writes.** Read, change and write of a file run one at a time per process, and the
   file write is atomic with the usual comment-preserving writer. A failed read or write
@@ -1039,7 +1045,8 @@ Contract, identical on web (`skill-routes.js`) and VS Code (`api:config/skill-po
   skills: { [id]: { disabledIn: { global, project }, effective, decidedBy } } }`.
   `disabledIn.<scope>` is whether that scope's file holds the switch's own marked deny (`null`
   when the scope has no file or it could not be read). `effective` is `enabled`,
-  `disabled` or `unknown`. `decidedBy` is the deciding statement
+  `disabled` or `unknown` (also while a scope file cannot be parsed and no deny decides,
+  see "Effective state"). `decidedBy` is the deciding statement
   `{ path, resource, effect, scope: 'global' | 'project' | 'other', owned }` or `null`
   (no rule: enabled); `owned: false` with `scope` `global` or `project` means a rule the
   user wrote in that file decides, which the switch will not remove. `skills` also lists

@@ -476,6 +476,46 @@ describe('createSkillPolicyService', () => {
     expect(state.scopes.global.error).toMatch(/invalid JSONC/);
     expect(state.skills['alpha-skill'].disabledIn).toEqual({ global: null, project: true });
   });
+
+  // OpenCode answers `GET /api/config` without a document it cannot parse, so
+  // a switch's deny in that file is missing from what it serves.
+  it('reports unknown, not enabled, while a scope file it cannot parse may hold the deciding rule', async () => {
+    const validProject = JSON.stringify({ policies: [owned('alpha-skill')] });
+    const { projectDir, projectPath, openCode, service } = setup({ globalText: '{}', projectText: validProject });
+    const read = () => service.readState({ directory: projectDir, ids: ['alpha-skill', 'beta-skill'], openCode: openCode.reader });
+    expect((await read()).skills['alpha-skill'].effective).toBe('disabled');
+
+    fs.writeFileSync(projectPath, `${validProject.slice(0, -1)} oops }`);
+    const broken = await read();
+    expect(broken.effectiveAvailable).toBe(true);
+    expect(broken.scopes.project.error).toMatch(/invalid JSONC/);
+    expect(broken.skills['alpha-skill']).toEqual({ disabledIn: { global: false, project: null }, effective: 'unknown', decidedBy: null });
+    expect(broken.skills['beta-skill']).toEqual({ disabledIn: { global: false, project: null }, effective: 'unknown', decidedBy: null });
+
+    fs.writeFileSync(projectPath, validProject);
+    expect((await read()).skills['alpha-skill']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    const on = await service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'project', enabled: true, openCode: openCode.reader });
+    expect(on.policy).toEqual({ disabledIn: { global: false, project: false }, effective: 'enabled', decidedBy: null });
+  });
+
+  it('keeps a deny from a readable file deciding, and does not trust an allow, while another scope file is unparsable', async () => {
+    const broken = '{ "policies": [ oops ] }';
+    const denied = setup({ globalText: JSON.stringify({ policies: [owned('alpha-skill')] }), projectText: broken });
+    const deniedState = await denied.service.readState({ directory: denied.projectDir, ids: ['alpha-skill'], openCode: denied.openCode.reader });
+    expect(deniedState.skills['alpha-skill']).toMatchObject({
+      disabledIn: { global: true, project: null },
+      effective: 'disabled',
+      decidedBy: { scope: 'global', owned: true },
+    });
+
+    const allowed = setup({ globalText: JSON.stringify({ policies: [allow('skill:*')] }), projectText: broken });
+    const allowedState = await allowed.service.readState({ directory: allowed.projectDir, ids: ['alpha-skill'], openCode: allowed.openCode.reader });
+    expect(allowedState.skills['alpha-skill']).toEqual({ disabledIn: { global: false, project: null }, effective: 'unknown', decidedBy: null });
+
+    // Without a directory the project file is not a scope, so it is not consulted.
+    const globalOnly = await allowed.service.readState({ directory: null, ids: ['alpha-skill'], openCode: allowed.openCode.reader });
+    expect(globalOnly.skills['alpha-skill']).toMatchObject({ effective: 'enabled', decidedBy: { effect: 'allow' } });
+  });
 });
 
 describe('handleSkillPolicyWrite', () => {

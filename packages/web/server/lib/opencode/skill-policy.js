@@ -326,7 +326,11 @@ const UNKNOWN = 'unknown';
  * - `disabledIn`: whether the switch's own rule is saved in each scope's file
  *   (`null`: that scope has no file, or the file could not be read).
  * - `effective`: what OpenCode applies (`unknown` when its config could not be
- *   read; never inferred from a missing skill).
+ *   read; never inferred from a missing skill). Also `unknown` while a scope's
+ *   own file cannot be read (`scopes[scope].error`) and no deny decides the
+ *   skill: OpenCode leaves an unparsable file out of `GET /api/config`, so a
+ *   switch's deny in it is missing from what it serves, and the absence of a
+ *   deny proves nothing. A deny that still decides it keeps it `disabled`.
  * - `decidedBy`: the statement that decides it and its file; `scope` says
  *   which switch owns that file (`other` for any file a switch never writes),
  *   `owned` whether it is a switch's own marked deny. OpenCode serves
@@ -343,6 +347,8 @@ function describeSkillPolicy(id, { entries, scopes, configs, location, samePath 
   if (!entries) return { disabledIn, effective: UNKNOWN, decidedBy: null };
 
   const decided = findDecidingSkillStatement(entries, id, location);
+  const scopeUnreadable = SKILL_POLICY_SCOPES.some((name) => scopes[name]?.error);
+  if (scopeUnreadable && decided?.effect !== 'deny') return { disabledIn, effective: UNKNOWN, decidedBy: null };
   if (!decided) return { disabledIn, effective: 'enabled', decidedBy: null };
   const scope = SKILL_POLICY_SCOPES.find((name) => scopes[name] && decided.path && samePath(scopes[name].path, decided.path)) ?? 'other';
   return {

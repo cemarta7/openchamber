@@ -366,9 +366,14 @@ describe('VS Code skill policy parity', () => {
       fetchOpenCodeSkillsFromApi: async () => openCodeSkills,
       createOpenCodePolicyReader: () => ({
         readVersion: async () => '2.0.29',
+        // A file OpenCode cannot parse is left out of what it serves.
         readConfigEntries: async () => [globalConfigPath, projectConfigPath]
           .filter((file) => fs.existsSync(file))
-          .map((file) => ({ type: 'document', path: file, info: served(parseJsonc(fs.readFileSync(file, 'utf8'))) })),
+          .flatMap((file) => {
+            const errors = [];
+            const info = parseJsonc(fs.readFileSync(file, 'utf8'), errors, { allowTrailingComma: true });
+            return errors.length > 0 ? [] : [{ type: 'document', path: file, info: served(info) }];
+          }),
       }),
     };
     const ctx = createCtx(hostDirectory ?? root);
@@ -413,6 +418,21 @@ describe('VS Code skill policy parity', () => {
     const on = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: true } });
     expect(on.data).toMatchObject({ status: 200, body: { ok: true, saved: { changed: true }, policy: { effective: 'enabled' } } });
     expect(readJson(projectConfigPath)).toEqual({});
+  });
+
+  test('reports a switched-off skill as unknown while its project file cannot be parsed, as the web runtime does', async () => {
+    const { root, projectConfigPath, send, list } = setup();
+    expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } })).data.status).toBe(200);
+    const validText = fs.readFileSync(projectConfigPath, 'utf8');
+
+    fs.writeFileSync(projectConfigPath, `${validText.trimEnd().slice(0, -1)} oops }`);
+    const broken = (await list(root)).data.skillPolicy;
+    expect(broken.effectiveAvailable).toBe(true);
+    expect(broken.scopes.project.error).toBeTruthy();
+    expect(broken.skills['alpha-skill']).toEqual({ disabledIn: { global: false, project: null }, effective: 'unknown', decidedBy: null });
+
+    fs.writeFileSync(projectConfigPath, validText);
+    expect((await list(root)).data.skillPolicy.skills['alpha-skill']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
   });
 
   test('gives back the project JSONC byte for byte after a switch goes off and on again', async () => {

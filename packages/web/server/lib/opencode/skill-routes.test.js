@@ -690,9 +690,16 @@ describe('skill policy routes', () => {
       if (copy.policies) copy.policies = copy.policies.map(({ action, resource, effect }) => ({ action, resource, effect }));
       return copy;
     };
+    // A file OpenCode cannot parse is left out of what it serves.
     const readDocuments = () => [globalPath, projectPath]
       .filter((file) => fs.existsSync(file))
-      .map((file) => ({ type: 'document', path: file, info: served(readConfigFile(file)) }));
+      .flatMap((file) => {
+        try {
+          return [{ type: 'document', path: file, info: served(readConfigFile(file)) }];
+        } catch {
+          return [];
+        }
+      });
     const denied = () => new Set(readDocuments().flatMap((entry) => entry.info.policies ?? [])
       .filter((rule) => rule.effect === 'deny')
       .map((rule) => rule.resource.slice('skill:'.length)));
@@ -774,6 +781,27 @@ describe('skill policy routes', () => {
       { id: 'beta-two', name: 'Same Name' },
     ]));
     expect(Object.fromEntries(byName.states)).toEqual({ 'alpha-skill': 'disabled', 'beta-one': 'enabled', 'beta-two': 'enabled' });
+  });
+
+  it('keeps a skill known off while its project file cannot be parsed, and follows the file once it is valid again', async () => {
+    const { projectRoot, projectPath, put, list, lookup } = await setupApp();
+    expect((await put({ id: 'alpha-skill', scope: 'project', enabled: false })).status).toBe(200);
+    const validText = fs.readFileSync(projectPath, 'utf8');
+    const queued = async () => Object.fromEntries((await lookup({ directory: projectRoot, ids: ['alpha-skill'], names: [] })).states);
+    expect(await queued()).toEqual({ 'alpha-skill': 'disabled' });
+
+    // OpenCode still answers, without the broken file and so without its deny.
+    fs.writeFileSync(projectPath, `${validText.trimEnd().slice(0, -1)} oops }`);
+    const listed = await list();
+    expect(listed.skillPolicy.effectiveAvailable).toBe(true);
+    expect(listed.skillPolicy.scopes.project.error).toMatch(/invalid JSONC/);
+    expect(listed.skillPolicy.skills['alpha-skill']).toEqual({ disabledIn: { global: false, project: null }, effective: 'unknown', decidedBy: null });
+    expect(await queued()).toEqual({ 'alpha-skill': 'disabled' });
+
+    fs.writeFileSync(projectPath, validText);
+    expect(await queued()).toEqual({ 'alpha-skill': 'disabled' });
+    expect((await put({ id: 'alpha-skill', scope: 'project', enabled: true })).status).toBe(200);
+    expect(await queued()).toEqual({ 'alpha-skill': 'enabled' });
   });
 
   it('keeps the last known state through an OpenCode outage and never counts the failure as a state', async () => {
