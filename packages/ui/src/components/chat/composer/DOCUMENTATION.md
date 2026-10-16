@@ -526,7 +526,17 @@ and the send path reading the same grammar.
   refuses to load would only fail later. OpenCode's own deny stays the
   enforcement. Queued messages keep the instruction captured at
   queue time, because the server and the VS Code auto-send deliver them
-  without the composer's registry. A `$skill` in a message that routes to
+  without the composer's registry. The instruction part carries the ids of
+  the skills it names (`skills`), and the UI's own deliveries, the composer
+  sending taken messages and the VS Code auto-send, pass the context through
+  `withoutSwitchedOffQueuedSkills` first: a skill the session directory's last
+  known policy switches off is left out of the instruction, and an
+  instruction naming none left is dropped. A part without ids (the server
+  keeps only the text, and older queues never had them) is checked by the
+  names in its text when that text is one `buildSkillMentionInstruction`
+  wrote; anything else is delivered as captured. The message text, attached
+  context and attachments are never changed. The server's own delivery on
+  web, desktop and mobile does not run this check. A `$skill` in a message that routes to
   `session.command` (a leading `/command`) keeps the instruction too: that
   route takes no skill attachments. A hand-typed leading `/name` that matches
   a skill and no command still attaches the skill (`session-ui-store`), so the

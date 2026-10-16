@@ -112,7 +112,7 @@ import { buildSkillMentionInstruction } from '@/lib/skillMentionInstruction';
 import { knownSkillTokens, resolveSkillMentions } from '@/stores/skillAvailability';
 import { useGitStore } from '@/stores/useGitStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { selectAvailableSkillsForDirectory, skillFallbackInstruction, useSkillsStore } from '@/stores/useSkillsStore';
+import { selectAvailableSkillsForDirectory, skillFallbackInstruction, useSkillsStore, withoutSwitchedOffQueuedSkills } from '@/stores/useSkillsStore';
 import { selectCommandsForDirectory, useCommandsStore } from '@/stores/useCommandsStore';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
@@ -1387,9 +1387,15 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             extractedMentionAttachments,
             opencodeClient,
         );
-        // Checked when queued: a skill switched off since it was typed is not named.
-        const queueSkillTokens = knownSkillTokens(selectAvailableSkillsForDirectory(useSkillsStore.getState(), currentDirectory));
-        const skillInstruction = buildSkillMentionInstruction(collectInlineSkillMentions(sanitizedText, queueSkillTokens));
+        // Checked when queued: a skill switched off since it was typed is not
+        // named. The ids ride along so delivery can check again.
+        const queueSkills = selectAvailableSkillsForDirectory(useSkillsStore.getState(), currentDirectory);
+        const queuedSkillMentions = resolveSkillMentions(
+            queueSkills,
+            collectInlineSkillMentions(sanitizedText, knownSkillTokens(queueSkills)),
+        );
+        const queuedSkillText = buildSkillMentionInstruction(queuedSkillMentions.map((skill) => skill.name));
+        const skillInstruction = queuedSkillText ? { text: queuedSkillText, skills: queuedSkillMentions } : null;
         // The server and the VS Code auto-send deliver `text` as is, so its
         // snippets expand now; `content` keeps them for editing.
         const textToQueue = await useSnippetsStore.getState().expandText(sanitizedText).catch((error) => {
@@ -1963,7 +1969,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         const expandedDrafts = await expandCommentSnippets(drafts, useSnippetsStore.getState().expandText);
 
         const outgoing = buildOutgoingMessage({
-            queued: queuedMessagesToSend,
+            // Checked at delivery: a skill switched off while the message
+            // waited is not named in its instruction.
+            queued: queuedMessagesToSend.map((queued) => ({
+                ...queued,
+                context: withoutSwitchedOffQueuedSkills(queued.context ?? [], capturedTarget?.directory ?? currentDirectory),
+            })),
             composerText: !queuedOnly && inputSnapshot.hasContent ? inputSnapshot.message : null,
             composerAttachments: attachedFiles,
             inlineComments: expandedDrafts,

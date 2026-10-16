@@ -14,11 +14,14 @@ import { runBackgroundNetworkTask } from "@/lib/background-network";
 import { useProjectsStore } from "@/stores/useProjectsStore";
 
 import { opencodeClient, type SkillAttachmentRef } from '@/lib/opencode/client';
-import { buildSkillMentionInstruction } from '@/lib/skillMentionInstruction';
+import { buildSkillMentionInstruction, parseSkillMentionInstruction } from '@/lib/skillMentionInstruction';
+import { normalizePath } from '@/lib/pathNormalization';
+import type { QueuedContextPart } from './messageQueueStore';
 import { filterSkillsByRuntimeFlags } from './skillVisibility';
 import {
   filterAvailableSkills,
   isSkillSwitchedOff,
+  resolveSkillToken,
   parseSkillPolicyRead,
   parseSkillPolicyWrite,
   type SkillPolicyRead,
@@ -507,6 +510,76 @@ export const skillFallbackInstruction = (directory: string | null | undefined) =
   return buildSkillMentionInstruction(
     skills.filter((skill) => !isSkillSwitchedOff(policy, skill.id)).map((skill) => skill.name),
   );
+};
+
+/**
+ * A directory's stored lists, found also when the caller spells the directory
+ * the way the message queue does (`normalizePath`) and the store was loaded
+ * with another spelling of the same path.
+ */
+const findDirectoryKey = (state: SkillsStore, directory: string | null | undefined): string => {
+  const cacheKey = getSkillsCacheKey(resolveDirectory(directory));
+  if (state.skillsByDirectory[cacheKey] || state.policyByDirectory[cacheKey] || !directory) return cacheKey;
+  const wanted = normalizePath(directory);
+  return Object.keys(state.skillsByDirectory).find((key) => normalizePath(key) === wanted) ?? cacheKey;
+};
+
+/**
+ * Whether a skill token from a queued instruction names a skill the policy
+ * switches off. A token naming an available skill, nothing known, or several
+ * skills of which one is not switched off is kept: only a known "off" drops it.
+ */
+const tokenIsSwitchedOff = (
+  token: string,
+  installed: readonly DiscoveredSkill[],
+  available: readonly DiscoveredSkill[],
+  policy: SkillPolicyState | null,
+): boolean => {
+  if (resolveSkillToken(available, token)) return false;
+  const candidates = installed.filter((skill) => skill.name === token || skill.id === token);
+  return candidates.length > 0 && candidates.every((skill) => isSkillSwitchedOff(policy, skill.id));
+};
+
+/**
+ * A queued message's captured context, checked again when it is delivered:
+ * its skill instruction leaves out skills the directory's last known policy
+ * switches off, and goes when it names none left. Everything else, and an
+ * instruction this check cannot read, is delivered as captured. The message
+ * text itself is never changed.
+ */
+export const withoutSwitchedOffQueuedSkills = (
+  context: readonly QueuedContextPart[],
+  directory: string | null | undefined,
+): QueuedContextPart[] => {
+  const state = useSkillsStore.getState();
+  const cacheKey = findDirectoryKey(state, directory);
+  const policy = state.policyByDirectory[cacheKey]?.state ?? null;
+  if (!policy) return [...context];
+  const installed = state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
+  const available = state.availableSkillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
+
+  const revised: QueuedContextPart[] = [];
+  for (const part of context) {
+    if (part.kind !== 'instruction') {
+      revised.push(part);
+      continue;
+    }
+    if (part.skills) {
+      const kept = part.skills.filter((skill) => !isSkillSwitchedOff(policy, skill.id));
+      if (kept.length === part.skills.length) revised.push(part);
+      else if (kept.length > 0) revised.push({ kind: 'instruction', text: buildSkillMentionInstruction(kept.map((skill) => skill.name)) ?? '', skills: kept });
+      continue;
+    }
+    const tokens = parseSkillMentionInstruction(part.text);
+    if (!tokens) {
+      revised.push(part);
+      continue;
+    }
+    const kept = tokens.filter((token) => !tokenIsSwitchedOff(token, installed, available, policy));
+    if (kept.length === tokens.length) revised.push(part);
+    else if (kept.length > 0) revised.push({ kind: 'instruction', text: buildSkillMentionInstruction(kept) ?? '' });
+  }
+  return revised;
 };
 
 /** What one `GET /api/config/skills` gave, before it is committed. */
