@@ -15,6 +15,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { isolatedSpacesI18n } from './isolated-spaces.i18n';
 import { sourceBoardI18n } from './source-board.i18n';
 import { projectActionsI18n } from './project-actions.i18n';
+import { gitIdentityEditorI18n } from './git-identity-editor.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
@@ -155,6 +156,7 @@ export const dict: Record<I18nKey, string> = {
   ...isolatedSpacesI18n['pt-BR'],
   ...sourceBoardI18n['pt-BR'],
   ...projectActionsI18n['pt-BR'],
+  ...gitIdentityEditorI18n['pt-BR'],
   ...environmentI18n['pt-BR'],
   ...providersI18n['pt-BR'],
   ...mcpGridI18n['pt-BR'],
@@ -694,6 +696,8 @@ export const dict: Record<I18nKey, string> = {
   "sessions.sidebar.session.work.markDone": "Marcar como concluído",
   "sessions.sidebar.session.work.doneSuggested": "Parece concluído",
   "sessions.sidebar.session.work.updateFailed": "Não foi possível atualizar a sessão",
+  "sessions.sidebar.session.pin.pinFailed": "Não foi possível fixar a sessão",
+  "sessions.sidebar.session.pin.unpinFailed": "Não foi possível desafixar a sessão",
   "chat.work.doneHint.text": "Este trabalho parece concluído.",
   "chat.work.doneHint.action": "Marcar como concluído",
   "chat.work.reviewHint.text": "As alterações estão prontas para revisão.",

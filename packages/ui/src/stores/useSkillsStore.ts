@@ -194,6 +194,8 @@ interface SkillDetail {
 type SkillTarget = Pick<DiscoveredSkill, 'id' | 'name'>;
 /** A skill target with the file it was listed at. */
 type SkillRef = SkillTarget & Pick<DiscoveredSkill, 'path'>;
+/** One skill folder location: a scope and the tool convention it follows. */
+type SkillLocation = { scope: SkillScope; source: SkillSource };
 
 const renameAnswerSchema = z.object({
   id: z.string().min(1).optional(),
@@ -274,7 +276,12 @@ interface SkillsStore {
   createSkill: (config: SkillConfig, directory?: string | null) => Promise<boolean>;
   updateSkill: (skill: SkillRef, config: Partial<SkillConfig>, directory?: string | null) => Promise<boolean>;
   renameSkill: (skill: SkillTarget, newName: string, directory?: string | null) => Promise<SkillRenameResult>;
-  deleteSkill: (skill: SkillTarget, directory?: string | null) => Promise<boolean>;
+  /**
+   * Without `location` the server deletes exactly the listed skill with this
+   * id. With it, only the folder named by the id in that scope and source,
+   * whichever copy OpenCode lists first.
+   */
+  deleteSkill: (skill: SkillTarget, directory?: string | null, location?: SkillLocation) => Promise<boolean>;
   getSkillById: (id: string, directory?: string | null) => DiscoveredSkill | undefined;
   /**
    * Skills are discovered on the connected instance and cached by directory,
@@ -366,9 +373,14 @@ const directoryHeaders = (directory: string | null, hasBody: boolean): Headers =
   return headers;
 };
 
-const skillRouteInit = (skill: SkillTarget, directory: string | null, init: RequestInit = {}): RuntimeFetchOptions => ({
+const skillRouteInit = (
+  skill: SkillTarget,
+  directory: string | null,
+  init: RequestInit = {},
+  location?: SkillLocation,
+): RuntimeFetchOptions => ({
   ...init,
-  query: { id: skill.id, directory },
+  query: { id: skill.id, directory, ...location },
   headers: directoryHeaders(directory, Boolean(init.body)),
 });
 
@@ -1026,10 +1038,10 @@ export const useSkillsStore = create<SkillsStore>()(
           }
         },
 
-        deleteSkill: async (skill: SkillTarget, requestedDirectory?: string | null) => {
+        deleteSkill: async (skill: SkillTarget, requestedDirectory?: string | null, location?: SkillLocation) => {
           try {
             const directory = resolveDirectory(requestedDirectory);
-            const response = await runtimeFetch(skillRoute(skill), skillRouteInit(skill, directory, { method: 'DELETE' }));
+            const response = await runtimeFetch(skillRoute(skill), skillRouteInit(skill, directory, { method: 'DELETE' }, location));
 
             const payload = await response.json().catch(() => null);
             if (!response.ok) {

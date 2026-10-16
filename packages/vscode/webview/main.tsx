@@ -969,9 +969,12 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     const verb = method;
     const body = await extractJsonBody(input, init, method);
     const skillId = url.searchParams.get('id') ?? undefined;
+    // The located delete's `scope` and `source`; the host validates them.
+    const scope = url.searchParams.get('scope') ?? undefined;
+    const source = url.searchParams.get('source') ?? undefined;
     const directory = getRequestDirectoryHint(url, input, init);
     try {
-      const data = await sendBridgeMessage('api:config/skills', { method: verb, name, body, directory, skillId });
+      const data = await sendBridgeMessage('api:config/skills', { method: verb, name, body, directory, skillId, scope, source });
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

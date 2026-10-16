@@ -14,6 +14,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { isolatedSpacesI18n } from './isolated-spaces.i18n';
 import { sourceBoardI18n } from './source-board.i18n';
 import { projectActionsI18n } from './project-actions.i18n';
+import { gitIdentityEditorI18n } from './git-identity-editor.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
@@ -83,6 +84,7 @@ export const dict = {
   ...isolatedSpacesI18n.tr,
   ...sourceBoardI18n.tr,
   ...projectActionsI18n.tr,
+  ...gitIdentityEditorI18n.tr,
   ...environmentI18n.tr,
   ...providersI18n.tr,
   ...mcpGridI18n.tr,
@@ -602,6 +604,8 @@ export const dict = {
   'sessions.sidebar.session.work.markDone': 'Tamamlandı olarak işaretle',
   'sessions.sidebar.session.work.doneSuggested': 'Tamamlanmış görünüyor',
   'sessions.sidebar.session.work.updateFailed': 'Oturum güncellenemedi',
+  'sessions.sidebar.session.pin.pinFailed': 'Oturum sabitlenemedi',
+  'sessions.sidebar.session.pin.unpinFailed': 'Oturumun sabitlemesi kaldırılamadı',
   'chat.work.doneHint.text': 'Bu iş tamamlanmış görünüyor.',
   'chat.work.doneHint.action': 'Tamamlandı olarak işaretle',
   'chat.work.reviewHint.text': 'Değişiklikler incelenmeye hazır.',

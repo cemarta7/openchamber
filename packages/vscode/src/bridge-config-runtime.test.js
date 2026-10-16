@@ -701,3 +701,76 @@ describe('VS Code skill routes selected by OpenCode id', () => {
     expect(await skill({ method: 'DELETE', name: 'Same Name', skillId: 'beta-two' })).toMatchObject({ success: false, error: 'Skill not found' });
   });
 });
+
+describe('VS Code located skill delete, as the web route', () => {
+  const skillMd = (name) => `---\nname: ${name}\ndescription: ${name}\n---\nBody\n`;
+  const userSkillsDir = path.join(process.env.XDG_CONFIG_HOME, 'opencode', 'skills');
+  let previousDataDir;
+
+  afterEach(() => {
+    if (previousDataDir === undefined) delete process.env.OPENCHAMBER_DATA_DIR;
+    else process.env.OPENCHAMBER_DATA_DIR = previousDataDir;
+  });
+
+  // The catalog's shape: its copy in the user's OpenCode skills folder, whose
+  // folder (the id) differs from the display name, plus a project copy of the
+  // same id the user keeps.
+  const setup = () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-located-')));
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-located-data-'));
+    tempRoots.push(root, dataDir);
+    previousDataDir = process.env.OPENCHAMBER_DATA_DIR;
+    process.env.OPENCHAMBER_DATA_DIR = dataDir;
+    fs.mkdirSync(path.join(root, '.git'));
+    const userCopy = path.join(userSkillsDir, 'vendor-folder');
+    const projectCopy = path.join(root, '.claude', 'skills', 'vendor-folder');
+    for (const dir of [userCopy, projectCopy]) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'SKILL.md'), skillMd('Vendor Skill'));
+    }
+    tempRoots.push(userCopy);
+    const ctx = createCtx(root);
+    const skill = (payload) => handleConfigBridgeMessage({ id: 'skill', type: 'api:config/skills', payload: { directory: root, ...payload } }, ctx, deps);
+    return { userCopy, projectCopy, skill };
+  };
+
+  test('deletes only the located folder the id names and keeps provenance while a copy of the id remains', async () => {
+    const { userCopy, projectCopy, skill } = setup();
+    const { appendInstalledSources, readInstalledSources } = await import('../../web/server/lib/skills-catalog/installed-sources.js');
+    appendInstalledSources([{ skillName: 'vendor-folder', skillDir: 'skills/vendor-folder', sourceId: 'acme' }]);
+
+    const removed = await skill({ method: 'DELETE', name: 'Vendor Skill', skillId: 'vendor-folder', scope: 'user', source: 'opencode' });
+
+    expect(removed).toMatchObject({ success: true, data: { id: 'vendor-folder' } });
+    expect(fs.existsSync(userCopy)).toBe(false);
+    expect(fs.existsSync(path.join(projectCopy, 'SKILL.md'))).toBe(true);
+    expect([...readInstalledSources().keys()]).toEqual(['vendor-folder']);
+
+    await skill({ method: 'DELETE', name: 'Vendor Skill', skillId: 'vendor-folder', scope: 'project', source: 'claude' });
+    expect(fs.existsSync(projectCopy)).toBe(false);
+    expect([...readInstalledSources().keys()]).toEqual([]);
+  });
+
+  test('refuses an invalid location or id before deleting anything', async () => {
+    const { userCopy, projectCopy, skill } = setup();
+    const invalid = 'scope must be user or project and source opencode, claude or agents';
+
+    expect(await skill({ method: 'DELETE', name: 'Vendor Skill', skillId: 'vendor-folder', scope: 'user', source: 'elsewhere' }))
+      .toMatchObject({ success: false, error: invalid });
+    expect(await skill({ method: 'DELETE', name: 'Vendor Skill', skillId: 'vendor-folder', scope: 'project' }))
+      .toMatchObject({ success: false, error: invalid });
+    expect(await skill({ method: 'DELETE', name: 'Vendor Skill', skillId: 'bad*id', scope: 'user', source: 'opencode' }))
+      .toMatchObject({ success: false, error: 'Invalid skill id' });
+    expect(fs.existsSync(path.join(userCopy, 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(projectCopy, 'SKILL.md'))).toBe(true);
+  });
+
+  test('fails without touching other copies when the location has none', async () => {
+    const { userCopy, projectCopy, skill } = setup();
+
+    await expect(skill({ method: 'DELETE', name: 'Vendor Skill', skillId: 'vendor-folder', scope: 'project', source: 'agents' }))
+      .rejects.toThrow('Skill "vendor-folder" not found');
+    expect(fs.existsSync(path.join(userCopy, 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(projectCopy, 'SKILL.md'))).toBe(true);
+  });
+});

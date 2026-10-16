@@ -15,6 +15,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { isolatedSpacesI18n } from './isolated-spaces.i18n';
 import { sourceBoardI18n } from './source-board.i18n';
 import { projectActionsI18n } from './project-actions.i18n';
+import { gitIdentityEditorI18n } from './git-identity-editor.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
@@ -145,6 +146,7 @@ export const dict: Record<I18nKey, string> = {
   ...isolatedSpacesI18n['zh-CN'],
   ...sourceBoardI18n['zh-CN'],
   ...projectActionsI18n['zh-CN'],
+  ...gitIdentityEditorI18n['zh-CN'],
   ...environmentI18n['zh-CN'],
   ...providersI18n['zh-CN'],
   ...mcpGridI18n['zh-CN'],
@@ -693,6 +695,8 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.work.markDone': '标记为完成',
   'sessions.sidebar.session.work.doneSuggested': '看起来已完成',
   'sessions.sidebar.session.work.updateFailed': '无法更新会话',
+  'sessions.sidebar.session.pin.pinFailed': '无法置顶会话',
+  'sessions.sidebar.session.pin.unpinFailed': '无法取消置顶会话',
   'chat.work.doneHint.text': '这项工作看起来已完成。',
   'chat.work.doneHint.action': '标记为完成',
   'chat.work.reviewHint.text': '更改已可查看。',

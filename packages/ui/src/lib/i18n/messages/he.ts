@@ -14,6 +14,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { isolatedSpacesI18n } from './isolated-spaces.i18n';
 import { sourceBoardI18n } from './source-board.i18n';
 import { projectActionsI18n } from './project-actions.i18n';
+import { gitIdentityEditorI18n } from './git-identity-editor.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
@@ -665,6 +666,8 @@ export const dict = {
   'sessions.sidebar.session.work.markDone': 'סמן כהושלם',
   'sessions.sidebar.session.work.doneSuggested': 'נראה שהושלם',
   'sessions.sidebar.session.work.updateFailed': 'לא ניתן היה לעדכן את ההפעלה',
+  'sessions.sidebar.session.pin.pinFailed': 'לא ניתן היה להצמיד את ההפעלה',
+  'sessions.sidebar.session.pin.unpinFailed': 'לא ניתן היה לבטל את הצמדת ההפעלה',
   'chat.work.doneHint.text': 'נראה שהעבודה הזו הושלמה.',
   'chat.work.doneHint.action': 'סמן כהושלם',
   'chat.work.reviewHint.text': 'השינויים מוכנים לסקירה.',
@@ -3774,6 +3777,7 @@ export const dict = {
   ...isolatedSpacesI18n.he,
   ...sourceBoardI18n.he,
   ...projectActionsI18n.he,
+  ...gitIdentityEditorI18n.he,
   ...environmentI18n.he,
   ...providersI18n.he,
   ...mcpGridI18n.he,

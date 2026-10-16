@@ -15,6 +15,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { isolatedSpacesI18n } from './isolated-spaces.i18n';
 import { sourceBoardI18n } from './source-board.i18n';
 import { projectActionsI18n } from './project-actions.i18n';
+import { gitIdentityEditorI18n } from './git-identity-editor.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
@@ -145,6 +146,7 @@ export const dict: Record<I18nKey, string> = {
   ...isolatedSpacesI18n.pl,
   ...sourceBoardI18n.pl,
   ...projectActionsI18n.pl,
+  ...gitIdentityEditorI18n.pl,
   ...environmentI18n.pl,
   ...providersI18n.pl,
   ...mcpGridI18n.pl,
@@ -516,6 +518,8 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.work.markDone': 'Oznacz jako gotowe',
   'sessions.sidebar.session.work.doneSuggested': 'Wygląda na gotowe',
   'sessions.sidebar.session.work.updateFailed': 'Nie udało się zaktualizować sesji',
+  'sessions.sidebar.session.pin.pinFailed': 'Nie udało się przypiąć sesji',
+  'sessions.sidebar.session.pin.unpinFailed': 'Nie udało się odpiąć sesji',
   'chat.work.doneHint.text': 'Ta praca wygląda na skończoną.',
   'chat.work.doneHint.action': 'Oznacz jako gotowe',
   'chat.work.reviewHint.text': 'Zmiany są gotowe do przejrzenia.',

@@ -14,6 +14,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { isolatedSpacesI18n } from './isolated-spaces.i18n';
 import { sourceBoardI18n } from './source-board.i18n';
 import { projectActionsI18n } from './project-actions.i18n';
+import { gitIdentityEditorI18n } from './git-identity-editor.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
@@ -144,6 +145,7 @@ export const dict = {
   ...isolatedSpacesI18n.nl,
   ...sourceBoardI18n.nl,
   ...projectActionsI18n.nl,
+  ...gitIdentityEditorI18n.nl,
   ...environmentI18n.nl,
   ...providersI18n.nl,
   ...mcpGridI18n.nl,
@@ -684,6 +686,8 @@ export const dict = {
   'sessions.sidebar.session.work.markDone': 'Markeer als afgerond',
   'sessions.sidebar.session.work.doneSuggested': 'Lijkt afgerond',
   'sessions.sidebar.session.work.updateFailed': 'Sessie kon niet worden bijgewerkt',
+  'sessions.sidebar.session.pin.pinFailed': 'Sessie kon niet worden vastgezet',
+  'sessions.sidebar.session.pin.unpinFailed': 'Sessie kon niet worden losgemaakt',
   'chat.work.doneHint.text': 'Dit werk lijkt afgerond.',
   'chat.work.doneHint.action': 'Markeer als afgerond',
   'chat.work.reviewHint.text': 'De wijzigingen zijn klaar om te bekijken.',

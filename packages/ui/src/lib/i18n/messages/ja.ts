@@ -15,6 +15,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { isolatedSpacesI18n } from './isolated-spaces.i18n';
 import { sourceBoardI18n } from './source-board.i18n';
 import { projectActionsI18n } from './project-actions.i18n';
+import { gitIdentityEditorI18n } from './git-identity-editor.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
@@ -145,6 +146,7 @@ export const dict: Record<I18nKey, string> = {
   ...isolatedSpacesI18n.ja,
   ...sourceBoardI18n.ja,
   ...projectActionsI18n.ja,
+  ...gitIdentityEditorI18n.ja,
   ...environmentI18n.ja,
   ...providersI18n.ja,
   ...mcpGridI18n.ja,
@@ -693,6 +695,8 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.work.markDone': '完了にする',
   'sessions.sidebar.session.work.doneSuggested': '完了したようです',
   'sessions.sidebar.session.work.updateFailed': 'セッションを更新できませんでした',
+  'sessions.sidebar.session.pin.pinFailed': 'セッションをピン留めできませんでした',
+  'sessions.sidebar.session.pin.unpinFailed': 'セッションのピン留めを解除できませんでした',
   'chat.work.doneHint.text': 'この作業は完了したようです。',
   'chat.work.doneHint.action': '完了にする',
   'chat.work.reviewHint.text': '変更を確認する準備ができました。',

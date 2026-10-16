@@ -1264,3 +1264,81 @@ describe('skill routes selected by OpenCode id', () => {
     expect(fs.existsSync(files.one)).toBe(true);
   });
 });
+
+describe('skill-routes delete location', () => {
+  /** @type {string | null} */
+  let projectRoot = null;
+  /** @type {{ close: () => Promise<void> } | null} */
+  let appHandle = null;
+
+  afterEach(async () => {
+    if (appHandle) {
+      await appHandle.close();
+      appHandle = null;
+    }
+    if (projectRoot) {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      projectRoot = null;
+    }
+  });
+
+  const writeProjectSkill = (root, folder, name) => {
+    const dir = path.join(root, folder, 'skills', name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: test\n---\nBody\n`);
+    return dir;
+  };
+
+  it('deletes only the copy at the given scope and source', async () => {
+    projectRoot = createTempProject();
+    appHandle = startSkillsApp({ projectRoot });
+    const agentsCopy = writeProjectSkill(projectRoot, '.agents', 'located-skill');
+    const claudeCopy = writeProjectSkill(projectRoot, '.claude', 'located-skill');
+    const query = `directory=${encodeURIComponent(projectRoot)}`;
+
+    const response = await fetch(`${appHandle.baseUrl}/api/config/skills/located-skill?${query}&scope=project&source=agents`, { method: 'DELETE' });
+
+    expect(response.ok).toBe(true);
+    expect(fs.existsSync(agentsCopy)).toBe(false);
+    expect(fs.existsSync(claudeCopy)).toBe(true);
+  });
+
+  it('deletes the located folder named by the id, whichever copy of the id is listed', async () => {
+    projectRoot = createTempProject();
+    appHandle = startSkillsApp({ projectRoot });
+    const agentsCopy = path.join(projectRoot, '.agents', 'skills', 'vendor-folder');
+    const claudeCopy = path.join(projectRoot, '.claude', 'skills', 'vendor-folder');
+    for (const dir of [agentsCopy, claudeCopy]) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\nname: Vendor Skill\ndescription: test\n---\nBody\n');
+    }
+    const query = `directory=${encodeURIComponent(projectRoot)}&id=vendor-folder`;
+
+    const response = await fetch(`${appHandle.baseUrl}/api/config/skills/${encodeURIComponent('Vendor Skill')}?${query}&scope=project&source=claude`, { method: 'DELETE' });
+
+    expect(response.ok).toBe(true);
+    expect(fs.existsSync(claudeCopy)).toBe(false);
+    expect(fs.existsSync(agentsCopy)).toBe(true);
+  });
+
+  it('fails without touching other copies when the given location has none', async () => {
+    projectRoot = createTempProject();
+    appHandle = startSkillsApp({ projectRoot });
+    const claudeCopy = writeProjectSkill(projectRoot, '.claude', 'elsewhere-skill');
+    const query = `directory=${encodeURIComponent(projectRoot)}`;
+
+    const response = await fetch(`${appHandle.baseUrl}/api/config/skills/elsewhere-skill?${query}&scope=project&source=opencode`, { method: 'DELETE' });
+
+    expect(response.ok).toBe(false);
+    expect(fs.existsSync(claudeCopy)).toBe(true);
+  });
+
+  it('rejects an unknown location', async () => {
+    projectRoot = createTempProject();
+    appHandle = startSkillsApp({ projectRoot });
+
+    const response = await fetch(`${appHandle.baseUrl}/api/config/skills/any-skill?scope=user&source=elsewhere`, { method: 'DELETE' });
+
+    expect(response.status).toBe(400);
+  });
+});

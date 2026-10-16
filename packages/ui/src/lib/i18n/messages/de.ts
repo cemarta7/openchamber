@@ -14,6 +14,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { isolatedSpacesI18n } from './isolated-spaces.i18n';
 import { sourceBoardI18n } from './source-board.i18n';
 import { projectActionsI18n } from './project-actions.i18n';
+import { gitIdentityEditorI18n } from './git-identity-editor.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
@@ -144,6 +145,7 @@ export const dict = {
   ...isolatedSpacesI18n.de,
   ...sourceBoardI18n.de,
   ...projectActionsI18n.de,
+  ...gitIdentityEditorI18n.de,
   ...environmentI18n.de,
   ...providersI18n.de,
   ...mcpGridI18n.de,
@@ -614,6 +616,8 @@ export const dict = {
   'sessions.sidebar.session.work.markDone': 'Als erledigt markieren',
   'sessions.sidebar.session.work.doneSuggested': 'Sieht erledigt aus',
   'sessions.sidebar.session.work.updateFailed': 'Sitzung konnte nicht aktualisiert werden',
+  'sessions.sidebar.session.pin.pinFailed': 'Sitzung konnte nicht angeheftet werden',
+  'sessions.sidebar.session.pin.unpinFailed': 'Sitzung konnte nicht losgelöst werden',
   'chat.work.doneHint.text': 'Diese Arbeit scheint erledigt.',
   'chat.work.doneHint.action': 'Als erledigt markieren',
   'chat.work.reviewHint.text': 'Die Änderungen sind bereit zur Durchsicht.',

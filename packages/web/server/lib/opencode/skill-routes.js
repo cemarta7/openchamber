@@ -1091,6 +1091,45 @@ export const registerSkillRoutes = (app, dependencies) => {
         return res.status(400).json({ error });
       }
 
+      // `scope` and `source` together narrow the delete to the copy in that
+      // one folder, named by the id or, without one, by the display name.
+      const scope = asNonEmptyString(req.query.scope);
+      const source = asNonEmptyString(req.query.source);
+      let location;
+      if (scope || source) {
+        if (!['user', 'project'].includes(scope) || !['opencode', 'claude', 'agents'].includes(source)) {
+          return res.status(400).json({ error: 'scope must be user or project and source opencode, claude or agents' });
+        }
+        location = { scope, source };
+      }
+
+      // Install provenance is keyed by the install folder name, the id. It
+      // stays while another copy of the id is still on disk.
+      const forgetProvenanceOnceGone = async (id) => {
+        if ((await discoverSkills(directory)).some((skill) => skill.id === id)) return;
+        try {
+          removeInstalledSources(id);
+        } catch (error) {
+          console.error('Failed to forget skill install provenance:', error);
+        }
+      };
+
+      if (location) {
+        const { id, error: idError } = readSkillIdSelector(req.query?.id);
+        if (idError) {
+          return res.status(400).json({ error: idError });
+        }
+        // The located folder itself, never the copy OpenCode lists first
+        // under this id: that one may be a same-named skill kept elsewhere.
+        const folderName = id ?? skillName;
+        deleteSkill(folderName, directory, location);
+        await forgetProvenanceOnceGone(folderName);
+        return res.json({
+          ...buildAppliedResponse(`Skill ${skillName} deleted successfully.`),
+          ...(id ? { id } : {}),
+        });
+      }
+
       const selected = await resolveSelectedSkill(req, skillName, directory);
       if (selected.error) {
         return res.status(selected.status).json({ error: selected.error });
@@ -1103,15 +1142,7 @@ export const registerSkillRoutes = (app, dependencies) => {
           return res.status(409).json({ error: `Skill "${skillName}" is outside managed skill directories and cannot be deleted` });
         }
         await deleteSkillAt(selected.skill.path, directory);
-        // Install provenance is keyed by the install folder name, the id. It
-        // stays while another copy of the id is still on disk.
-        if (!(await discoverSkills(directory)).some((skill) => skill.id === selected.id)) {
-          try {
-            removeInstalledSources(selected.id);
-          } catch (error) {
-            console.error('Failed to forget skill install provenance:', error);
-          }
-        }
+        await forgetProvenanceOnceGone(selected.id);
         return res.json({
           ...buildAppliedResponse(`Skill ${skillName} deleted successfully.`),
           id: selected.id,

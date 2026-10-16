@@ -15,6 +15,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { isolatedSpacesI18n } from './isolated-spaces.i18n';
 import { sourceBoardI18n } from './source-board.i18n';
 import { projectActionsI18n } from './project-actions.i18n';
+import { gitIdentityEditorI18n } from './git-identity-editor.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
@@ -155,6 +156,7 @@ export const dict: Record<I18nKey, string> = {
   ...isolatedSpacesI18n.uk,
   ...sourceBoardI18n.uk,
   ...projectActionsI18n.uk,
+  ...gitIdentityEditorI18n.uk,
   ...environmentI18n.uk,
   ...providersI18n.uk,
   ...mcpGridI18n.uk,
@@ -694,6 +696,8 @@ export const dict: Record<I18nKey, string> = {
   "sessions.sidebar.session.work.markDone": "Позначити готовим",
   "sessions.sidebar.session.work.doneSuggested": "Схоже, готово",
   "sessions.sidebar.session.work.updateFailed": "Не вдалося оновити сесію",
+  "sessions.sidebar.session.pin.pinFailed": "Не вдалося закріпити сесію",
+  "sessions.sidebar.session.pin.unpinFailed": "Не вдалося відкріпити сесію",
   "chat.work.doneHint.text": "Схоже, тут усе готово.",
   "chat.work.doneHint.action": "Позначити готовим",
   "chat.work.reviewHint.text": "Зміни готові до перегляду.",

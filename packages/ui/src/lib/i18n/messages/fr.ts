@@ -14,6 +14,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { isolatedSpacesI18n } from './isolated-spaces.i18n';
 import { sourceBoardI18n } from './source-board.i18n';
 import { projectActionsI18n } from './project-actions.i18n';
+import { gitIdentityEditorI18n } from './git-identity-editor.i18n';
 import { environmentI18n } from './environment.i18n';
 import { providersI18n } from './providers.i18n';
 import { mcpGridI18n } from './mcp-grid.i18n';
@@ -144,6 +145,7 @@ export const dict = {
   ...isolatedSpacesI18n.fr,
   ...sourceBoardI18n.fr,
   ...projectActionsI18n.fr,
+  ...gitIdentityEditorI18n.fr,
   ...environmentI18n.fr,
   ...providersI18n.fr,
   ...mcpGridI18n.fr,
@@ -514,6 +516,8 @@ export const dict = {
   'sessions.sidebar.session.work.markDone': 'Marquer comme terminé',
   'sessions.sidebar.session.work.doneSuggested': 'Semble terminé',
   'sessions.sidebar.session.work.updateFailed': 'Impossible de mettre à jour la session',
+  'sessions.sidebar.session.pin.pinFailed': 'Impossible d\'épingler la session',
+  'sessions.sidebar.session.pin.unpinFailed': 'Impossible de désépingler la session',
   'chat.work.doneHint.text': 'Ce travail semble terminé.',
   'chat.work.doneHint.action': 'Marquer comme terminé',
   'chat.work.reviewHint.text': 'Les modifications sont prêtes à être relues.',

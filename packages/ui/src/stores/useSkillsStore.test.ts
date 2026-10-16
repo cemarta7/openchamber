@@ -423,6 +423,18 @@ describe('useSkillsStore skill identity', () => {
     expect(useSkillsStore.getState().selectedSkillId).toBe(null);
   });
 
+  test('a located delete names the scope and source beside the id', async () => {
+    runtimeFetchImpl = async (_url, init) => jsonResponse(JSON.stringify(init?.method
+      ? { success: true, requiresReload: false }
+      : { skills: [deployWeb] }));
+    runtimeFetchCalls.length = 0;
+
+    expect(await useSkillsStore.getState().deleteSkill(deployApi, undefined, { scope: 'user', source: 'opencode' })).toBe(true);
+
+    const call = runtimeFetchCalls.find((entry) => entry.init?.method === 'DELETE');
+    expect(call?.init?.query).toEqual({ id: deployApi.id, directory: activeProjectPath, scope: 'user', source: 'opencode' });
+  });
+
   test('a lower-priority copy of a deleted id comes back from the refreshed list', async () => {
     expect(await useSkillsStore.getState().loadSkills()).toBe(true);
     // Delete removed the effective `.agents` copy; the `.claude` copy of the

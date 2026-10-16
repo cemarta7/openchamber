@@ -377,6 +377,14 @@ Bridge surface (`bridge-config-runtime.ts`), matching the web routes:
   bridge failure; the web server answers 400, 404 or 409 instead. Supporting
   files resolve inside the selected skill's folder only (`resolveWithinSkillDir`),
   the same confinement the web server applies.
+- `api:config/skills` `DELETE` with `scope` and `source` — the webview forwards
+  the web route's `?scope=&source=` beside `skillId`. The host validates the
+  location and the id first (`success: false` with the web route's message,
+  nothing deleted), then removes only the folder in that location named by the
+  id, else by `name`, without consulting the merged list. A missing folder
+  fails and leaves other copies alone. Provenance follows the `?id=` rule, so
+  it stays while another copy of the id is on disk. This is how the
+  integrations catalog uninstalls its own user OpenCode copy.
 - `api:config/skills` `PATCH { renameTo }` keeps a switched-off skill off under
   its new id through the web server's `renameSkillKeepingSwitches`, with the
   same steps and `switches` answer (see "Renaming a switched-off skill" in

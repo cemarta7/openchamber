@@ -3420,7 +3420,41 @@ export const updateSkill = (skillName: string, updates: Record<string, unknown>,
   return mdPath;
 };
 
-export const deleteSkill = (skillName: string, workingDirectory?: string): void => {
+/** One skill folder location: a scope and the tool convention it follows. */
+export type SkillLocation = { scope: SkillScope; source: SkillSource };
+
+/**
+ * Mirror of the web server's `getSkillDirAt`: the folder a skill of this name
+ * has in one scope and source, or null when that location needs a project.
+ */
+const getSkillDirAt = (location: SkillLocation, skillName: string, workingDirectory?: string): string | null => {
+  if (location.scope === SKILL_SCOPE.USER) {
+    if (location.source === 'agents') return getUserAgentsSkillDir(skillName);
+    if (location.source === 'claude') return path.join(os.homedir(), '.claude', 'skills', skillName);
+    return getUserSkillDir(skillName);
+  }
+  if (!workingDirectory) return null;
+  if (location.source === 'agents') return getProjectAgentsSkillDir(workingDirectory, skillName);
+  if (location.source === 'claude') return getClaudeSkillDir(workingDirectory, skillName);
+  return getProjectSkillDir(workingDirectory, skillName);
+};
+
+/**
+ * Mirror of the web server's `deleteSkill`. Without `location` every copy of
+ * the name goes; with it only the copy there, so a caller that installed a
+ * skill to one place cannot remove a same-named skill the user keeps
+ * elsewhere.
+ */
+export const deleteSkill = (skillName: string, workingDirectory?: string, location?: SkillLocation): void => {
+  if (location) {
+    const dir = getSkillDirAt(location, skillName, workingDirectory);
+    if (!dir || !fs.existsSync(dir)) {
+      throw new Error(`Skill "${skillName}" not found`);
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    return;
+  }
+
   let deleted = false;
   
   // Check and delete from all locations

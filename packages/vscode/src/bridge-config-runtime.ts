@@ -100,6 +100,11 @@ type ConfigRuntimeDeps = {
 
 const skillPolicyPayloadSchema = z.object({ body: z.json().optional(), directory: z.string().optional() });
 const projectScopeSchema = z.object({ scope: z.literal('project') });
+// The web route's `?scope=&source=` delete location.
+const skillLocationSchema = z.object({
+  scope: z.enum(['user', 'project']),
+  source: z.enum(['opencode', 'claude', 'agents']),
+});
 
 /** A directory the webview names for a skill switch: it must exist and be a directory. */
 const resolveSkillPolicyDirectory = (raw: string | undefined) => {
@@ -699,7 +704,15 @@ export async function handleConfigBridgeMessage(
     }
 
     case 'api:config/skills': {
-      const { method, name, body, directory, skillId } = (payload || {}) as { method?: string; name?: string; body?: Record<string, unknown>; directory?: string; skillId?: string };
+      const { method, name, body, directory, skillId, scope, source } = (payload || {}) as {
+        method?: string;
+        name?: string;
+        body?: Record<string, unknown>;
+        directory?: string;
+        skillId?: string;
+        scope?: string;
+        source?: string;
+      };
       // The directory the webview names (the selected project), as the web
       // route reads it, else the host's working directory.
       const workingDirectory = resolveWorkingDirectory(ctx, directory);
@@ -739,6 +752,44 @@ export async function handleConfigBridgeMessage(
       const skillName = typeof name === 'string' ? name.trim() : '';
       if (!skillName) {
         return { id, type, success: false, error: 'Skill name is required' };
+      }
+
+      // Install provenance is keyed by the install folder name, the id. It
+      // stays while another copy of the id is still on disk.
+      const forgetProvenanceOnceGone = (deletedId: string) => {
+        if (discoverSkills(workingDirectory).some((skill) => skill.id === deletedId)) return;
+        try {
+          removeInstalledSources(deletedId);
+        } catch (error) {
+          console.error('Failed to forget skill install provenance:', error);
+        }
+      };
+
+      // Mirror of the web route's located delete: `scope` and `source`
+      // together narrow it to the folder there, named by the id or, without
+      // one, by the display name. It never consults the merged list, so a copy
+      // of the id OpenCode lists first elsewhere stays.
+      if (normalizedMethod === 'DELETE' && (scope || source)) {
+        const location = skillLocationSchema.safeParse({ scope, source });
+        if (!location.success) {
+          return { id, type, success: false, error: 'scope must be user or project and source opencode, claude or agents' };
+        }
+        const { id: locatedId, error: idError } = readSkillIdSelector(skillId);
+        if (idError) {
+          return { id, type, success: false, error: idError };
+        }
+        const folderName = locatedId ?? skillName;
+        deleteSkill(folderName, workingDirectory, location.data);
+        forgetProvenanceOnceGone(folderName);
+        return {
+          id,
+          type,
+          success: true,
+          data: {
+            ...buildAppliedResponse(`Skill ${skillName} deleted successfully.`),
+            ...(locatedId ? { id: locatedId } : {}),
+          },
+        };
       }
 
       // The web routes' `?id=` selector, carried by the webview as `skillId`.
@@ -850,16 +901,8 @@ export async function handleConfigBridgeMessage(
           return { id, type, success: false, error: `Skill "${skillName}" is outside managed skill directories and cannot be deleted` };
         }
         deleteSkillAt(selected.skill.path, workingDirectory);
-        // Install provenance is keyed by the install folder name, the id. It
-        // stays while another copy of the id is still on disk.
         const deletedId = selected.skillId;
-        if (!discoverSkills(workingDirectory).some((skill) => skill.id === deletedId)) {
-          try {
-            removeInstalledSources(deletedId);
-          } catch (error) {
-            console.error('Failed to forget skill install provenance:', error);
-          }
-        }
+        forgetProvenanceOnceGone(deletedId);
         return {
           id,
           type,
