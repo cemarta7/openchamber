@@ -655,6 +655,22 @@ the chat, the session list and the file tree.
 Failure is still not empty: a failed load restores that directory's previous
 list rather than clearing it.
 
+Skills are keyed by OpenCode's skill `id`, the folder of `SKILL.md`, which the
+frontmatter `name` can differ from. The server lists one row per id, so two ids
+sharing a display name are two rows, and the source copies of one id are one.
+Selection (`selectedSkillId`), partial-list merges, the runtime-flag dedup and
+local updates all key on the id; `name` is only the label. Calls about one skill
+(detail, edit, rename, delete, supporting files) keep the display name in the
+`/api/config/skills/:name` path and send the id as the `id` query, which the
+server matches exactly and never by name. Edits also send the listed file as
+`targetPath`, and a detail answer whose path is another file's is dropped, so an
+editor never shows one file and saves to another. Delete removes only the file
+OpenCode loads; the list is reloaded afterwards, a lower-priority copy of the
+same id can reappear in it, and the selection stays on an id the list still has. The persisted selection moved
+from `selectedSkillName` to `selectedSkillId`; an old saved name is not carried
+over, so the first start after the change opens Settings with no skill
+selected.
+
 ## Selector Rules
 
 Use leaf selectors.

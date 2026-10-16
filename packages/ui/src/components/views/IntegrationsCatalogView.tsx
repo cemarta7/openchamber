@@ -343,7 +343,8 @@ export function IntegrationsCatalogView(): React.ReactNode {
       setSelectedPlugin(installed?.id ?? null);
     } else if (component.kind === 'skill') {
       setSettingsPage('skills.installed');
-      useSkillsStore.getState().setSelectedSkill(skillReportedName(component));
+      // Settings selects by id: the folder the install created, `skillDir`.
+      useSkillsStore.getState().setSelectedSkill(component.skillDir);
     } else {
       setSettingsPage('extensions');
     }
@@ -491,7 +492,10 @@ export function IntegrationsCatalogView(): React.ReactNode {
         // the installed check keys on the SKILL.md frontmatter name; the two
         // differ for some vendors (Vercel's react skill).
         if (component.kind === 'skill' && isSkillInstalled(skillReportedName(component))) {
-          const ok = await useSkillsStore.getState().deleteSkill(component.skillDir, currentDirectory ?? undefined);
+          const ok = await useSkillsStore.getState().deleteSkill(
+            { id: component.skillDir, name: skillReportedName(component) },
+            currentDirectory ?? undefined,
+          );
           if (!ok) {
             failed = true;
             errorDetail = t('integrationsCatalog.uninstall.skillDetail', { name: component.skillDir });

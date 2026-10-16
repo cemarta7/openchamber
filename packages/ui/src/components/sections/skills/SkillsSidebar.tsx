@@ -43,19 +43,6 @@ const isRenamableSkill = (skill: DiscoveredSkill | null | undefined): boolean =>
   !!skill && !isBuiltInSkill(skill) && skill.renamable === true
 );
 
-/**
- * The id OpenCode's `skill:<id>` policies name: the folder of a `SKILL.md`, or
- * a loose `<id>.md` file's name (`config/plugin/skill-file.ts` upstream).
- */
-const skillPolicyId = (skill: DiscoveredSkill): string => {
-  if (isBuiltInSkill(skill)) return skill.name;
-  const parts = skill.path.split(/[\\/]/).filter(Boolean);
-  const file = parts.at(-1) ?? '';
-  if (file === 'SKILL.md') return parts.at(-2) ?? skill.name;
-  if (file.endsWith('.md')) return file.slice(0, -3);
-  return skill.name;
-};
-
 export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) => {
   const { t } = useI18n();
   const [query, setQuery] = React.useState('');
@@ -66,14 +53,14 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
   const [openMenuSkill, setOpenMenuSkill] = React.useState<string | null>(null);
 
   const {
-    selectedSkillName,
+    selectedSkillId,
     setSelectedSkill,
     setSkillDraft,
     deleteSkill,
     renameSkill,
     getSkillDetail,
   } = useSkillsStore(useShallow((s) => ({
-    selectedSkillName: s.selectedSkillName,
+    selectedSkillId: s.selectedSkillId,
     setSelectedSkill: s.setSelectedSkill,
     setSkillDraft: s.setSkillDraft,
     deleteSkill: s.deleteSkill,
@@ -126,7 +113,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
     }
 
     setIsDeletePending(true);
-    const success = await deleteSkill(deleteDialogSkill.name, settingsDirectory);
+    const success = await deleteSkill(deleteDialogSkill, settingsDirectory);
     if (success) {
       toast.success(t('settings.skills.sidebar.toast.skillDeleted', { name: deleteDialogSkill.name }));
       setDeleteDialogSkill(null);
@@ -149,7 +136,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
     }
 
     // Get full skill detail to copy
-    const detail = await getSkillDetail(skill.name, settingsDirectory);
+    const detail = await getSkillDetail(skill, settingsDirectory);
     if (!detail) {
       toast.error(t('settings.skills.sidebar.toast.duplicateLoadFailed'));
       return;
@@ -198,9 +185,10 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
     }
 
     // Rename in place on disk so SKILL.md body and supporting files are preserved.
-    const success = await renameSkill(renameDialogSkill.name, sanitizedName, settingsDirectory);
+    const success = await renameSkill(renameDialogSkill, sanitizedName, settingsDirectory);
     if (success) {
       toast.success(t('settings.skills.sidebar.toast.skillRenamed', { name: sanitizedName }));
+      // Rename moves the folder to the new name, which is the new id.
       setSelectedSkill(sanitizedName);
     } else {
       toast.error(t('settings.skills.sidebar.toast.renameFailed'));
@@ -283,40 +271,40 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                   >
                     {groupSkills.map((skill) => (
                       <SkillListItem
-                        key={skill.name}
+                        key={skill.id}
                         skill={skill}
-                        blocked={isBlocked(`skill:${skillPolicyId(skill)}`)}
-                        isSelected={selectedSkillName === skill.name}
+                        blocked={isBlocked(`skill:${skill.id}`)}
+                        isSelected={selectedSkillId === skill.id}
                         onSelect={() => {
-                          setSelectedSkill(skill.name);
+                          setSelectedSkill(skill.id);
                           onItemSelect?.();
 
                         }}
                         onRename={() => handleOpenRenameDialog(skill)}
                         onDelete={() => handleDeleteSkill(skill)}
                         onDuplicate={() => handleDuplicateSkill(skill)}
-                        isMenuOpen={openMenuSkill === skill.name}
-                        onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                        isMenuOpen={openMenuSkill === skill.id}
+                        onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.id : null)}
                       />
                     ))}
                   </SidebarGroup>
                 ))}
                 {groupedProjectSkills.ungrouped.map((skill) => (
                   <SkillListItem
-                    key={skill.name}
+                    key={skill.id}
                     skill={skill}
-                    blocked={isBlocked(`skill:${skillPolicyId(skill)}`)}
-                    isSelected={selectedSkillName === skill.name}
+                    blocked={isBlocked(`skill:${skill.id}`)}
+                    isSelected={selectedSkillId === skill.id}
                     onSelect={() => {
-                      setSelectedSkill(skill.name);
+                      setSelectedSkill(skill.id);
                       onItemSelect?.();
 
                     }}
                     onRename={() => handleOpenRenameDialog(skill)}
                     onDelete={() => handleDeleteSkill(skill)}
                     onDuplicate={() => handleDuplicateSkill(skill)}
-                    isMenuOpen={openMenuSkill === skill.name}
-                    onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                    isMenuOpen={openMenuSkill === skill.id}
+                    onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.id : null)}
                   />
                 ))}
               </>
@@ -336,40 +324,40 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                   >
                     {groupSkills.map((skill) => (
                       <SkillListItem
-                        key={skill.name}
+                        key={skill.id}
                         skill={skill}
-                        blocked={isBlocked(`skill:${skillPolicyId(skill)}`)}
-                        isSelected={selectedSkillName === skill.name}
+                        blocked={isBlocked(`skill:${skill.id}`)}
+                        isSelected={selectedSkillId === skill.id}
                         onSelect={() => {
-                          setSelectedSkill(skill.name);
+                          setSelectedSkill(skill.id);
                           onItemSelect?.();
 
                         }}
                         onRename={() => handleOpenRenameDialog(skill)}
                         onDelete={() => handleDeleteSkill(skill)}
                         onDuplicate={() => handleDuplicateSkill(skill)}
-                        isMenuOpen={openMenuSkill === skill.name}
-                        onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                        isMenuOpen={openMenuSkill === skill.id}
+                        onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.id : null)}
                       />
                     ))}
                   </SidebarGroup>
                 ))}
                 {groupedUserSkills.ungrouped.map((skill) => (
                   <SkillListItem
-                    key={skill.name}
+                    key={skill.id}
                     skill={skill}
-                    blocked={isBlocked(`skill:${skillPolicyId(skill)}`)}
-                    isSelected={selectedSkillName === skill.name}
+                    blocked={isBlocked(`skill:${skill.id}`)}
+                    isSelected={selectedSkillId === skill.id}
                     onSelect={() => {
-                      setSelectedSkill(skill.name);
+                      setSelectedSkill(skill.id);
                       onItemSelect?.();
 
                     }}
                     onRename={() => handleOpenRenameDialog(skill)}
                     onDelete={() => handleDeleteSkill(skill)}
                     onDuplicate={() => handleDuplicateSkill(skill)}
-                    isMenuOpen={openMenuSkill === skill.name}
-                    onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                    isMenuOpen={openMenuSkill === skill.id}
+                    onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.id : null)}
                   />
                 ))}
               </>
