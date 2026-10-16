@@ -923,6 +923,14 @@ async function renameSkillNow(oldName, newName, workingDirectory, skillPath, bef
 }
 
 /**
+ * Whether `deleteSkillAt` may remove this skill file's folder: the same
+ * containment check, symlinks followed, so a route can refuse up front.
+ */
+function isDeletableSkillPath(skillMdPath, workingDirectory) {
+  return skillFolderToDelete(skillMdPath, getManagedSkillRoots(workingDirectory)) !== null;
+}
+
+/**
  * Delete exactly one skill: the folder of `skillMdPath`, which must be a
  * `SKILL.md` strictly inside a managed skill root (nested groups included),
  * reached without a symlink leading out of that root (`skillFolderToDelete`).
@@ -953,6 +961,7 @@ export {
   updateSkill,
   deleteSkill,
   deleteSkillAt,
+  isDeletableSkillPath,
   renameSkill,
   isManagedSkillPath,
 };

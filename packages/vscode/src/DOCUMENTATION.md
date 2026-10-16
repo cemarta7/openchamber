@@ -383,13 +383,19 @@ Bridge surface (`bridge-config-runtime.ts`), matching the web routes:
   nothing deleted), then removes only the folder in that location named by the
   id, else by `name`, without consulting the merged list. A missing folder
   fails and leaves other copies alone. Provenance follows the `?id=` rule, so
-  it stays while another copy of the id is on disk. This is how the
+  it stays while the disk scan for the request's directory (the user skill
+  roots and that project) still finds a copy of the id; other projects are not
+  scanned. This is how the
   integrations catalog uninstalls its own user OpenCode copy.
 - Skill deletes share the web server's symlink rules (`skillFolderToDelete`,
   `removeSkillFolder` and `isSkillFolderName` in `skill-identity.js`). A group
   folder that links out of its root is refused, a symlinked skill folder loses
   only the link, a symlinked root counts as its target, and a name that is not
-  one folder name is refused.
+  one folder name is refused. Both refusals are checked before anything is
+  removed and answer `success: false` with the web route's message
+  (`isDeletableSkillPath`, `isSkillFolderName`); the webview turns them into
+  HTTP 500 like every skills bridge failure, where the web route answers 409
+  and 400.
 - `api:config/skills` `PATCH { renameTo }` keeps a switched-off skill off under
   its new id through the web server's `renameSkillKeepingSwitches`, with the
   same steps and `switches` answer (see "Renaming a switched-off skill" in

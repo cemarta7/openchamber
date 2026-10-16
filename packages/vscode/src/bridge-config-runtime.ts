@@ -31,6 +31,7 @@ import {
   updateSkill,
   deleteSkill,
   deleteSkillAt,
+  isDeletableSkillPath,
   renameSkill,
   isManagedSkillPath,
   readSkillSupportingFile,
@@ -68,7 +69,7 @@ import {
   skillIdFromPath,
   type SkillPolicyOpenCodeReader,
 } from '../../web/server/lib/opencode/skill-policy.js';
-import { readSkillIdSelector, selectSkillById } from '../../web/server/lib/opencode/skill-identity.js';
+import { isSkillFolderName, readSkillIdSelector, selectSkillById } from '../../web/server/lib/opencode/skill-identity.js';
 import { parseWebSearchSelection } from './opencode-config-v2';
 import {
   getSkillsCatalog,
@@ -755,7 +756,9 @@ export async function handleConfigBridgeMessage(
       }
 
       // Install provenance is keyed by the install folder name, the id. It
-      // stays while another copy of the id is still on disk.
+      // stays while the disk scan for this directory, the user skill roots
+      // and this project, still finds a copy of the id. Other projects are
+      // not scanned; the record has no project field.
       const forgetProvenanceOnceGone = (deletedId: string) => {
         if (discoverSkills(workingDirectory).some((skill) => skill.id === deletedId)) return;
         try {
@@ -779,6 +782,9 @@ export async function handleConfigBridgeMessage(
           return { id, type, success: false, error: idError };
         }
         const folderName = locatedId ?? skillName;
+        if (!isSkillFolderName(folderName)) {
+          return { id, type, success: false, error: 'Invalid skill name' };
+        }
         deleteSkill(folderName, workingDirectory, location.data);
         forgetProvenanceOnceGone(folderName);
         return {
@@ -896,8 +902,9 @@ export async function handleConfigBridgeMessage(
       }
 
       if (normalizedMethod === 'DELETE' && selected.skill && selected.skillId) {
-        // Exactly the selected skill's folder, nested groups included.
-        if (!isManagedSkillPath(selected.skill.path, workingDirectory)) {
+        // Exactly the selected skill's folder, nested groups included, refused
+        // outside a managed root with symlinks followed.
+        if (!isDeletableSkillPath(selected.skill.path, workingDirectory)) {
           return { id, type, success: false, error: `Skill "${skillName}" is outside managed skill directories and cannot be deleted` };
         }
         deleteSkillAt(selected.skill.path, workingDirectory);
@@ -916,6 +923,9 @@ export async function handleConfigBridgeMessage(
       }
 
       if (normalizedMethod === 'DELETE') {
+        if (!isSkillFolderName(skillName)) {
+          return { id, type, success: false, error: 'Invalid skill name' };
+        }
         deleteSkill(skillName, workingDirectory);
         try {
           removeInstalledSources(skillName);

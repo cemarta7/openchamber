@@ -3557,6 +3557,14 @@ const isManagedSkillPath = (skillMdPath: string, workingDirectory?: string): boo
 export { isManagedSkillPath };
 
 /**
+ * Mirror of the web server's `isDeletableSkillPath`: whether `deleteSkillAt`
+ * may remove this skill file's folder, symlinks followed.
+ */
+export const isDeletableSkillPath = (skillMdPath: string, workingDirectory?: string): boolean => (
+  skillFolderToDelete(skillMdPath, getManagedSkillRoots(workingDirectory)) !== null
+);
+
+/**
  * Mirror of the web server's `deleteSkillAt`: delete exactly the folder of one
  * `SKILL.md` strictly inside a managed skill root (nested groups included),
  * reached without a symlink leading out of that root. A folder that is itself

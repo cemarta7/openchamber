@@ -815,8 +815,8 @@ describe('VS Code skill delete through symlinks, as the web server', () => {
     fs.mkdirSync(path.join(root, '.opencode', 'skills'), { recursive: true });
     fs.symlinkSync(library, path.join(root, '.opencode', 'skills', 'group'), 'dir');
 
-    await expect(skill({ method: 'DELETE', name: 'Example', skillId: 'example' }))
-      .rejects.toThrow('outside managed skill directories');
+    expect(await skill({ method: 'DELETE', name: 'Example', skillId: 'example' }))
+      .toMatchObject({ success: false, error: 'Skill "Example" is outside managed skill directories and cannot be deleted' });
     expect(fs.readFileSync(path.join(library, 'example', 'keep.txt'), 'utf8')).toBe('keep');
   });
 
@@ -860,11 +860,14 @@ describe('VS Code skill delete through symlinks, as the web server', () => {
     expect(fs.existsSync(path.join(library, 'group', 'sibling', 'SKILL.md'))).toBe(true);
   });
 
-  test('refuses a located delete by a name that is not one folder name', async () => {
+  test('refuses a name that is not one folder name, located or not, as the web route', async () => {
     const { root, skill } = setup();
     writeSkill(path.join(root, '.claude', 'skills', 'example'), 'Example');
 
-    await expect(skill({ method: 'DELETE', name: '..', scope: 'project', source: 'claude' })).rejects.toThrow('Invalid skill name');
+    for (const name of ['..', '.', 'a/b', 'a\\b']) {
+      expect(await skill({ method: 'DELETE', name, scope: 'project', source: 'claude' })).toMatchObject({ success: false, error: 'Invalid skill name' });
+      expect(await skill({ method: 'DELETE', name })).toMatchObject({ success: false, error: 'Invalid skill name' });
+    }
     expect(fs.existsSync(path.join(root, '.claude', 'skills', 'example', 'keep.txt'))).toBe(true);
   });
 });

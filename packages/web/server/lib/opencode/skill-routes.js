@@ -8,7 +8,7 @@ import {
   isValidSkillPolicyId,
   skillIdFromPath,
 } from './skill-policy.js';
-import { readSkillIdSelector, selectSkillById } from './skill-identity.js';
+import { isSkillFolderName, readSkillIdSelector, selectSkillById } from './skill-identity.js';
 import { asNonEmptyString, isString } from '../shared/guards.js';
 import { appendInstalledSources, isInstalledFromSource, readInstalledSources, removeInstalledSources } from '../skills-catalog/installed-sources.js';
 
@@ -46,6 +46,7 @@ export const registerSkillRoutes = (app, dependencies) => {
     updateSkill,
     deleteSkill,
     deleteSkillAt,
+    isDeletableSkillPath,
     renameSkill,
     isManagedSkillPath,
     readSkillSupportingFile,
@@ -1104,7 +1105,9 @@ export const registerSkillRoutes = (app, dependencies) => {
       }
 
       // Install provenance is keyed by the install folder name, the id. It
-      // stays while another copy of the id is still on disk.
+      // stays while the disk scan for this directory, the user skill roots
+      // and this project, still finds a copy of the id. Other projects are
+      // not scanned; the record has no project field.
       const forgetProvenanceOnceGone = async (id) => {
         if ((await discoverSkills(directory)).some((skill) => skill.id === id)) return;
         try {
@@ -1122,6 +1125,9 @@ export const registerSkillRoutes = (app, dependencies) => {
         // The located folder itself, never the copy OpenCode lists first
         // under this id: that one may be a same-named skill kept elsewhere.
         const folderName = id ?? skillName;
+        if (!isSkillFolderName(folderName)) {
+          return res.status(400).json({ error: 'Invalid skill name' });
+        }
         deleteSkill(folderName, directory, location);
         await forgetProvenanceOnceGone(folderName);
         return res.json({
@@ -1137,8 +1143,9 @@ export const registerSkillRoutes = (app, dependencies) => {
 
       if (selected.skill) {
         // Exactly the selected skill's folder, nested groups included; other
-        // copies or skills sharing the display name stay.
-        if (!isString(selected.skill.path) || !isManagedSkillPath(selected.skill.path, directory)) {
+        // copies or skills sharing the display name stay. Refused when the
+        // folder sits outside a managed root, symlinks followed.
+        if (!isString(selected.skill.path) || !isDeletableSkillPath(selected.skill.path, directory)) {
           return res.status(409).json({ error: `Skill "${skillName}" is outside managed skill directories and cannot be deleted` });
         }
         await deleteSkillAt(selected.skill.path, directory);
@@ -1150,6 +1157,9 @@ export const registerSkillRoutes = (app, dependencies) => {
         });
       }
 
+      if (!isSkillFolderName(skillName)) {
+        return res.status(400).json({ error: 'Invalid skill name' });
+      }
       deleteSkill(skillName, directory);
       try {
         removeInstalledSources(skillName);

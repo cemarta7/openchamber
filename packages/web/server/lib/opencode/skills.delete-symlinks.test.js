@@ -11,7 +11,11 @@ process.env.HOME = scratchHome;
 process.env.XDG_CONFIG_HOME = path.join(scratchHome, '.config');
 delete process.env.OPENCODE_CONFIG_DIR;
 
-const { deleteSkill, deleteSkillAt } = await import('./skills.js');
+const skills = await import('./skills.js');
+const { deleteSkill, deleteSkillAt } = skills;
+const shared = await import('./shared.js');
+const { registerSkillRoutes } = await import('./skill-routes.js');
+const { default: express } = await import('express');
 
 const roots = [];
 const tempDir = (label) => {
@@ -122,5 +126,83 @@ describe('deleting a skill through symlinks', () => {
       expect(() => deleteSkill(name, root)).toThrow('Invalid skill name');
     }
     expect(fs.existsSync(path.join(root, '.claude', 'skills', 'example', 'keep.txt'))).toBe(true);
+  });
+});
+
+// The delete route over the same scratch home: OpenCode is unreachable, so
+// skills come from the disk scan.
+const startRoutes = (projectRoot) => {
+  const app = express();
+  app.use(express.json());
+  registerSkillRoutes(app, {
+    fs,
+    path,
+    os,
+    resolveProjectDirectory: async () => ({ directory: projectRoot, error: null }),
+    resolveOptionalProjectDirectory: async () => ({ directory: projectRoot, error: null }),
+    readSettingsFromDisk: async () => ({}),
+    sanitizeSkillCatalogs: (value) => value,
+    isUnsafeSkillRelativePath: () => false,
+    refreshOpenCodeAfterConfigChange: async () => {},
+    clientReloadDelayMs: 0,
+    buildOpenCodeUrl: () => 'http://127.0.0.1:9/',
+    getOpenCodeAuthHeaders: () => ({}),
+    getOpenCodePort: () => 0,
+    ...skills,
+    readSkillSupportingFile: shared.readSkillSupportingFile,
+    writeSkillSupportingFile: shared.writeSkillSupportingFile,
+    deleteSkillSupportingFile: shared.deleteSkillSupportingFile,
+    SKILL_SCOPE: shared.SKILL_SCOPE,
+    SKILL_DIR: shared.SKILL_DIR,
+    getCuratedSkillsSources: () => [],
+    getCacheKey: () => 'k',
+    scanWithCache: async (_key, loader) => loader(),
+    parseSkillRepoSource: () => ({ ok: false }),
+    scanSkillsRepository: async () => ({ ok: false }),
+    installSkillsFromRepository: async () => ({ ok: false }),
+    fetchGitHubRepoMetas: async () => ({}),
+    getProfiles: () => [],
+    getProfile: () => null,
+  });
+  const server = app.listen(0);
+  const { port } = server.address();
+  return {
+    del: (pathAndQuery) => fetch(`http://127.0.0.1:${port}/api/config/skills/${pathAndQuery}`, { method: 'DELETE' }),
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+};
+
+describe('the delete route refuses before anything is removed', () => {
+  it('answers 409 for a listed skill reached through a group symlink that leads out of the root', async () => {
+    const root = project();
+    const library = tempDir('library');
+    writeSkill(path.join(library, 'example'));
+    fs.mkdirSync(path.join(root, '.opencode', 'skills'), { recursive: true });
+    fs.symlinkSync(library, path.join(root, '.opencode', 'skills', 'group'), 'dir');
+    const routes = startRoutes(root);
+    try {
+      const response = await routes.del('Example?id=example');
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toContain('outside managed skill directories');
+    } finally {
+      await routes.close();
+    }
+    expect(fs.readFileSync(path.join(library, 'example', 'keep.txt'), 'utf8')).toBe('keep');
+  });
+
+  it('answers 400 for a name that is not one folder name, located or not', async () => {
+    const root = project();
+    writeSkill(path.join(root, '.claude', 'skills', 'example'));
+    const routes = startRoutes(root);
+    try {
+      for (const query of ['a%2Fb', 'a%5Cb', 'a%2Fb?scope=project&source=claude']) {
+        const response = await routes.del(query);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: 'Invalid skill name' });
+      }
+    } finally {
+      await routes.close();
+    }
+    expect(fs.readFileSync(path.join(root, '.claude', 'skills', 'example', 'keep.txt'), 'utf8')).toBe('keep');
   });
 });
