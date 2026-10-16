@@ -374,7 +374,10 @@ describe('VS Code skill policy parity', () => {
     const ctx = createCtx(hostDirectory ?? root);
     const send = (payload) => handleConfigBridgeMessage({ id: 'policy', type: 'api:config/skill-policy', payload }, ctx, policyDeps);
     const list = (directory) => handleConfigBridgeMessage({ id: 'list', type: 'api:config/skills', payload: { method: 'GET', directory } }, ctx, policyDeps);
-    return { root, projectConfigPath, send, list };
+    const rename = (name, renameTo, skillId) => handleConfigBridgeMessage({
+      id: 'rename', type: 'api:config/skills', payload: { method: 'PATCH', name, skillId, directory: root, body: { renameTo } },
+    }, ctx, policyDeps);
+    return { root, projectConfigPath, send, list, rename };
   };
 
   afterEach(() => {
@@ -470,6 +473,66 @@ describe('VS Code skill policy parity', () => {
     const on = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: true } });
     expect(on.data.body).toMatchObject({ saved: { changed: false }, policy: { effective: 'disabled', decidedBy: { owned: false } } });
     expect(fs.readFileSync(projectConfigPath, 'utf8')).toBe(text);
+  });
+
+  describe('renaming a switched-off skill keeps it off, like the web server', () => {
+    const ownedDeny = (id) => ({ action: 'integration.use', resource: `skill:${id}`, effect: 'deny', openchamber: 'skill-switch' });
+    const userDeny = (resource) => ({ action: 'integration.use', resource, effect: 'deny' });
+
+    test('moves the project switch to the new id and leaves user rules alone', async () => {
+      const { root, projectConfigPath, send, list, rename } = setup();
+      // User rules the switch must not touch: an unrelated wildcard and another skill's exact deny.
+      fs.writeFileSync(projectConfigPath, JSON.stringify({ policies: [userDeny('skill:zz-*'), userDeny('skill:other')] }, null, 2));
+      expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } })).data.status).toBe(200);
+
+      const renamed = await rename('Alpha Display', 'alpha-renamed', 'alpha-skill');
+      expect(renamed.data).toMatchObject({
+        id: 'alpha-renamed',
+        switches: { carried: [{ scope: 'project', path: projectConfigPath }], oldRuleRemoved: [{ scope: 'project' }] },
+      });
+      expect(readJson(projectConfigPath)).toEqual({ policies: [userDeny('skill:zz-*'), userDeny('skill:other'), ownedDeny('alpha-renamed')] });
+      expect((await list(root)).data.skillPolicy.skills['alpha-renamed']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    });
+
+    test('keeps the old switch while another copy of the old id stays installed', async () => {
+      const { root, projectConfigPath, send, rename } = setup();
+      const copy = path.join(root, '.claude', 'skills', 'alpha-skill', 'SKILL.md');
+      fs.mkdirSync(path.dirname(copy), { recursive: true });
+      fs.writeFileSync(copy, '---\nname: Alpha Copy\ndescription: copy\n---\nBody\n');
+      expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } })).data.status).toBe(200);
+
+      const renamed = await rename('Alpha Display', 'alpha-renamed', 'alpha-skill');
+      expect(renamed.data.switches).toMatchObject({ oldRuleRemoved: [], oldRuleKept: [{ scope: 'project' }] });
+      expect(readJson(projectConfigPath)).toEqual({ policies: [ownedDeny('alpha-skill'), ownedDeny('alpha-renamed')] });
+    });
+
+    test('refuses the rename, moving nothing, when a scope file cannot be read', async () => {
+      const { root, projectConfigPath, send, rename } = setup();
+      expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } })).data.status).toBe(200);
+      fs.writeFileSync(globalConfigPath, '{ broken');
+
+      const renamed = await rename('Alpha Display', 'alpha-renamed', 'alpha-skill');
+      expect(renamed).toMatchObject({ success: false });
+      expect(renamed.error).toMatch(/not renamed/);
+      expect(fs.existsSync(path.join(root, '.opencode', 'skills', 'alpha-skill', 'SKILL.md'))).toBe(true);
+      expect(readJson(projectConfigPath)).toEqual({ policies: [ownedDeny('alpha-skill')] });
+    });
+
+    test.skipIf(process.getuid?.() === 0)('takes the carried switch out again when the folder cannot be moved', async () => {
+      const { root, projectConfigPath, send, rename } = setup();
+      expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } })).data.status).toBe(200);
+      const before = fs.readFileSync(projectConfigPath, 'utf8');
+      const skillsDir = path.join(root, '.opencode', 'skills');
+      fs.chmodSync(skillsDir, 0o555);
+      try {
+        const renamed = await rename('Alpha Display', 'alpha-renamed', 'alpha-skill');
+        expect(renamed).toMatchObject({ success: false });
+      } finally {
+        fs.chmodSync(skillsDir, 0o755);
+      }
+      expect(fs.existsSync(path.join(skillsDir, 'alpha-skill', 'SKILL.md'))).toBe(true);
+      expect(fs.readFileSync(projectConfigPath, 'utf8')).toBe(before);
+    });
   });
 
   test('writes the global switch to the user config and reports it over the project one', async () => {
@@ -594,8 +657,9 @@ describe('VS Code skill routes selected by OpenCode id', () => {
     expect(fs.readFileSync(newPath, 'utf8')).toContain('Body two');
     expect(fs.existsSync(files.two)).toBe(false);
     expect(fs.readFileSync(files.one, 'utf8')).toContain('name: Same Name');
-    await expect(skill({ method: 'PATCH', name: 'Display Name', skillId: 'display-id', body: { renameTo: 'beta-one' } }))
-      .rejects.toThrow('already exists');
+    const clash = await skill({ method: 'PATCH', name: 'Display Name', skillId: 'display-id', body: { renameTo: 'beta-one' } });
+    expect(clash).toMatchObject({ success: false });
+    expect(clash.error).toMatch(/already exists/);
     expect(fs.existsSync(files.display)).toBe(true);
   });
 

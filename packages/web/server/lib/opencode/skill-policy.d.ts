@@ -44,6 +44,26 @@ export type SkillPolicyWriteResult = {
   policy: SkillPolicyState;
 };
 
+export type SkillPolicyScopeFile = { scope: SkillPolicyScope; path: string };
+
+export type SkillRenameCarry = {
+  owning: SkillPolicyScopeFile[];
+  carried: SkillPolicyScopeFile[];
+  undo: () => Promise<Array<SkillPolicyScopeFile & { error: string }>>;
+  finish: () => Promise<{
+    removed: SkillPolicyScopeFile[];
+    kept: SkillPolicyScopeFile[];
+    failed: Array<SkillPolicyScopeFile & { error: string }>;
+  }>;
+};
+
+export type SkillRenameSwitches = {
+  carried: SkillPolicyScopeFile[];
+  oldRuleRemoved: SkillPolicyScopeFile[];
+  oldRuleKept: SkillPolicyScopeFile[];
+  oldRuleCleanupFailed: Array<SkillPolicyScopeFile & { error: string }>;
+};
+
 export type SkillPolicyService = {
   readState: (input: {
     directory: string | null;
@@ -57,6 +77,12 @@ export type SkillPolicyService = {
     enabled: JsonValue | undefined;
     openCode: SkillPolicyOpenCodeReader;
   }) => Promise<SkillPolicyWriteResult>;
+  carryForRename: (input: {
+    directory: string | null;
+    oldId: string;
+    newId: string;
+    keepOldRules: boolean;
+  }) => Promise<SkillRenameCarry>;
 };
 
 export function skillPolicyLocation(version: string | null | undefined): SkillPolicyLocation | null;
@@ -87,3 +113,14 @@ export function handleSkillPolicyWrite(input: {
   openCode: SkillPolicyOpenCodeReader;
   listInstalledSkillIds: (directory: string | null) => Promise<Set<string>>;
 }): Promise<{ status: number; body: JsonObject }>;
+
+export function carryOwnedSkillDeny(config: JsonObject, oldId: string, newId: string): string[][];
+
+export function renameSkillKeepingSwitches(input: {
+  service: SkillPolicyService;
+  directory: string | null;
+  listSkillFiles: (directory: string | null) => Promise<Array<{ id?: string | null; path: string }>>;
+  rename: (
+    beforeMove: (paths: { oldPath: string; newPath: string }) => Promise<{ undo: () => Promise<void> } | null>,
+  ) => Promise<string | null>;
+}): Promise<{ newPath: string | null; switches: SkillRenameSwitches | null }>;

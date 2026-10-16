@@ -260,6 +260,46 @@ export function setSkillDisabled(config, id, disabled, location) {
   return changed;
 }
 
+/**
+ * Rename support: next to every switch-owned deny for `oldId`, append the
+ * switch's deny for `newId` in the same array, so the new rule has the format
+ * (and so the OpenCode versions) the old one was written for. An array that
+ * already holds the switch's deny for `newId` is left alone. User-written
+ * rules are never read as owned and never copied. Returns the key paths it
+ * appended to, in place.
+ */
+export function carryOwnedSkillDeny(config, oldId, newId) {
+  if (!isPlainObject(config) || !isValidSkillPolicyId(oldId) || !isValidSkillPolicyId(newId)) return [];
+  const appended = [];
+  for (const keyPath of [EXPERIMENTAL_PATH, TOP_LEVEL_PATH]) {
+    const list = readPath(config, keyPath);
+    if (!Array.isArray(list) || !list.some((statement) => isOwnedStatement(statement, oldId))) continue;
+    if (list.some((statement) => isOwnedStatement(statement, newId))) continue;
+    list.push(ownedStatement(newId));
+    appended.push(keyPath);
+  }
+  return appended;
+}
+
+// Undo of `carryOwnedSkillDeny`: drop the last switch-owned deny for `id` from
+// each array it appended to, and an array (and `experimental`) it empties.
+const removeCarriedDeny = (config, id, keyPaths) => {
+  let changed = false;
+  for (const keyPath of keyPaths) {
+    const parent = keyPath.length === 2 ? readPath(config, [keyPath[0]]) : config;
+    const key = keyPath.at(-1);
+    if (!isPlainObject(parent) || !Array.isArray(parent[key])) continue;
+    const index = parent[key].findLastIndex((statement) => isOwnedStatement(statement, id));
+    if (index === -1) continue;
+    parent[key].splice(index, 1);
+    changed = true;
+    if (parent[key].length > 0) continue;
+    delete parent[key];
+    if (keyPath.length === 2 && Object.keys(parent).length === 0) delete config[keyPath[0]];
+  }
+  return changed;
+};
+
 const isDocument = (entry) => isPlainObject(entry) && entry.type === 'document' && isPlainObject(entry.info);
 
 /**
@@ -496,7 +536,155 @@ export function createSkillPolicyService({
     };
   };
 
-  return { readState, setEnabled };
+  /**
+   * Keep a renamed skill off where a switch turned it off (#3075 decision):
+   * the switch-owned deny for `oldId` is carried to `newId` in this
+   * directory's scope files, the global one and the project one. No other
+   * project's config is opened, and user-written rules stay as they are.
+   *
+   * Called before the folder moves. Every scope file is read first; one that
+   * cannot be read stops the rename (409) before anything is written, since
+   * it may hold a switch's deny the rename would otherwise lose. Then the new
+   * deny is written next to the old one, so OpenCode never sees the new id
+   * without it. A failed write restores the files already written and stops
+   * the rename.
+   *
+   * Answers a handle: `owning` lists the scope files holding the old id's
+ * switch rule, `carried` the ones the new rule was written to (a file that
+ * already had the new id's switch rule is in `owning` only). `undo()` takes
+ * the carried rules out again (the folder
+   * did not move); `finish()` removes the old id's switch-owned deny once the
+   * folder moved, unless `keepOldRules` (another copy of the old id is still
+   * installed and must stay off). Both report what they could not do instead
+   * of throwing.
+   */
+  const carryForRename = async ({ directory, oldId, newId, keepOldRules }) => {
+    if (!isValidSkillPolicyId(oldId) || !isValidSkillPolicyId(newId) || oldId === newId) {
+      return { owning: [], carried: [], undo: async () => [], finish: async () => ({ removed: [], kept: [], failed: [] }) };
+    }
+    const scopes = readScopes(directory);
+    const targets = SKILL_POLICY_SCOPES.flatMap((scope) => (scopes[scope] ? [{ scope, path: scopes[scope].path }] : []));
+
+    const owning = [];
+    for (const target of targets) {
+      let config;
+      try {
+        config = readConfigFile(target.path);
+      } catch (error) {
+        throw statusError(409, 'invalid_config', `The skill was not renamed: ${errorMessage(error)}`);
+      }
+      if (listOwnedSkillDenies(config).includes(oldId)) owning.push(target);
+    }
+
+    const carried = [];
+    const restore = () => serialize(() => {
+      const failed = [];
+      for (const entry of carried.splice(0).reverse()) {
+        try {
+          const config = readConfigFile(entry.path);
+          if (removeCarriedDeny(config, newId, entry.appended)) writeConfig(config, entry.path);
+        } catch (error) {
+          failed.push({ scope: entry.scope, path: entry.path, error: errorMessage(error) });
+        }
+      }
+      return failed;
+    });
+
+    try {
+      await serialize(() => {
+        for (const target of owning) {
+          const config = readConfigFile(target.path);
+          const appended = carryOwnedSkillDeny(config, oldId, newId);
+          if (appended.length === 0) continue;
+          writeConfig(config, target.path);
+          carried.push({ ...target, appended });
+        }
+      });
+    } catch (error) {
+      const failedRestore = await restore();
+      const leftover = failedRestore.length > 0 ? ` Restoring ${failedRestore.map((entry) => entry.path).join(', ')} also failed.` : '';
+      throw statusError(500, 'write_failed', `The skill was not renamed: its switch could not be kept off (${errorMessage(error)}).${leftover}`);
+    }
+
+    const carriedScopes = carried.map(({ scope, path: filePath }) => ({ scope, path: filePath }));
+    return {
+      owning: owning.map(({ scope, path: filePath }) => ({ scope, path: filePath })),
+      carried: carriedScopes,
+      undo: restore,
+      finish: () => serialize(() => {
+        const outcome = { removed: [], kept: [], failed: [] };
+        for (const target of owning) {
+          if (keepOldRules) {
+            outcome.kept.push(target);
+            continue;
+          }
+          try {
+            const config = readConfigFile(target.path);
+            if (setSkillDisabled(config, oldId, false, SKILL_POLICY_LOCATION.TOP_LEVEL)) writeConfig(config, target.path);
+            outcome.removed.push(target);
+          } catch (error) {
+            outcome.failed.push({ ...target, error: errorMessage(error) });
+          }
+        }
+        return outcome;
+      }),
+    };
+  };
+
+  return { readState, setEnabled, carryForRename };
+}
+
+/**
+ * A skill rename that keeps the skill off where a switch turned it off. Both
+ * runtimes call it around their own rename:
+ * `rename(beforeMove)` runs the rename with the `beforeMove({ oldPath,
+ * newPath })` hook it is handed, and `listSkillFiles(directory)` lists every
+ * skill file on disk with its id (copies included), which decides whether
+ * the old id's switch rule must stay for another copy.
+ *
+ * Resolves to `{ newPath, switches }`. `switches` is null when there was no
+ * switch rule to carry (or the id did not change), else `{ carried,
+ * oldRuleRemoved, oldRuleKept, oldRuleCleanupFailed }`, each a list of
+ * `{ scope, path }` (`error` on a failed cleanup). A rename that fails throws;
+ * the carried rules are taken out again when the folder did not move, and a
+ * restore that failed is named in the error message.
+ */
+export async function renameSkillKeepingSwitches({ service, directory, listSkillFiles, rename }) {
+  let carry = null;
+  let undoFailed = [];
+  const beforeMove = async ({ oldPath, newPath }) => {
+    const oldId = skillIdFromPath(oldPath);
+    const newId = skillIdFromPath(newPath);
+    if (!oldId || !newId || oldId === newId) return null;
+    const resolvedOld = path.resolve(oldPath);
+    const keepOldRules = (await listSkillFiles(directory))
+      .some((skill) => skill?.id === oldId && isString(skill.path) && path.resolve(skill.path) !== resolvedOld);
+    carry = await service.carryForRename({ directory, oldId, newId, keepOldRules });
+    return { undo: async () => { undoFailed = await carry.undo(); } };
+  };
+
+  let newPath;
+  try {
+    newPath = await rename(beforeMove);
+  } catch (error) {
+    if (undoFailed.length > 0 && error instanceof Error) {
+      error.message = `${error.message} The switch rules added for the new name could not be removed from ${undoFailed.map((entry) => entry.path).join(', ')}.`;
+    }
+    throw error;
+  }
+  if (!carry || carry.owning.length === 0) {
+    return { newPath, switches: null };
+  }
+  const outcome = await carry.finish();
+  return {
+    newPath,
+    switches: {
+      carried: carry.carried,
+      oldRuleRemoved: outcome.removed,
+      oldRuleKept: outcome.kept,
+      oldRuleCleanupFailed: outcome.failed,
+    },
+  };
 }
 
 /**

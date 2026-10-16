@@ -926,7 +926,7 @@ within a ten-minute overall deadline.
   - Selecting by id: `GET`, `PATCH` and `DELETE /api/config/skills/:name` and `GET`, `PUT` and `DELETE /api/config/skills/:name/files/*filePath` take an optional `?id=<OpenCode skill id>` (plus the usual `directory`). With it the route acts on the listed skill with that id and display name `:name` (OpenCode's list, then the disk scan, merged by id), or answers 404 `Skill not found`; it never falls back to another skill sharing the display name. An invalid id answers 400. Without `?id=` every route keeps its display-name lookup (`skill-identity.js` holds the shared selector).
     - Detail answers `{ name, id, path, sources, scope, source, exists }`; `id` and `path` say which skill was read (also without `?id=`).
     - `PATCH` edits answer `{ ..., id, path }` of the edited file. With `?id=`, a `targetPath` must be the selected file (409 otherwise); without `?id=`, a `targetPath` must be a listed skill file or a `SKILL.md` under a managed skill root (400 otherwise). A selected skill without a `SKILL.md` (built-in) answers 409.
-    - `PATCH { renameTo }` with `?id=` renames exactly the selected folder, nested group folders included, and sets frontmatter `name`. The folder takes the new name, so the OpenCode id changes to `renameTo`; the answer is `{ name, id, path }` of the renamed file. A new name another skill already uses as display name or id is refused. A switch's deny for the old id stays in its config file and shows as a switched-off id with no installed skill.
+    - `PATCH { renameTo }` with `?id=` renames exactly the selected folder, nested group folders included, and sets frontmatter `name`. The folder takes the new name, so the OpenCode id changes to `renameTo`; the answer is `{ name, id, path }` of the renamed file. A new name another skill already uses as display name or id is refused. A switched-off skill stays off under its new id; see "Renaming a switched-off skill" below. The answer also carries `switches` (null when no switch rule was involved).
     - `DELETE` with `?id=` removes exactly the selected skill's folder: a `SKILL.md` strictly inside a managed skill root, nested groups included, never the root itself (409 outside managed roots). Other copies of the id and other skills with the display name stay. The install provenance record, keyed by install folder name (the id), is removed only when no copy of the id is left on disk. Answers `{ ..., id, path }`. Without `?id=` the legacy delete removes every folder named `:name` in the known locations, as before.
     - Supporting files resolve only inside the selected skill's folder; a path that leaves it answers 403.
   - Returns `{ readQueuedSkillPolicy }`, which the message queue calls right before it delivers a queued skill instruction (`message-queue/DOCUMENTATION.md`). `readQueuedSkillPolicy({ directory, ids, names })` answers `{ states, inventory }` for the queued item's own directory:
@@ -988,6 +988,40 @@ isolated OpenCode 2.0.20 through 2.0.30 servers.
   documents up to 8 times, 250 ms apart, and reports `confirmed: false` until the
   document OpenCode serves for the file holds the same enforced statements as the
   file (compared on action, resource and effect); the rule is saved either way.
+
+### Renaming a switched-off skill
+Renaming moves the skill folder, so the OpenCode id changes. The user decided
+(#3075) that a skill a switch turned off stays off under its new id. Only the
+switch's own marked deny moves; user-written rules, wildcards and other files
+stay exactly as they are, so a skill only a user rule turned off comes back on
+under the new id. `renameSkillKeepingSwitches` in `skill-policy.js` runs the
+same steps for both rename routes (`?id=` and by display name) on web and VS
+Code:
+
+1. After the rename's own checks and before anything moves (a `beforeMove`
+   hook inside `renameSkill`), every scope file of the directory is read: the
+   user's global config and the project config the switches write. One that
+   cannot be read stops the rename with 409 and nothing is written or moved.
+2. In each of those files holding the switch's deny for the old id, the
+   switch's deny for the new id is appended next to it, in the same array
+   (`experimental.policies` or top-level `policies`), so it keeps the format the
+   old rule was written for. A failed write restores the files already written
+   and stops the rename (500). OpenCode never sees the new id without its rule.
+3. The folder moves. If the move or the frontmatter write fails, the folder is
+   moved back and the rules from step 2 are taken out again; when the folder
+   cannot be moved back, the new rules stay, so the skill stays off either way.
+4. The old id's switch rule is removed, unless another copy of the old id is
+   still installed (any skill file on disk with that id, `discoverSkills(dir, {
+   allCopies: true })`): that copy keeps the old id and stays off. A failed
+   removal leaves a harmless rule for the old id and is reported, not hidden.
+
+The answer's `switches` is `{ carried, oldRuleRemoved, oldRuleKept,
+oldRuleCleanupFailed }`, each a list of `{ scope, path }` (`error` on a failed
+cleanup). Only this directory's two scope files are read: a switch rule for the
+old id in another project's config is not carried. Writes go through the
+switches' one-at-a-time queue, so a switch flipped during a rename keeps its
+rule. The queued-message lookup reads OpenCode's config again on every
+delivery, so it sees the renamed skill as off.
 
 Contract, identical on web (`skill-routes.js`) and VS Code (`api:config/skill-policy`):
 

@@ -4,6 +4,7 @@ import { OPENCODE_CONFIG_DIR, readConfigFile, readConfigLayers, writeConfig } fr
 import {
   createSkillPolicyService,
   handleSkillPolicyWrite,
+  renameSkillKeepingSwitches,
   isValidSkillPolicyId,
   skillIdFromPath,
 } from './skill-policy.js';
@@ -958,7 +959,14 @@ export const registerSkillRoutes = (app, dependencies) => {
         const newName = updates.renameTo.trim();
         console.log(`[Server] Renaming skill: ${skillName} -> ${newName}`);
         console.log('[Server] Working directory:', directory);
-        const newPath = await renameSkill(skillName, newName, directory, { skillPath: selected.skill?.path ?? null });
+        // A skill a switch turned off stays off under its new id: the
+        // switch's own deny is carried before the folder moves.
+        const { newPath, switches } = await renameSkillKeepingSwitches({
+          service: skillPolicyService,
+          directory,
+          listSkillFiles: (dir) => discoverSkills(dir, { allCopies: true }),
+          rename: (beforeMove) => renameSkill(skillName, newName, directory, { skillPath: selected.skill?.path ?? null, beforeMove }),
+        });
         // OpenCode 2 watches the skills directories: the renamed folder is
         // picked up like any other write, no restart and no client reload.
         // The folder took the new name, so the OpenCode id is `newName` now.
@@ -967,6 +975,7 @@ export const registerSkillRoutes = (app, dependencies) => {
           name: newName,
           id: skillIdFromPath(newPath),
           path: newPath ?? null,
+          switches,
         });
       }
 
@@ -994,7 +1003,9 @@ export const registerSkillRoutes = (app, dependencies) => {
       });
     } catch (error) {
       console.error('[Server] Failed to update skill:', error);
-      res.status(500).json({ error: error.message || 'Failed to update skill' });
+      // A rename stopped to keep a switch (unreadable or unwritable config) carries its status.
+      const status = Number.isInteger(error?.status) ? error.status : 500;
+      res.status(status).json({ error: error.message || 'Failed to update skill' });
     }
   });
 

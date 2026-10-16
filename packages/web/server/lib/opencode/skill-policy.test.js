@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
+  carryOwnedSkillDeny,
   createSkillPolicyService,
   findDecidingSkillStatement,
   handleSkillPolicyWrite,
@@ -502,5 +503,104 @@ describe('handleSkillPolicyWrite', () => {
 
     const saved = await call({ id: 'alpha-skill', scope: 'global', enabled: false });
     expect(saved).toMatchObject({ status: 200, body: { ok: true, confirmed: true, saved: { disabled: true, changed: true } } });
+  });
+});
+
+describe('carryOwnedSkillDeny', () => {
+  it('adds the switch rule for the new id next to the old one, in the same array, and copies no user rule', () => {
+    const config = {
+      experimental: { policies: [owned('old-id')] },
+      policies: [deny('skill:old-id'), deny('skill:old-*'), owned('old-id')],
+    };
+    expect(carryOwnedSkillDeny(config, 'old-id', 'new-id')).toEqual([['experimental', 'policies'], ['policies']]);
+    expect(config.experimental.policies).toEqual([owned('old-id'), owned('new-id')]);
+    expect(config.policies).toEqual([deny('skill:old-id'), deny('skill:old-*'), owned('old-id'), owned('new-id')]);
+  });
+
+  it('changes nothing when only user rules name the old id, or the new id already has the switch rule', () => {
+    const userOnly = { policies: [deny('skill:old-id')] };
+    expect(carryOwnedSkillDeny(userOnly, 'old-id', 'new-id')).toEqual([]);
+    expect(userOnly).toEqual({ policies: [deny('skill:old-id')] });
+    const already = { policies: [owned('old-id'), owned('new-id')] };
+    expect(carryOwnedSkillDeny(already, 'old-id', 'new-id')).toEqual([]);
+  });
+});
+
+describe('carryForRename', () => {
+  const read = (file) => readConfigFile(file);
+
+  it('carries the switch rule in both scope files and drops the old one when no copy is left', async () => {
+    const globalText = '{\n  // mine\n  "model": "a/b",\n  "policies": [\n    { "action": "integration.use", "resource": "skill:keep-*", "effect": "deny" }\n  ]\n}\n';
+    const { projectDir, globalPath, projectPath, service } = setup({ globalText, projectText: JSON.stringify({ experimental: { policies: [owned('old-id')] } }) });
+    const withGlobal = read(globalPath);
+    setSkillDisabled(withGlobal, 'old-id', true, 'policies');
+    writeConfig(withGlobal, globalPath);
+
+    const carry = await service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false });
+    expect(carry.carried.map((entry) => entry.scope).sort()).toEqual(['global', 'project']);
+    expect(read(globalPath).policies).toEqual([deny('skill:keep-*'), owned('old-id'), owned('new-id')]);
+    expect(read(projectPath)).toEqual({ experimental: { policies: [owned('old-id'), owned('new-id')] } });
+
+    const outcome = await carry.finish();
+    expect(outcome.removed.map((entry) => entry.scope).sort()).toEqual(['global', 'project']);
+    expect(read(globalPath).policies).toEqual([deny('skill:keep-*'), owned('new-id')]);
+    expect(read(projectPath)).toEqual({ experimental: { policies: [owned('new-id')] } });
+    expect(fs.readFileSync(globalPath, 'utf8')).toContain('// mine');
+  });
+
+  it('keeps the old rule while another copy of the old id stays installed', async () => {
+    const { projectDir, projectPath, service } = setup({ projectText: JSON.stringify({ policies: [owned('old-id')] }) });
+    const carry = await service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: true });
+    const outcome = await carry.finish();
+    expect(outcome.kept.map((entry) => entry.scope)).toEqual(['project']);
+    expect(read(projectPath)).toEqual({ policies: [owned('old-id'), owned('new-id')] });
+  });
+
+  it('undo gives back the files byte for byte', async () => {
+    const projectText = '{\n  "policies": [\n    {"action":"integration.use","resource":"skill:old-id","effect":"deny","openchamber":"skill-switch"}\n  ]\n}\n';
+    const { projectDir, projectPath, globalPath, service } = setup({ globalText: '{}\n', projectText });
+    const carry = await service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false });
+    expect(carry.carried).toHaveLength(1);
+    expect(await carry.undo()).toEqual([]);
+    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
+    expect(fs.readFileSync(globalPath, 'utf8')).toBe('{}\n');
+  });
+
+  it('writes nothing and does not carry user-written rules', async () => {
+    const globalText = JSON.stringify({ policies: [deny('skill:old-id')] });
+    const { projectDir, globalPath, projectPath, service } = setup({ globalText });
+    const carry = await service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false });
+    expect(carry.owning).toEqual([]);
+    expect(fs.readFileSync(globalPath, 'utf8')).toBe(globalText);
+    expect(fs.existsSync(projectPath)).toBe(false);
+  });
+
+  it('stops before writing when a scope file cannot be read', async () => {
+    const projectText = JSON.stringify({ policies: [owned('old-id')] });
+    const { projectDir, projectPath, service } = setup({ globalText: '{ nope', projectText });
+    await expect(service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false }))
+      .rejects.toMatchObject({ status: 409, code: 'invalid_config' });
+    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
+  });
+
+  it('restores the files already written when a later write fails', async () => {
+    const { projectDir, globalPath, projectPath } = setup({
+      globalText: JSON.stringify({ policies: [owned('old-id')] }),
+      projectText: JSON.stringify({ policies: [owned('old-id')] }),
+    });
+    const globalBefore = fs.readFileSync(globalPath, 'utf8');
+    const projectBefore = fs.readFileSync(projectPath, 'utf8');
+    const service = createSkillPolicyService({
+      resolveTargets: () => ({ global: globalPath, project: projectPath }),
+      readConfigFile,
+      writeConfig: (config, file) => {
+        if (file === projectPath && JSON.stringify(config).includes('new-id')) throw new Error('disk full');
+        writeConfig(config, file);
+      },
+    });
+    await expect(service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false }))
+      .rejects.toMatchObject({ status: 500, code: 'write_failed' });
+    expect(read(globalPath)).toEqual(JSON.parse(globalBefore));
+    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectBefore);
   });
 });

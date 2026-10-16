@@ -62,7 +62,12 @@ import {
   skillPolicyService,
   type SnippetScope,
 } from './opencodeConfig';
-import { handleSkillPolicyWrite, skillIdFromPath, type SkillPolicyOpenCodeReader } from '../../web/server/lib/opencode/skill-policy.js';
+import {
+  handleSkillPolicyWrite,
+  renameSkillKeepingSwitches,
+  skillIdFromPath,
+  type SkillPolicyOpenCodeReader,
+} from '../../web/server/lib/opencode/skill-policy.js';
 import { readSkillIdSelector, selectSkillById } from '../../web/server/lib/opencode/skill-identity.js';
 import { parseWebSearchSelection } from './opencode-config-v2';
 import {
@@ -781,7 +786,20 @@ export async function handleConfigBridgeMessage(
         }
         if (typeof body?.renameTo === 'string') {
           const newName = body.renameTo.trim();
-          const newPath = renameSkill(skillName, newName, workingDirectory, { skillPath: selected.skill?.path ?? null });
+          // Same as the web route: a skill a switch turned off stays off under
+          // its new id. A rename stopped to keep the switch answers its reason.
+          let renamed;
+          try {
+            renamed = await renameSkillKeepingSwitches({
+              service: skillPolicyService,
+              directory: workingDirectory ?? null,
+              listSkillFiles: async (dir) => discoverSkills(dir ?? undefined, { allCopies: true }),
+              rename: (beforeMove) => renameSkill(skillName, newName, workingDirectory, { skillPath: selected.skill?.path ?? null, beforeMove }),
+            });
+          } catch (error) {
+            return { id, type, success: false, error: error instanceof Error ? error.message : String(error) };
+          }
+          const { newPath, switches } = renamed;
           await ctx?.manager?.restart();
           return {
             id,
@@ -792,6 +810,7 @@ export async function handleConfigBridgeMessage(
               name: newName,
               id: skillIdFromPath(newPath),
               path: newPath,
+              switches,
               requiresReload: true,
               message: `Skill renamed to ${newName} successfully. Reloading interface…`,
               reloadDelayMs: deps.clientReloadDelayMs,

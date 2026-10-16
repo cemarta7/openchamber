@@ -155,8 +155,11 @@ async function getSkillWritePath(skillName, workingDirectory, requestedScope) {
   };
 }
 
-async function discoverSkills(workingDirectory) {
+// `allCopies` lists every skill file found, also the copies one OpenCode id
+// shadows (a rename checks whether another copy of the old id stays behind).
+async function discoverSkills(workingDirectory, { allCopies = false } = {}) {
   const skills = new Map();
+  const sink = allCopies ? { set: (_key, skill) => skills.set(skill.path, skill) } : skills;
 
   // A root can come up twice in one discovery: a home directory opened as a
   // project lists `~/.claude/skills` and `~/.agents/skills` once as user
@@ -175,7 +178,7 @@ async function discoverSkills(workingDirectory) {
       if (!parsedFiles.has(skillMdPath)) {
         parsedFiles.set(skillMdPath, await parseMdFileAsync(skillMdPath).catch(() => null));
       }
-      addSkillFromMdFile(skills, skillMdPath, parsedFiles.get(skillMdPath), scope, source);
+      addSkillFromMdFile(sink, skillMdPath, parsedFiles.get(skillMdPath), scope, source);
     }
   };
 
@@ -788,11 +791,16 @@ function isManagedSkillPath(skillMdPath, workingDirectory) {
 // the skill is looked up by display name as before. Resolves to the renamed
 // `SKILL.md`. The folder takes the new name, so the OpenCode id becomes
 // `newName` too.
-function renameSkill(oldName, newName, workingDirectory, { skillPath = null } = {}) {
-  return serializeSkillWrite(() => renameSkillNow(oldName, newName, workingDirectory, skillPath));
+//
+// `beforeMove({ oldPath, newPath })` runs once every check passed and before
+// anything moves, inside the same one-at-a-time queue; throwing stops the
+// rename. What it answers is kept, and its `undo()` runs if the move or the
+// frontmatter write then fails (after the folder is moved back).
+function renameSkill(oldName, newName, workingDirectory, { skillPath = null, beforeMove = null } = {}) {
+  return serializeSkillWrite(() => renameSkillNow(oldName, newName, workingDirectory, skillPath, beforeMove));
 }
 
-async function renameSkillNow(oldName, newName, workingDirectory, skillPath) {
+async function renameSkillNow(oldName, newName, workingDirectory, skillPath, beforeMove) {
   ensureDirs();
   assertValidSkillName(newName);
 
@@ -840,12 +848,19 @@ async function renameSkillNow(oldName, newName, workingDirectory, skillPath) {
     throw new Error(`Skill directory already exists at ${newDir}`);
   }
 
+  const newPath = path.join(newDir, 'SKILL.md');
+  const prepared = beforeMove ? await beforeMove({ oldPath: existing.path, newPath }) : null;
+
   // Rename the skill directory in place so supporting files and SKILL.md body are preserved.
-  if (directoriesDiffer) {
-    fs.renameSync(oldDir, newDir);
+  try {
+    if (directoriesDiffer) {
+      fs.renameSync(oldDir, newDir);
+    }
+  } catch (error) {
+    await prepared?.undo?.();
+    throw error;
   }
 
-  const newPath = path.join(newDir, 'SKILL.md');
   try {
     const mdData = parseMdFile(newPath);
     mdData.frontmatter = {
@@ -860,6 +875,11 @@ async function renameSkillNow(oldName, newName, workingDirectory, skillPath) {
       } catch (rollbackError) {
         console.error(`Failed to rollback skill rename from ${newDir} to ${oldDir}:`, rollbackError);
       }
+    }
+    // Undo only once the folder is back: a skill left under the new name
+    // keeps what `beforeMove` prepared (the carried switch stays off).
+    if (!directoriesDiffer || (fs.existsSync(oldDir) && !fs.existsSync(newDir))) {
+      await prepared?.undo?.();
     }
     throw error;
   }

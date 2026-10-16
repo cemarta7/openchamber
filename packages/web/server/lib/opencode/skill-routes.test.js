@@ -754,7 +754,7 @@ describe('skill policy routes', () => {
       body: JSON.stringify(body),
     });
     const list = async () => (await fetch(`${handle.baseUrl}/api/config/skills${query}`)).json();
-    return { projectRoot, globalPath, globalText, projectPath, put, list, outage, lookup: handle.skillRoutes.readQueuedSkillPolicy };
+    return { projectRoot, baseUrl: handle.baseUrl, globalPath, globalText, projectPath, put, list, outage, lookup: handle.skillRoutes.readQueuedSkillPolicy };
   };
 
   it('answers queued deliveries by id, and by name with every skill sharing it', async () => {
@@ -915,6 +915,157 @@ describe('skill policy routes', () => {
       expect(await (await put({ id, scope: 'project', enabled: true })).json()).toMatchObject({ ok: true, saved: { changed: true } });
     }
     expect(readConfigFile(projectPath)).toEqual({});
+  });
+
+  describe('renaming a switched-off skill keeps it off (#3075 decision)', () => {
+    const ownedDeny = (id) => ({ action: 'integration.use', resource: `skill:${id}`, effect: 'deny', openchamber: 'skill-switch' });
+    const userDeny = (resource) => ({ action: 'integration.use', resource, effect: 'deny' });
+    const renameUrl = (app, name, { id } = {}) => {
+      const query = new URLSearchParams({ directory: app.projectRoot });
+      if (id) query.set('id', id);
+      return `${app.baseUrl}/api/config/skills/${encodeURIComponent(name)}?${query}`;
+    };
+    const rename = (app, name, renameTo, options) => fetch(renameUrl(app, name, options), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ renameTo }),
+    });
+    const setup = (options) => setupApp(options);
+    const skillDir = (app, ...parts) => path.join(app.projectRoot, '.opencode', 'skills', ...parts);
+
+    it('moves a project switch to the new id and the queue reads it as off', async () => {
+      const app = await setup();
+      expect((await app.put({ id: 'beta-two', scope: 'project', enabled: false })).status).toBe(200);
+      const betaOne = fs.readFileSync(path.join(skillDir(app, 'beta-one'), 'SKILL.md'), 'utf8');
+
+      const response = await rename(app, 'Same Name', 'beta-renamed', { id: 'beta-two' });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        id: 'beta-renamed',
+        switches: {
+          carried: [{ scope: 'project', path: app.projectPath }],
+          oldRuleRemoved: [{ scope: 'project', path: app.projectPath }],
+          oldRuleKept: [],
+          oldRuleCleanupFailed: [],
+        },
+      });
+      expect(readConfigFile(app.projectPath)).toEqual({ policies: [ownedDeny('beta-renamed')] });
+      expect(fs.readFileSync(app.globalPath, 'utf8')).toBe(app.globalText);
+      expect(fs.readFileSync(path.join(skillDir(app, 'beta-one'), 'SKILL.md'), 'utf8')).toBe(betaOne);
+
+      const listed = await app.list();
+      expect(listed.skills.map((skill) => skill.id)).toContain('beta-renamed');
+      expect(listed.skillPolicy.skills['beta-renamed']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+      // No switch rule is left for the old id (the stub's skill list still names it).
+      expect(listed.skillPolicy.skills['beta-two']?.disabledIn.project ?? false).toBe(false);
+
+      const queued = await app.lookup({ directory: app.projectRoot, ids: ['beta-renamed'], names: [] });
+      expect(queued.states.get('beta-renamed')).toBe('disabled');
+    });
+
+    it('moves a global switch on a rename by display name, keeping the rest of the file', async () => {
+      const app = await setup();
+      expect((await app.put({ id: 'alpha-skill', scope: 'global', enabled: false })).status).toBe(200);
+
+      const response = await rename(app, 'Alpha Display', 'alpha-renamed');
+      expect(response.status).toBe(200);
+      expect((await response.json()).switches.carried).toEqual([{ scope: 'global', path: app.globalPath }]);
+      expect(readConfigFile(app.globalPath)).toEqual({ theme: 'dark', policies: [ownedDeny('alpha-renamed')] });
+      expect(fs.existsSync(app.projectPath)).toBe(false);
+    });
+
+    it('moves switches in both scopes and leaves user-written rules exactly as they were', async () => {
+      const app = await setup();
+      const projectRules = [userDeny('skill:beta-one'), userDeny('skill:zz-*'), ownedDeny('beta-one')];
+      fs.writeFileSync(app.projectPath, JSON.stringify({ experimental: { policies: projectRules } }, null, 2));
+      expect((await app.put({ id: 'beta-one', scope: 'global', enabled: false })).status).toBe(200);
+
+      const response = await rename(app, 'Same Name', 'beta-uno', { id: 'beta-one' });
+      expect(response.status).toBe(200);
+      // The project rule was in experimental.policies (2.0.25-2.0.28 format): the new one goes there too.
+      expect(readConfigFile(app.projectPath)).toEqual({
+        experimental: { policies: [userDeny('skill:beta-one'), userDeny('skill:zz-*'), ownedDeny('beta-uno')] },
+      });
+      expect(readConfigFile(app.globalPath)).toEqual({ theme: 'dark', policies: [ownedDeny('beta-uno')] });
+    });
+
+    it('keeps the old switch while another copy of the old id stays installed', async () => {
+      const app = await setup();
+      writeSkill(app.projectRoot, '.claude/skills/beta-two', 'Beta Copy');
+      expect((await app.put({ id: 'beta-two', scope: 'project', enabled: false })).status).toBe(200);
+
+      const response = await rename(app, 'Same Name', 'beta-renamed', { id: 'beta-two' });
+      expect(response.status).toBe(200);
+      expect((await response.json()).switches).toMatchObject({ oldRuleRemoved: [], oldRuleKept: [{ scope: 'project' }] });
+      expect(readConfigFile(app.projectPath)).toEqual({ policies: [ownedDeny('beta-two'), ownedDeny('beta-renamed')] });
+      expect(fs.existsSync(path.join(app.projectRoot, '.claude', 'skills', 'beta-two', 'SKILL.md'))).toBe(true);
+    });
+
+    it('carries the switch of a skill in a nested group folder', async () => {
+      const app = await setup();
+      writeSkill(app.projectRoot, '.opencode/skills/group/nested-skill', 'Nested Display');
+      fs.writeFileSync(app.projectPath, JSON.stringify({ policies: [ownedDeny('nested-skill')] }));
+
+      const response = await rename(app, 'Nested Display', 'nested-new');
+      expect(response.status).toBe(200);
+      expect(fs.existsSync(path.join(skillDir(app, 'group', 'nested-new'), 'SKILL.md'))).toBe(true);
+      expect(readConfigFile(app.projectPath)).toEqual({ policies: [ownedDeny('nested-new')] });
+    });
+
+    it('refuses the rename, moving nothing, when a scope file cannot be read', async () => {
+      const app = await setup();
+      expect((await app.put({ id: 'beta-two', scope: 'project', enabled: false })).status).toBe(200);
+      const projectBefore = fs.readFileSync(app.projectPath, 'utf8');
+      fs.writeFileSync(app.globalPath, '{ broken');
+
+      const response = await rename(app, 'Same Name', 'beta-renamed', { id: 'beta-two' });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toMatch(/not renamed/);
+      expect(fs.existsSync(path.join(skillDir(app, 'beta-two'), 'SKILL.md'))).toBe(true);
+      expect(fs.existsSync(skillDir(app, 'beta-renamed'))).toBe(false);
+      expect(fs.readFileSync(app.projectPath, 'utf8')).toBe(projectBefore);
+    });
+
+    it.skipIf(process.getuid?.() === 0)('refuses the rename, moving nothing, when the switch cannot be written', async () => {
+      const app = await setup();
+      expect((await app.put({ id: 'beta-two', scope: 'project', enabled: false })).status).toBe(200);
+      const projectBefore = fs.readFileSync(app.projectPath, 'utf8');
+      fs.chmodSync(app.projectPath, 0o444);
+      cleanups.push(() => fs.chmodSync(app.projectPath, 0o644));
+
+      const response = await rename(app, 'Same Name', 'beta-renamed', { id: 'beta-two' });
+      expect(response.status).toBe(500);
+      expect((await response.json()).error).toMatch(/not renamed/);
+      expect(fs.existsSync(path.join(skillDir(app, 'beta-two'), 'SKILL.md'))).toBe(true);
+      expect(fs.readFileSync(app.projectPath, 'utf8')).toBe(projectBefore);
+    });
+
+    it.skipIf(process.getuid?.() === 0)('takes the carried switch out again when the folder cannot be moved', async () => {
+      const app = await setup();
+      expect((await app.put({ id: 'beta-two', scope: 'project', enabled: false })).status).toBe(200);
+      const projectBefore = fs.readFileSync(app.projectPath, 'utf8');
+      fs.chmodSync(skillDir(app), 0o555);
+      cleanups.push(() => fs.chmodSync(skillDir(app), 0o755));
+
+      const response = await rename(app, 'Same Name', 'beta-renamed', { id: 'beta-two' });
+      expect(response.status).toBe(500);
+      expect(fs.existsSync(path.join(skillDir(app, 'beta-two'), 'SKILL.md'))).toBe(true);
+      expect(fs.readFileSync(app.projectPath, 'utf8')).toBe(projectBefore);
+    });
+
+    it('keeps both a switch flipped during a rename and the carried one', async () => {
+      const app = await setup();
+      expect((await app.put({ id: 'beta-two', scope: 'project', enabled: false })).status).toBe(200);
+
+      const [renamed, toggled] = await Promise.all([
+        rename(app, 'Same Name', 'beta-renamed', { id: 'beta-two' }),
+        app.put({ id: 'alpha-skill', scope: 'project', enabled: false }),
+      ]);
+      expect(renamed.status).toBe(200);
+      expect(toggled.status).toBe(200);
+      const ids = readConfigFile(app.projectPath).policies.map((rule) => rule.resource).sort();
+      expect(ids).toEqual(['skill:alpha-skill', 'skill:beta-renamed']);
+    });
   });
 
   it('refuses a project switch without an explicit directory', async () => {

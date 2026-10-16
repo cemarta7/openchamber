@@ -2837,7 +2837,7 @@ export const mergeDiscoveredSkills = (
 };
 
 const addSkillFromMdFile = (
-  skillsMap: Map<string, DiscoveredSkill>,
+  skillsMap: Pick<Map<string, DiscoveredSkill>, 'set'>,
   skillMdPath: string,
   scope: SkillScope,
   source: SkillSource
@@ -2983,8 +2983,14 @@ const listSupportingFiles = (skillDir: string): SupportingFile[] => {
   return files;
 };
 
-export const discoverSkills = (workingDirectory?: string): DiscoveredSkill[] => {
-  const skills = new Map<string, DiscoveredSkill>();
+// Mirror of the web server's `discoverSkills`: `allCopies` lists every skill
+// file found, also the copies one OpenCode id shadows.
+export const discoverSkills = (workingDirectory?: string, { allCopies = false }: { allCopies?: boolean } = {}): DiscoveredSkill[] => {
+  const byId = new Map<string, DiscoveredSkill>();
+  const byPath = new Map<string, DiscoveredSkill>();
+  const skills: Pick<Map<string, DiscoveredSkill>, 'set'> = allCopies
+    ? { set: (_key, skill) => byPath.set(skill.path, skill) }
+    : byId;
 
   // 1) External global (.claude, .agents)
   for (const externalRootName of ['.claude', '.agents']) {
@@ -3071,7 +3077,7 @@ export const discoverSkills = (workingDirectory?: string): DiscoveredSkill[] => 
     }
   }
 
-  return Array.from(skills.values());
+  return Array.from((allCopies ? byPath : byId).values());
 };
 
 // "Only when asked" is written as two frontmatter keys: the portable
@@ -3530,13 +3536,19 @@ export const deleteSkillAt = (skillMdPath: string, workingDirectory?: string): s
 
 // Mirror of the web server's `renameSkill`: `skillPath` is the exact `SKILL.md`
 // the `?id=` selector resolved. Returns the renamed file; the folder takes the
-// new name, so the OpenCode id becomes `newName`.
-export const renameSkill = (
+// new name, so the OpenCode id becomes `newName`. `beforeMove` runs once every
+// check passed and before anything moves (throwing stops the rename); its
+// `undo()` runs when the move or the frontmatter write fails and the folder
+// is back in place.
+export const renameSkill = async (
   oldName: string,
   newName: string,
   workingDirectory?: string,
-  { skillPath = null }: { skillPath?: string | null } = {},
-): string | null => {
+  { skillPath = null, beforeMove = null }: {
+    skillPath?: string | null;
+    beforeMove?: ((paths: { oldPath: string; newPath: string }) => Promise<{ undo?: () => Promise<void> } | null>) | null;
+  } = {},
+): Promise<string | null> => {
   ensureSkillDirs();
   validateSkillName(newName);
 
@@ -3584,11 +3596,18 @@ export const renameSkill = (
     throw new Error(`Skill directory already exists at ${newDir}`);
   }
 
-  if (directoriesDiffer) {
-    fs.renameSync(oldDir, newDir);
+  const newPath = path.join(newDir, 'SKILL.md');
+  const prepared = beforeMove ? await beforeMove({ oldPath: existing.path, newPath }) : null;
+
+  try {
+    if (directoriesDiffer) {
+      fs.renameSync(oldDir, newDir);
+    }
+  } catch (error) {
+    await prepared?.undo?.();
+    throw error;
   }
 
-  const newPath = path.join(newDir, 'SKILL.md');
   try {
     const mdData = parseMdFile(newPath);
     mdData.frontmatter = {
@@ -3603,6 +3622,11 @@ export const renameSkill = (
       } catch {
         // Best-effort rollback; surface the original write failure.
       }
+    }
+    // Undo only once the folder is back: a skill left under the new name
+    // keeps what `beforeMove` prepared (the carried switch stays off).
+    if (!directoriesDiffer || (fs.existsSync(oldDir) && !fs.existsSync(newDir))) {
+      await prepared?.undo?.();
     }
     throw error;
   }

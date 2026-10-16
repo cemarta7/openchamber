@@ -377,6 +377,12 @@ Bridge surface (`bridge-config-runtime.ts`), matching the web routes:
   bridge failure; the web server answers 400, 404 or 409 instead. Supporting
   files resolve inside the selected skill's folder only (`resolveWithinSkillDir`),
   the same confinement the web server applies.
+- `api:config/skills` `PATCH { renameTo }` keeps a switched-off skill off under
+  its new id through the web server's `renameSkillKeepingSwitches`, with the
+  same steps and `switches` answer (see "Renaming a switched-off skill" in
+  `packages/web/server/lib/opencode/DOCUMENTATION.md`). `renameSkill` is async
+  for its `beforeMove` hook. A rename stopped to keep a switch answers
+  `success: false` with the reason.
 - `api:config/skill-policy` — `PUT /api/config/skill-policy`; payload
   `{ body: { id, scope, enabled }, directory }`. The webview route
   (`webview/main.tsx`) sends the request directory and answers the status and
