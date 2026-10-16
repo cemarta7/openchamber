@@ -804,10 +804,13 @@ function addSkillFromMdFile(skillsMap, skillMdPath, parsed, scope, source) {
     return;
   }
 
-  skillsMap.set(name, {
-    // OpenCode's id, which policies and skill invocation use; `name` is only
-    // the frontmatter display name.
-    id: skillIdFromPath(skillMdPath),
+  // Keyed by OpenCode's id, which policies and skill invocation use, so two
+  // skills sharing a display name both stay listed; a later file still wins
+  // over an earlier one with the same id. A file without a derivable id
+  // falls back to its display name.
+  const id = skillIdFromPath(skillMdPath);
+  skillsMap.set(id ?? `name:${name}`, {
+    id,
     name,
     path: skillMdPath,
     scope,

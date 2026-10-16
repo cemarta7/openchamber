@@ -340,26 +340,40 @@ describe('VS Code config bridge plugin parity', () => {
 describe('VS Code skill policy parity', () => {
   const globalConfigPath = path.join(process.env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
 
-  const setup = () => {
+  const writeSkill = (root, id, name) => {
+    const skillFile = path.join(root, '.opencode', 'skills', id, 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillFile), { recursive: true });
+    fs.writeFileSync(skillFile, `---\nname: ${name}\ndescription: ${id}\n---\nBody\n`);
+  };
+
+  // OpenCode serves statements without the provenance key (measured on 2.0.25, 2.0.28, 2.0.29 and 2.0.30).
+  const served = (info) => {
+    const copy = { ...info };
+    if (copy.policies) copy.policies = copy.policies.map(({ action, resource, effect }) => ({ action, resource, effect }));
+    return copy;
+  };
+
+  // `hostDirectory` is the host's working directory; the requests name `root`.
+  const setup = ({ hostDirectory = null, openCodeSkills = null } = {}) => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-policy-')));
     tempRoots.push(root);
     fs.mkdirSync(path.join(root, '.git'));
-    const skillFile = path.join(root, '.opencode', 'skills', 'alpha-skill', 'SKILL.md');
-    fs.mkdirSync(path.dirname(skillFile), { recursive: true });
-    fs.writeFileSync(skillFile, '---\nname: Alpha Display\ndescription: Alpha\n---\nBody\n');
+    writeSkill(root, 'alpha-skill', 'Alpha Display');
     const projectConfigPath = path.join(root, '.opencode', 'opencode.json');
     // A watching OpenCode: it serves whatever the config files hold now.
     const policyDeps = {
       ...deps,
+      fetchOpenCodeSkillsFromApi: async () => openCodeSkills,
       createOpenCodePolicyReader: () => ({
         readVersion: async () => '2.0.29',
         readConfigEntries: async () => [globalConfigPath, projectConfigPath]
           .filter((file) => fs.existsSync(file))
-          .map((file) => ({ type: 'document', path: file, info: parseJsonc(fs.readFileSync(file, 'utf8')) })),
+          .map((file) => ({ type: 'document', path: file, info: served(parseJsonc(fs.readFileSync(file, 'utf8'))) })),
       }),
     };
-    const send = (payload) => handleConfigBridgeMessage({ id: 'policy', type: 'api:config/skill-policy', payload }, createCtx(root), policyDeps);
-    const list = () => handleConfigBridgeMessage({ id: 'list', type: 'api:config/skills', payload: { method: 'GET' } }, createCtx(root), policyDeps);
+    const ctx = createCtx(hostDirectory ?? root);
+    const send = (payload) => handleConfigBridgeMessage({ id: 'policy', type: 'api:config/skill-policy', payload }, ctx, policyDeps);
+    const list = (directory) => handleConfigBridgeMessage({ id: 'list', type: 'api:config/skills', payload: { method: 'GET', directory } }, ctx, policyDeps);
     return { root, projectConfigPath, send, list };
   };
 
@@ -385,11 +399,11 @@ describe('VS Code skill policy parity', () => {
       },
     });
     expect(readJson(projectConfigPath)).toEqual({
-      policies: [{ action: 'integration.use', resource: 'skill:alpha-skill', effect: 'deny' }],
+      policies: [{ action: 'integration.use', resource: 'skill:alpha-skill', effect: 'deny', openchamber: 'skill-switch' }],
     });
     expect(fs.existsSync(globalConfigPath)).toBe(false);
 
-    const listed = await list();
+    const listed = await list(root);
     expect(listed.data.skills.find((skill) => skill.id === 'alpha-skill')).toMatchObject({ name: 'Alpha Display' });
     expect(listed.data.skillPolicy.skills['alpha-skill']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
 
@@ -410,11 +424,59 @@ describe('VS Code skill policy parity', () => {
     expect(readJsonc()).toBe(text);
   });
 
+  test('lists the skills of the directory the webview names, not the host working directory', async () => {
+    const hostDirectory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-host-cwd-')));
+    tempRoots.push(hostDirectory);
+    writeSkill(hostDirectory, 'host-only', 'Host Only');
+    const { root, projectConfigPath, send, list } = setup({ hostDirectory });
+
+    const fromRoot = await list(root);
+    expect(fromRoot.data.skills.map((skill) => skill.id)).toContain('alpha-skill');
+    expect(fromRoot.data.skills.map((skill) => skill.id)).not.toContain('host-only');
+    expect(fromRoot.data.skillPolicy.scopes.project.path).toBe(projectConfigPath);
+
+    const fromHost = await list(undefined);
+    expect(fromHost.data.skills.map((skill) => skill.id)).toContain('host-only');
+
+    expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } })).data.status).toBe(200);
+    expect((await list(root)).data.skillPolicy.skills['alpha-skill']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+  });
+
+  test('keeps two switched-off ids that share a display name listed and switchable when OpenCode lists none', async () => {
+    const { root, projectConfigPath, send, list } = setup({ openCodeSkills: [] });
+    writeSkill(root, 'beta-one', 'Same Name');
+    writeSkill(root, 'beta-two', 'Same Name');
+    for (const id of ['beta-one', 'beta-two']) {
+      expect((await send({ directory: root, body: { id, scope: 'project', enabled: false } })).data.status).toBe(200);
+    }
+
+    const listed = await list(root);
+    expect(listed.data.skills.filter((skill) => skill.name === 'Same Name').map((skill) => skill.id).sort()).toEqual(['beta-one', 'beta-two']);
+    expect(listed.data.skillPolicy.skills['beta-one']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    expect(listed.data.skillPolicy.skills['beta-two']).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+
+    for (const id of ['beta-one', 'beta-two']) {
+      expect((await send({ directory: root, body: { id, scope: 'project', enabled: true } })).data.body).toMatchObject({ ok: true, saved: { changed: true } });
+    }
+    expect(readJson(projectConfigPath)).toEqual({});
+  });
+
+  test('keeps a user exact deny through off and on, like the web server', async () => {
+    const { root, projectConfigPath, send } = setup();
+    const text = JSON.stringify({ policies: [{ action: 'integration.use', resource: 'skill:alpha-skill', effect: 'deny' }] }, null, 2);
+    fs.writeFileSync(projectConfigPath, text);
+    const off = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } });
+    expect(off.data.body).toMatchObject({ saved: { disabled: false, changed: false }, policy: { effective: 'disabled', decidedBy: { owned: false } } });
+    const on = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: true } });
+    expect(on.data.body).toMatchObject({ saved: { changed: false }, policy: { effective: 'disabled', decidedBy: { owned: false } } });
+    expect(fs.readFileSync(projectConfigPath, 'utf8')).toBe(text);
+  });
+
   test('writes the global switch to the user config and reports it over the project one', async () => {
     const { root, send } = setup();
     expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'global', enabled: false } })).data.status).toBe(200);
     expect(readJson(globalConfigPath)).toEqual({
-      policies: [{ action: 'integration.use', resource: 'skill:alpha-skill', effect: 'deny' }],
+      policies: [{ action: 'integration.use', resource: 'skill:alpha-skill', effect: 'deny', openchamber: 'skill-switch' }],
     });
     const project = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: true } });
     expect(project.data.body).toMatchObject({ policy: { effective: 'disabled', decidedBy: { scope: 'global', owned: true } } });
@@ -439,5 +501,117 @@ describe('VS Code skill policy parity', () => {
     }, createCtx(root), deps);
     expect(result.data).toMatchObject({ status: 503, body: { error: { code: 'opencode_unavailable' } } });
     expect(fs.existsSync(globalConfigPath)).toBe(false);
+  });
+});
+
+describe('VS Code skill routes selected by OpenCode id', () => {
+  const write = (root, relative, content) => {
+    const file = path.join(root, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+    return file;
+  };
+  const skillMd = (name, body) => `---\nname: ${name}\ndescription: ${name}\n---\n${body}\n`;
+  let previousDataDir;
+
+  afterEach(() => {
+    if (previousDataDir === undefined) delete process.env.OPENCHAMBER_DATA_DIR;
+    else process.env.OPENCHAMBER_DATA_DIR = previousDataDir;
+  });
+
+  // Same fixture as the web route tests: two ids share "Same Name" (one nested
+  // in a group), one id differs from its display name. The host's working
+  // directory is elsewhere; every request names `root`.
+  const setup = () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-id-')));
+    const hostDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-id-host-'));
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-id-data-'));
+    tempRoots.push(root, hostDirectory, dataDir);
+    previousDataDir = process.env.OPENCHAMBER_DATA_DIR;
+    process.env.OPENCHAMBER_DATA_DIR = dataDir;
+    fs.mkdirSync(path.join(root, '.git'));
+    const files = {
+      one: write(root, '.opencode/skills/beta-one/SKILL.md', skillMd('Same Name', 'Body one')),
+      oneNotes: write(root, '.opencode/skills/beta-one/notes.md', 'notes one'),
+      two: write(root, '.opencode/skills/group/beta-two/SKILL.md', skillMd('Same Name', 'Body two')),
+      twoNotes: write(root, '.opencode/skills/group/beta-two/notes.md', 'notes two'),
+      display: write(root, '.opencode/skills/display-id/SKILL.md', skillMd('Display Name', 'Display body')),
+    };
+    const ctx = createCtx(hostDirectory);
+    const skill = (payload) => handleConfigBridgeMessage({ id: 'skill', type: 'api:config/skills', payload: { directory: root, ...payload } }, ctx, deps);
+    const file = (payload) => handleConfigBridgeMessage({ id: 'file', type: 'api:config/skills/files', payload: { directory: root, ...payload } }, ctx, deps);
+    return { root, files, ctx, skill, file };
+  };
+
+  test('reads the exact skill an id names and never another with the same display name', async () => {
+    const { files, skill } = setup();
+    const two = await skill({ method: 'GET', name: 'Same Name', skillId: 'beta-two' });
+    expect(two.data).toMatchObject({ name: 'Same Name', id: 'beta-two', path: files.two });
+    expect(two.data.sources.md.instructions.trim()).toBe('Body two');
+    expect((await skill({ method: 'GET', name: 'Same Name', skillId: 'beta-one' })).data.sources.md.instructions.trim()).toBe('Body one');
+    expect(await skill({ method: 'GET', name: 'Same Name', skillId: 'display-id' })).toMatchObject({ success: false, error: 'Skill not found' });
+    expect(await skill({ method: 'GET', name: 'Same Name', skillId: 'bad*id' })).toMatchObject({ success: false, error: 'Invalid skill id' });
+    expect((await skill({ method: 'GET', name: 'Display Name' })).data).toMatchObject({ id: 'display-id', path: files.display });
+  });
+
+  test('reads, writes and deletes supporting files of the selected skill only', async () => {
+    const { files, file } = setup();
+    expect((await file({ method: 'GET', name: 'Same Name', skillId: 'beta-two', filePath: 'notes.md' })).data).toEqual({ content: 'notes two' });
+    await file({ method: 'PUT', name: 'Same Name', skillId: 'beta-two', filePath: 'notes.md', content: 'edited two' });
+    expect(fs.readFileSync(files.twoNotes, 'utf8')).toBe('edited two');
+    expect(fs.readFileSync(files.oneNotes, 'utf8')).toBe('notes one');
+    await file({ method: 'DELETE', name: 'Same Name', skillId: 'beta-one', filePath: 'notes.md' });
+    expect(fs.existsSync(files.oneNotes)).toBe(false);
+    expect(fs.existsSync(files.twoNotes)).toBe(true);
+    await expect(file({ method: 'GET', name: 'Same Name', skillId: 'beta-one', filePath: '../group/beta-two/notes.md' }))
+      .rejects.toThrow('Access to file denied');
+    await expect(file({ method: 'PUT', name: 'Same Name', skillId: 'beta-one', filePath: '../group/beta-two/notes.md', content: 'x' }))
+      .rejects.toThrow('Access to file denied');
+    expect(fs.readFileSync(files.twoNotes, 'utf8')).toBe('edited two');
+  });
+
+  test('updates the selected skill only and refuses a target path that is not it', async () => {
+    const { root, files, skill } = setup();
+    const updated = await skill({ method: 'PATCH', name: 'Same Name', skillId: 'beta-two', body: { instructions: 'New body two' } });
+    expect(updated.data).toMatchObject({ id: 'beta-two', path: files.two });
+    expect(fs.readFileSync(files.two, 'utf8')).toContain('New body two');
+    expect(fs.readFileSync(files.one, 'utf8')).toContain('Body one');
+    expect(await skill({ method: 'PATCH', name: 'Same Name', skillId: 'beta-two', body: { instructions: 'x', targetPath: files.one } }))
+      .toMatchObject({ success: false, error: 'targetPath does not match the selected skill' });
+    const outside = write(root, 'elsewhere/SKILL.md', skillMd('Same Name', 'Outside'));
+    expect(await skill({ method: 'PATCH', name: 'Same Name', body: { instructions: 'x', targetPath: outside } }))
+      .toMatchObject({ success: false, error: 'targetPath is not a known skill file' });
+    expect(fs.readFileSync(outside, 'utf8')).toContain('Outside');
+    expect(fs.readFileSync(files.one, 'utf8')).toContain('Body one');
+  });
+
+  test('renames the selected nested skill, whose folder and so its id take the new name', async () => {
+    const { root, files, ctx, skill } = setup();
+    const renamed = await skill({ method: 'PATCH', name: 'Same Name', skillId: 'beta-two', body: { renameTo: 'beta-renamed' } });
+    const newPath = path.join(root, '.opencode', 'skills', 'group', 'beta-renamed', 'SKILL.md');
+    expect(renamed.data).toMatchObject({ name: 'beta-renamed', id: 'beta-renamed', path: newPath });
+    expect(ctx.restart).toHaveBeenCalledTimes(1);
+    expect(fs.readFileSync(newPath, 'utf8')).toContain('Body two');
+    expect(fs.existsSync(files.two)).toBe(false);
+    expect(fs.readFileSync(files.one, 'utf8')).toContain('name: Same Name');
+    await expect(skill({ method: 'PATCH', name: 'Display Name', skillId: 'display-id', body: { renameTo: 'beta-one' } }))
+      .rejects.toThrow('already exists');
+    expect(fs.existsSync(files.display)).toBe(true);
+  });
+
+  test('deletes exactly the selected skill folder, nested ones included, and its own install record', async () => {
+    const { root, files, skill } = setup();
+    const { appendInstalledSources, readInstalledSources } = await import('../../web/server/lib/skills-catalog/installed-sources.js');
+    appendInstalledSources([
+      { skillName: 'beta-one', skillDir: 'skills/beta-one', sourceId: 'acme' },
+      { skillName: 'beta-two', skillDir: 'skills/beta-two', sourceId: 'acme' },
+    ]);
+    const removed = await skill({ method: 'DELETE', name: 'Same Name', skillId: 'beta-two' });
+    expect(removed.data).toMatchObject({ id: 'beta-two', path: files.two });
+    expect(fs.existsSync(path.dirname(files.two))).toBe(false);
+    expect(fs.existsSync(path.join(root, '.opencode', 'skills', 'group'))).toBe(true);
+    expect(fs.readFileSync(files.one, 'utf8')).toContain('Body one');
+    expect([...readInstalledSources().keys()]).toEqual(['beta-one']);
+    expect(await skill({ method: 'DELETE', name: 'Same Name', skillId: 'beta-two' })).toMatchObject({ success: false, error: 'Skill not found' });
   });
 });

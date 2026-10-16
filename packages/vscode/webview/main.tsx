@@ -884,12 +884,17 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     const filePath = decodeURIComponent(skillsFilesMatch[2]);
     const verb = method;
     const body = await extractJsonBody(input, init, method);
+    // `?id=` selects the skill by OpenCode id; the host reads it as `skillId`.
+    const skillId = url.searchParams.get('id') ?? undefined;
+    const directory = getRequestDirectoryHint(url, input, init);
     try {
-      const data = await sendBridgeMessage('api:config/skills/files', { 
-        method: verb, 
-        name, 
-        filePath, 
-        content: body.content 
+      const data = await sendBridgeMessage('api:config/skills/files', {
+        method: verb,
+        name,
+        filePath,
+        content: body.content,
+        directory,
+        skillId,
       });
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
@@ -948,8 +953,9 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
 
   // Skills CRUD: /api/config/skills/:name or /api/config/skills
   if (pathname === '/api/config/skills') {
+    const directory = getRequestDirectoryHint(url, input, init);
     try {
-      const data = await sendBridgeMessage('api:config/skills', { method: 'GET' });
+      const data = await sendBridgeMessage('api:config/skills', { method: 'GET', directory });
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -962,8 +968,10 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     const name = decodeURIComponent(encodedName);
     const verb = method;
     const body = await extractJsonBody(input, init, method);
+    const skillId = url.searchParams.get('id') ?? undefined;
+    const directory = getRequestDirectoryHint(url, input, init);
     try {
-      const data = await sendBridgeMessage('api:config/skills', { method: verb, name, body });
+      const data = await sendBridgeMessage('api:config/skills', { method: verb, name, body, directory, skillId });
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

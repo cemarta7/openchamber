@@ -30,6 +30,7 @@ import {
   createSkill,
   updateSkill,
   deleteSkill,
+  deleteSkillAt,
   renameSkill,
   isManagedSkillPath,
   readSkillSupportingFile,
@@ -61,7 +62,8 @@ import {
   skillPolicyService,
   type SnippetScope,
 } from './opencodeConfig';
-import { handleSkillPolicyWrite, type SkillPolicyOpenCodeReader } from '../../web/server/lib/opencode/skill-policy.js';
+import { handleSkillPolicyWrite, skillIdFromPath, type SkillPolicyOpenCodeReader } from '../../web/server/lib/opencode/skill-policy.js';
+import { readSkillIdSelector, selectSkillById } from '../../web/server/lib/opencode/skill-identity.js';
 import { parseWebSearchSelection } from './opencode-config-v2';
 import {
   getSkillsCatalog,
@@ -158,6 +160,41 @@ const resolveDiscoveredSkills = async (
   (await deps.fetchOpenCodeSkillsFromApi(ctx, workingDirectory)) || [],
   discoverSkills(workingDirectory),
 );
+
+/**
+ * Mirror of the web routes' `?id=` selector (`resolveSelectedSkill` in
+ * `skill-routes.js`): with an id, exactly that listed skill or an error, never
+ * another skill with the same display name; without one, `skill` is null and
+ * the caller keeps its display-name lookup.
+ */
+const resolveSelectedSkill = async (
+  deps: ConfigRuntimeDeps,
+  ctx: BridgeContext | undefined,
+  workingDirectory: string | undefined,
+  skillName: string,
+  rawSkillId: string | undefined,
+) => {
+  const { id: skillId, error } = readSkillIdSelector(rawSkillId);
+  if (error) return { skill: null, skillId: null, error };
+  if (!skillId) return { skill: null, skillId: null, error: null };
+  const skill = selectSkillById(await resolveDiscoveredSkills(deps, ctx, workingDirectory), skillId, skillName);
+  return skill ? { skill, skillId, error: null } : { skill: null, skillId: null, error: 'Skill not found' };
+};
+
+const isEditableSkillFile = (skillPath: string): boolean => path.basename(skillPath) === 'SKILL.md' && fs.existsSync(skillPath);
+
+/** Mirror of the web route's check: a listed skill file or a `SKILL.md` under a managed skill root. */
+const isKnownSkillFile = async (
+  deps: ConfigRuntimeDeps,
+  ctx: BridgeContext | undefined,
+  workingDirectory: string | undefined,
+  targetPath: string,
+): Promise<boolean> => {
+  if (path.basename(targetPath) !== 'SKILL.md') return false;
+  const listed = (await resolveDiscoveredSkills(deps, ctx, workingDirectory))
+    .some((skill) => path.resolve(skill.path) === targetPath);
+  return listed || isManagedSkillPath(targetPath, workingDirectory);
+};
 
 export async function handleConfigBridgeMessage(
   message: BridgeMessageInput,
@@ -657,8 +694,10 @@ export async function handleConfigBridgeMessage(
     }
 
     case 'api:config/skills': {
-      const { method, name, body } = (payload || {}) as { method?: string; name?: string; body?: Record<string, unknown> };
-      const workingDirectory = ctx?.manager?.getWorkingDirectory() || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      const { method, name, body, directory, skillId } = (payload || {}) as { method?: string; name?: string; body?: Record<string, unknown>; directory?: string; skillId?: string };
+      // The directory the webview names (the selected project), as the web
+      // route reads it, else the host's working directory.
+      const workingDirectory = resolveWorkingDirectory(ctx, directory);
       const normalizedMethod = typeof method === 'string' && method.trim() ? method.trim().toUpperCase() : 'GET';
 
       if (!name && normalizedMethod === 'GET') {
@@ -697,15 +736,28 @@ export async function handleConfigBridgeMessage(
         return { id, type, success: false, error: 'Skill name is required' };
       }
 
+      // The web routes' `?id=` selector, carried by the webview as `skillId`.
+      const selected = await resolveSelectedSkill(deps, ctx, workingDirectory, skillName, skillId);
+      if (selected.error) {
+        return { id, type, success: false, error: selected.error };
+      }
+
       if (normalizedMethod === 'GET') {
-        const discoveredSkill = (await resolveDiscoveredSkills(deps, ctx, workingDirectory))
-          .find((skill) => skill.name === skillName);
-        const sources = getSkillSources(skillName, workingDirectory, discoveredSkill || null);
+        const discoveredSkill = selected.skill ?? (await resolveDiscoveredSkills(deps, ctx, workingDirectory))
+          .find((skill) => skill.name === skillName) ?? null;
+        const sources = getSkillSources(skillName, workingDirectory, discoveredSkill, { id: selected.skillId });
         return {
           id,
           type,
           success: true,
-          data: { name: skillName, sources, scope: sources.md.scope, source: sources.md.source },
+          data: {
+            name: skillName,
+            id: selected.skillId ?? discoveredSkill?.id ?? skillIdFromPath(sources.md.path),
+            path: sources.md.path ?? discoveredSkill?.path ?? null,
+            sources,
+            scope: sources.md.scope,
+            source: sources.md.source,
+          },
         };
       }
 
@@ -724,9 +776,12 @@ export async function handleConfigBridgeMessage(
       }
 
       if (normalizedMethod === 'PATCH') {
+        if (selected.skill && !isEditableSkillFile(selected.skill.path)) {
+          return { id, type, success: false, error: `Skill "${skillName}" has no SKILL.md file to edit` };
+        }
         if (typeof body?.renameTo === 'string') {
           const newName = body.renameTo.trim();
-          renameSkill(skillName, newName, workingDirectory);
+          const newPath = renameSkill(skillName, newName, workingDirectory, { skillPath: selected.skill?.path ?? null });
           await ctx?.manager?.restart();
           return {
             id,
@@ -735,6 +790,8 @@ export async function handleConfigBridgeMessage(
             data: {
               success: true,
               name: newName,
+              id: skillIdFromPath(newPath),
+              path: newPath,
               requiresReload: true,
               message: `Skill renamed to ${newName} successfully. Reloading interface…`,
               reloadDelayMs: deps.clientReloadDelayMs,
@@ -742,12 +799,57 @@ export async function handleConfigBridgeMessage(
           };
         }
 
-        updateSkill(skillName, (body || {}) as Record<string, unknown>, workingDirectory);
+        // Same target rules as the web route: with `skillId` only the selected
+        // file, without it a listed or managed `SKILL.md`, never another path.
+        const targetPathInput = z.string().trim().min(1).safeParse(body?.targetPath);
+        const requestedTarget = targetPathInput.success ? path.resolve(targetPathInput.data) : null;
+        let targetPath = requestedTarget;
+        if (selected.skill) {
+          if (requestedTarget && requestedTarget !== path.resolve(selected.skill.path)) {
+            return { id, type, success: false, error: 'targetPath does not match the selected skill' };
+          }
+          targetPath = selected.skill.path;
+        } else if (requestedTarget && !(await isKnownSkillFile(deps, ctx, workingDirectory, requestedTarget))) {
+          return { id, type, success: false, error: 'targetPath is not a known skill file' };
+        }
+        const updatedPath = updateSkill(skillName, (body || {}) as Record<string, unknown>, workingDirectory, targetPath);
         return {
           id,
           type,
           success: true,
-          data: buildAppliedResponse(`Skill ${skillName} updated successfully.`),
+          data: {
+            ...buildAppliedResponse(`Skill ${skillName} updated successfully.`),
+            id: skillIdFromPath(updatedPath),
+            path: updatedPath,
+          },
+        };
+      }
+
+      if (normalizedMethod === 'DELETE' && selected.skill && selected.skillId) {
+        // Exactly the selected skill's folder, nested groups included.
+        if (!isManagedSkillPath(selected.skill.path, workingDirectory)) {
+          return { id, type, success: false, error: `Skill "${skillName}" is outside managed skill directories and cannot be deleted` };
+        }
+        deleteSkillAt(selected.skill.path, workingDirectory);
+        // Install provenance is keyed by the install folder name, the id. It
+        // stays while another copy of the id is still on disk.
+        const deletedId = selected.skillId;
+        if (!discoverSkills(workingDirectory).some((skill) => skill.id === deletedId)) {
+          try {
+            removeInstalledSources(deletedId);
+          } catch (error) {
+            console.error('Failed to forget skill install provenance:', error);
+          }
+        }
+        return {
+          id,
+          type,
+          success: true,
+          data: {
+            ...buildAppliedResponse(`Skill ${skillName} deleted successfully.`),
+            id: deletedId,
+            path: selected.skill.path,
+          },
         };
       }
 
@@ -875,13 +977,15 @@ export async function handleConfigBridgeMessage(
     }
 
     case 'api:config/skills/files': {
-      const { method, name, filePath, content } = (payload || {}) as {
+      const { method, name, filePath, content, directory, skillId } = (payload || {}) as {
         method?: string;
         name?: string;
         filePath?: string;
         content?: string;
+        directory?: string;
+        skillId?: string;
       };
-      const workingDirectory = ctx?.manager?.getWorkingDirectory() || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      const workingDirectory = resolveWorkingDirectory(ctx, directory);
 
       const skillName = typeof name === 'string' ? name.trim() : '';
       if (!skillName) {
@@ -893,9 +997,13 @@ export async function handleConfigBridgeMessage(
         return { id, type, success: false, error: 'File path is required' };
       }
 
-      const discoveredSkill = (await resolveDiscoveredSkills(deps, ctx, workingDirectory))
-        .find((skill) => skill.name === skillName);
-      const sources = getSkillSources(skillName, workingDirectory, discoveredSkill || null);
+      const selected = await resolveSelectedSkill(deps, ctx, workingDirectory, skillName, skillId);
+      if (selected.error) {
+        return { id, type, success: false, error: selected.error };
+      }
+      const discoveredSkill = selected.skill ?? (await resolveDiscoveredSkills(deps, ctx, workingDirectory))
+        .find((skill) => skill.name === skillName) ?? null;
+      const sources = getSkillSources(skillName, workingDirectory, discoveredSkill, { id: selected.skillId });
       if (!sources.md.dir) {
         return { id, type, success: false, error: `Skill "${skillName}" not found` };
       }

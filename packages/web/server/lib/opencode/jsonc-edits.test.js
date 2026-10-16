@@ -123,3 +123,63 @@ describe('writeConfig array edits', () => {
     expect(readConfigFile(file)).toEqual({ plugins: ['b', 'a'] });
   });
 });
+
+describe('writeConfig array edits on other config lists', () => {
+  const rule = (action, resource, effect) => ({ action, resource, effect });
+
+  it('appends and removes a top-level permission rule without touching the others', () => {
+    const text = [
+      '{',
+      '  "permissions": [',
+      '    { "action": "shell", "resource": "git push *", "effect": "ask" }, // ask before pushing',
+      '    { "action": "edit", "resource": "*", "effect": "allow" }',
+      '  ]',
+      '}',
+      '',
+    ].join('\n');
+    const file = fileWith(text);
+    const config = readConfigFile(file);
+    config.permissions.push(rule('webfetch', '*', 'deny'));
+    writeConfig(config, file);
+    expect(fs.readFileSync(file, 'utf8')).toContain('// ask before pushing');
+    expect(readConfigFile(file)).toEqual(config);
+
+    config.permissions.pop();
+    writeConfig(config, file);
+    expect(fs.readFileSync(file, 'utf8')).toBe(text);
+  });
+
+  it('edits the rules nested under an agent and leaves the sibling agent alone', () => {
+    const text = [
+      '{',
+      '  "agents": {',
+      '    "build": {',
+      '      // build rules',
+      '      "permissions": [{ "action": "shell", "resource": "*", "effect": "ask" }]',
+      '    },',
+      '    "plan": { "permissions": [{ "action": "edit", "resource": "*", "effect": "deny" }] } // read-only',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+    const file = fileWith(text);
+    const config = readConfigFile(file);
+    config.agents.build.permissions.push(rule('webfetch', '*', 'allow'));
+    writeConfig(config, file);
+    const added = fs.readFileSync(file, 'utf8');
+    expect(added).toContain('// build rules');
+    expect(added).toContain('// read-only');
+    expect(readConfigFile(file)).toEqual(config);
+
+    config.agents.build.permissions.pop();
+    writeConfig(config, file);
+    expect(fs.readFileSync(file, 'utf8')).toBe(text);
+  });
+
+  it('replaces a list whose items changed in place', () => {
+    const file = fileWith('{\n  "permissions": [{ "action": "shell", "resource": "*", "effect": "ask" }] // shell\n}\n');
+    writeConfig({ permissions: [rule('shell', '*', 'deny')] }, file);
+    expect(readConfigFile(file)).toEqual({ permissions: [rule('shell', '*', 'deny')] });
+    expect(fs.readFileSync(file, 'utf8')).toContain('// shell');
+  });
+});

@@ -7,6 +7,7 @@ import {
   isValidSkillPolicyId,
   skillIdFromPath,
 } from './skill-policy.js';
+import { readSkillIdSelector, selectSkillById } from './skill-identity.js';
 import { asNonEmptyString, isString } from '../shared/guards.js';
 import { appendInstalledSources, isInstalledFromSource, readInstalledSources, removeInstalledSources } from '../skills-catalog/installed-sources.js';
 
@@ -40,6 +41,7 @@ export const registerSkillRoutes = (app, dependencies) => {
     createSkill,
     updateSkill,
     deleteSkill,
+    deleteSkillAt,
     renameSkill,
     isManagedSkillPath,
     readSkillSupportingFile,
@@ -348,12 +350,47 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   };
 
-  const listInstalledSkillIds = async (directory) => {
-    const skills = mergeDiscoveredSkills(
-      (await fetchOpenCodeDiscoveredSkills(directory)) ?? [],
-      await discoverSkills(directory),
-    );
-    return new Set(skills.map((skill) => skill.id).filter(isString));
+  // The skills the list shows for a directory: OpenCode's list, then the disk
+  // scan, one entry per OpenCode id.
+  const listSkillInventory = async (directory) => mergeDiscoveredSkills(
+    (await fetchOpenCodeDiscoveredSkills(directory)) ?? [],
+    await discoverSkills(directory),
+  );
+
+  const listInstalledSkillIds = async (directory) => new Set(
+    (await listSkillInventory(directory)).map((skill) => skill.id).filter(isString),
+  );
+
+  // The name-keyed routes take an optional `?id=` (OpenCode skill id). With it
+  // they act on that exact listed skill or answer 404, never on another skill
+  // with the same display name; without it they keep the display-name lookup.
+  // Answers `{ skill, id }` (`skill` null without `?id=`) or `{ status, error }`.
+  const resolveSelectedSkill = async (req, skillName, directory) => {
+    const { id, error } = readSkillIdSelector(req.query?.id);
+    if (error) return { status: 400, error };
+    if (!id) return { skill: null, id: null };
+    const skill = selectSkillById(await listSkillInventory(directory), id, skillName);
+    return skill ? { skill, id } : { status: 404, error: 'Skill not found' };
+  };
+
+  // The selected skill's sources: the exact `?id=` skill, else the legacy
+  // display-name lookup. Answers `{ sources, skill, id }` or `{ status, error }`.
+  const resolveSkillSources = async (req, skillName, directory) => {
+    const selected = await resolveSelectedSkill(req, skillName, directory);
+    if (selected.error) return selected;
+    const skill = selected.skill ?? (((await fetchOpenCodeDiscoveredSkills(directory)) ?? [])
+      .find((entry) => entry.name === skillName) || null);
+    const sources = await getSkillSources(skillName, directory, skill, { id: selected.id });
+    return { sources, skill, id: selected.id ?? skill?.id ?? skillIdFromPath(sources.md.path) };
+  };
+
+  // A `targetPath` without `?id=` must be a listed skill file or a `SKILL.md`
+  // under a managed skill root; it never names an arbitrary file.
+  const isKnownSkillFile = async (directory, targetPath) => {
+    const resolved = path.resolve(targetPath);
+    if (path.basename(resolved) !== 'SKILL.md') return false;
+    const listed = (await listSkillInventory(directory)).some((skill) => isString(skill.path) && path.resolve(skill.path) === resolved);
+    return listed || isManagedSkillPath(resolved, directory);
   };
 
   // Switch one skill on or off in one scope: body `{ id, scope, enabled }`,
@@ -746,12 +783,16 @@ export const registerSkillRoutes = (app, dependencies) => {
       if (error) {
         return res.status(400).json({ error });
       }
-      const discoveredSkill = ((await fetchOpenCodeDiscoveredSkills(directory)) ?? [])
-        .find((skill) => skill.name === skillName) || null;
-      const sources = await getSkillSources(skillName, directory, discoveredSkill);
+      const resolved = await resolveSkillSources(req, skillName, directory);
+      if (resolved.error) {
+        return res.status(resolved.status).json({ error: resolved.error });
+      }
+      const { sources } = resolved;
 
       res.json({
         name: skillName,
+        id: resolved.id,
+        path: sources.md.path ?? resolved.skill?.path ?? null,
         sources: sources,
         scope: sources.md.scope,
         source: sources.md.source,
@@ -775,9 +816,11 @@ export const registerSkillRoutes = (app, dependencies) => {
         return res.status(400).json({ error });
       }
 
-      const discoveredSkill = ((await fetchOpenCodeDiscoveredSkills(directory)) ?? [])
-        .find((skill) => skill.name === skillName) || null;
-      const sources = await getSkillSources(skillName, directory, discoveredSkill);
+      const resolved = await resolveSkillSources(req, skillName, directory);
+      if (resolved.error) {
+        return res.status(resolved.status).json({ error: resolved.error });
+      }
+      const { sources } = resolved;
       if (!sources.md.exists || !sources.md.dir) {
         return res.status(404).json({ error: 'Skill not found' });
       }
@@ -830,26 +873,52 @@ export const registerSkillRoutes = (app, dependencies) => {
         return res.status(400).json({ error });
       }
 
-      if (typeof updates?.renameTo === 'string') {
+      const selected = await resolveSelectedSkill(req, skillName, directory);
+      if (selected.error) {
+        return res.status(selected.status).json({ error: selected.error });
+      }
+      if (selected.skill && !(isString(selected.skill.path) && path.basename(selected.skill.path) === 'SKILL.md' && fs.existsSync(selected.skill.path))) {
+        return res.status(409).json({ error: `Skill "${skillName}" has no SKILL.md file to edit` });
+      }
+
+      if (isString(updates?.renameTo)) {
         const newName = updates.renameTo.trim();
         console.log(`[Server] Renaming skill: ${skillName} -> ${newName}`);
         console.log('[Server] Working directory:', directory);
-        await renameSkill(skillName, newName, directory);
+        const newPath = await renameSkill(skillName, newName, directory, { skillPath: selected.skill?.path ?? null });
         // OpenCode 2 watches the skills directories: the renamed folder is
         // picked up like any other write, no restart and no client reload.
+        // The folder took the new name, so the OpenCode id is `newName` now.
         return res.json({
           ...buildAppliedResponse(`Skill renamed to ${newName} successfully.`),
           name: newName,
+          id: skillIdFromPath(newPath),
+          path: newPath ?? null,
         });
+      }
+
+      const requestedTarget = isString(updates?.targetPath) && updates.targetPath.trim()
+        ? path.resolve(updates.targetPath.trim())
+        : null;
+      let targetPath = requestedTarget;
+      if (selected.skill) {
+        if (requestedTarget && requestedTarget !== path.resolve(selected.skill.path)) {
+          return res.status(409).json({ error: 'targetPath does not match the selected skill' });
+        }
+        targetPath = selected.skill.path;
+      } else if (requestedTarget && !(await isKnownSkillFile(directory, requestedTarget))) {
+        return res.status(400).json({ error: 'targetPath is not a known skill file' });
       }
 
       console.log(`[Server] Updating skill: ${skillName}`);
       console.log('[Server] Working directory:', directory);
 
-      await updateSkill(skillName, updates, directory, updates?.targetPath);
-      res.json(buildAppliedResponse(
-        `Skill ${skillName} updated successfully.`,
-      ));
+      const updatedPath = await updateSkill(skillName, updates, directory, targetPath);
+      res.json({
+        ...buildAppliedResponse(`Skill ${skillName} updated successfully.`),
+        id: skillIdFromPath(updatedPath),
+        path: updatedPath ?? null,
+      });
     } catch (error) {
       console.error('[Server] Failed to update skill:', error);
       res.status(500).json({ error: error.message || 'Failed to update skill' });
@@ -869,9 +938,11 @@ export const registerSkillRoutes = (app, dependencies) => {
         return res.status(400).json({ error });
       }
 
-      const discoveredSkill = ((await fetchOpenCodeDiscoveredSkills(directory)) ?? [])
-        .find((skill) => skill.name === skillName) || null;
-      const sources = await getSkillSources(skillName, directory, discoveredSkill);
+      const resolved = await resolveSkillSources(req, skillName, directory);
+      if (resolved.error) {
+        return res.status(resolved.status).json({ error: resolved.error });
+      }
+      const { sources } = resolved;
       if (!sources.md.exists || !sources.md.dir) {
         return res.status(404).json({ error: 'Skill not found' });
       }
@@ -903,9 +974,11 @@ export const registerSkillRoutes = (app, dependencies) => {
         return res.status(400).json({ error });
       }
 
-      const discoveredSkill = ((await fetchOpenCodeDiscoveredSkills(directory)) ?? [])
-        .find((skill) => skill.name === skillName) || null;
-      const sources = await getSkillSources(skillName, directory, discoveredSkill);
+      const resolved = await resolveSkillSources(req, skillName, directory);
+      if (resolved.error) {
+        return res.status(resolved.status).json({ error: resolved.error });
+      }
+      const { sources } = resolved;
       if (!sources.md.exists || !sources.md.dir) {
         return res.status(404).json({ error: 'Skill not found' });
       }
@@ -931,6 +1004,34 @@ export const registerSkillRoutes = (app, dependencies) => {
       const { directory, error } = await resolveSkillsDirectory(req);
       if (error) {
         return res.status(400).json({ error });
+      }
+
+      const selected = await resolveSelectedSkill(req, skillName, directory);
+      if (selected.error) {
+        return res.status(selected.status).json({ error: selected.error });
+      }
+
+      if (selected.skill) {
+        // Exactly the selected skill's folder, nested groups included; other
+        // copies or skills sharing the display name stay.
+        if (!isString(selected.skill.path) || !isManagedSkillPath(selected.skill.path, directory)) {
+          return res.status(409).json({ error: `Skill "${skillName}" is outside managed skill directories and cannot be deleted` });
+        }
+        await deleteSkillAt(selected.skill.path, directory);
+        // Install provenance is keyed by the install folder name, the id. It
+        // stays while another copy of the id is still on disk.
+        if (!(await discoverSkills(directory)).some((skill) => skill.id === selected.id)) {
+          try {
+            removeInstalledSources(selected.id);
+          } catch (error) {
+            console.error('Failed to forget skill install provenance:', error);
+          }
+        }
+        return res.json({
+          ...buildAppliedResponse(`Skill ${skillName} deleted successfully.`),
+          id: selected.id,
+          path: selected.skill.path,
+        });
       }
 
       deleteSkill(skillName, directory);

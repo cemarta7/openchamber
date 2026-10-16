@@ -14,13 +14,18 @@
  * 2.0.28 read only `experimental.policies`, 2.0.29 and newer also read the
  * top-level `policies` (and mark the experimental key deprecated).
  *
- * Ownership: the switch owns exactly the exact-id deny statement above, in the
- * one config file of the scope it edits (the user's global `opencode.json[c]`
- * or the project config OpenChamber writes for the directory). Turning a skill
- * off appends that statement unless it already decides the file; turning it
- * on removes every copy of it from that file and nothing else. Wildcards,
- * allows, other actions, other files and Console policies are never written,
- * so a restriction the switch did not create stays in force and is reported
+ * Ownership: the statement a switch writes carries one more key,
+ * `"openchamber": "skill-switch"`, and a switch only ever removes statements
+ * with that key. OpenCode 2.0.25, 2.0.28, 2.0.29 and 2.0.30 accept the extra key without a
+ * diagnostic, still enforce the statement, and leave the key out of
+ * `GET /api/config` (verified for #3075 on isolated servers). The switch
+ * writes in the one config file of the scope it edits (the user's global
+ * `opencode.json[c]` or the project config OpenChamber writes for the
+ * directory). Turning a skill off adds the marked deny unless a deny already
+ * decides the skill in that file; turning it on removes the marked denies for
+ * that id and nothing else. A user's own exact deny, wildcards, allows, other
+ * actions, other files and Console policies are never written or removed, so
+ * a restriction the switch did not create stays in force and is reported
  * through `decidedBy` instead of being overridden with an allow.
  *
  * This module is pure apart from the injected file and OpenCode readers, so
@@ -116,11 +121,18 @@ const isStatement = (value) => isPlainObject(value)
 
 const ownedResource = (id) => `${SKILL_RESOURCE_PREFIX}${id}`;
 
+// The provenance key on a statement a switch wrote. See the module comment.
+const OWNER_KEY = 'openchamber';
+const OWNER_VALUE = 'skill-switch';
+
+const ownedStatement = (id) => ({ action: INTEGRATION_USE, resource: ownedResource(id), effect: 'deny', [OWNER_KEY]: OWNER_VALUE });
+
 /** The statement a switch writes, and the only one it ever removes. */
 const isOwnedStatement = (value, id) => isStatement(value)
   && value.action === INTEGRATION_USE
   && value.resource === ownedResource(id)
-  && value.effect === 'deny';
+  && value.effect === 'deny'
+  && value[OWNER_KEY] === OWNER_VALUE;
 
 const readPath = (config, keyPath) => {
   let current = config;
@@ -162,27 +174,30 @@ const lastMatchIn = (statements, id) => {
   return match;
 };
 
-const enforcedStatements = (config, location) => enforcedPaths(location).flatMap((keyPath) => readArray(config, keyPath));
+// The statements a version enforces, in order. An unknown `location` (OpenCode
+// not reachable) counts both arrays.
+const enforcedStatements = (config, location) => enforcedPaths(location ?? SKILL_POLICY_LOCATION.TOP_LEVEL)
+  .flatMap((keyPath) => readArray(config, keyPath));
 
-/**
- * Whether a config file holds the switch's own deny for `id`. With an unknown
- * `location` (OpenCode not reachable) both arrays count.
- */
-function hasOwnedSkillDeny(config, id, location = null) {
-  return enforcedStatements(config, location ?? SKILL_POLICY_LOCATION.TOP_LEVEL).some((statement) => isOwnedStatement(statement, id));
-}
-
-/** Every id a config file switches off with an owned statement. */
+/** Every id a config file switches off with a switch's own marked deny. */
 export function listOwnedSkillDenies(config, location = null) {
   const ids = new Set();
-  for (const statement of enforcedStatements(config, location ?? SKILL_POLICY_LOCATION.TOP_LEVEL)) {
-    if (!isStatement(statement) || statement.action !== INTEGRATION_USE || statement.effect !== 'deny') continue;
-    if (!statement.resource.startsWith(SKILL_RESOURCE_PREFIX)) continue;
+  for (const statement of enforcedStatements(config, location)) {
+    if (!isStatement(statement) || !statement.resource.startsWith(SKILL_RESOURCE_PREFIX)) continue;
     const id = statement.resource.slice(SKILL_RESOURCE_PREFIX.length);
-    if (isValidSkillPolicyId(id)) ids.add(id);
+    if (isValidSkillPolicyId(id) && isOwnedStatement(statement, id)) ids.add(id);
   }
   return [...ids];
 }
+
+/** Whether `id`'s last matching statement in one config file is a switch's own deny. */
+const isDecidedByOwnedDeny = (config, id, location) => isOwnedStatement(lastMatchIn(enforcedStatements(config, location), id), id);
+
+// The enforced statements as OpenCode serves them back: its decoder drops the
+// provenance key, so a served document is compared on these three fields.
+const servedForm = (config, location) => enforcedStatements(config, location)
+  .filter(isStatement)
+  .map(({ action, resource, effect }) => [action, resource, effect]);
 
 class SkillPolicyConfigError extends Error {
   constructor(message) {
@@ -196,10 +211,13 @@ class SkillPolicyConfigError extends Error {
  * Turn `id` off (`disabled: true`) or back on in one config object, in place.
  * Returns whether the object changed.
  *
- * Off appends the owned deny to the version's write array unless an owned deny
- * already decides `id` in this file. On removes every owned deny for `id` from
- * the arrays the version enforces, dropping an array (and an `experimental`
- * object) it emptied. Nothing else in the file moves.
+ * Off appends the switch's marked deny to the version's write array unless a
+ * deny (the switch's own, the user's exact one, or a wildcard) already decides
+ * `id` in this file. On removes the marked denies for `id` from the arrays the
+ * version enforces, dropping an array (and an `experimental` object) it
+ * emptied. A statement without the provenance key is never removed, so a
+ * user's exact deny survives an off/on round trip. Nothing else in the file
+ * moves.
  */
 export function setSkillDisabled(config, id, disabled, location) {
   if (!isPlainObject(config)) throw new SkillPolicyConfigError('The config file is not an object');
@@ -209,7 +227,7 @@ export function setSkillDisabled(config, id, disabled, location) {
   }
 
   if (disabled) {
-    if (isOwnedStatement(lastMatchIn(enforcedStatements(config, location), id), id)) return false;
+    if (lastMatchIn(enforcedStatements(config, location), id)?.effect === 'deny') return false;
     const [first, second] = writePath(location);
     let parent = config;
     if (second) {
@@ -220,7 +238,7 @@ export function setSkillDisabled(config, id, disabled, location) {
     const key = second ?? first;
     if (parent[key] === undefined) parent[key] = [];
     if (!Array.isArray(parent[key])) throw new SkillPolicyConfigError(`"${writePath(location).join('.')}" in the config file is not a list`);
-    parent[key].push({ action: INTEGRATION_USE, resource: ownedResource(id), effect: 'deny' });
+    parent[key].push(ownedStatement(id));
     return true;
   }
 
@@ -244,19 +262,18 @@ export function setSkillDisabled(config, id, disabled, location) {
 
 const isDocument = (entry) => isPlainObject(entry) && entry.type === 'document' && isPlainObject(entry.info);
 
-const documentStatements = (info) => [...readArray(info, EXPERIMENTAL_PATH), ...readArray(info, TOP_LEVEL_PATH)];
-
 /**
  * The statement that decides `id` across OpenCode's config documents, as
  * `GET /api/config` serves them (lowest priority first). OpenCode evaluates
  * the documents reversed and lets the last match win, so a global rule beats a
- * project one in either direction. `null` means no rule matches: the skill is
- * allowed. Console statements are not part of `/api/config`.
+ * project one in either direction. Only the arrays the version enforces count:
+ * 2.0.25 to 2.0.28 ignore top-level `policies`. `null` means no rule matches:
+ * the skill is allowed. Console statements are not part of `/api/config`.
  */
-export function findDecidingSkillStatement(entries, id) {
+export function findDecidingSkillStatement(entries, id, location = null) {
   let decided = null;
   for (const entry of [...entries].filter(isDocument).reverse()) {
-    const match = lastMatchIn(documentStatements(entry.info), id);
+    const match = lastMatchIn(enforcedStatements(entry.info, location), id);
     if (match) decided = { path: isString(entry.path) ? entry.path : null, resource: match.resource, effect: match.effect };
   }
   return decided;
@@ -272,17 +289,20 @@ const UNKNOWN = 'unknown';
  *   read; never inferred from a missing skill).
  * - `decidedBy`: the statement that decides it and its file; `scope` says
  *   which switch owns that file (`other` for any file a switch never writes),
- *   `owned` whether it is a switch's own deny.
+ *   `owned` whether it is a switch's own marked deny. OpenCode serves
+ *   statements without the provenance key, so `owned` is read from the
+ *   scope's file itself.
+ *
+ * `configs` holds each scope's parsed file, `null` when unavailable.
  */
-function describeSkillPolicy(id, { entries, scopes, savedByScope, samePath }) {
+function describeSkillPolicy(id, { entries, scopes, configs, location, samePath }) {
   const disabledIn = {};
   for (const scope of SKILL_POLICY_SCOPES) {
-    const saved = savedByScope[scope];
-    disabledIn[scope] = saved ? saved.has(id) : null;
+    disabledIn[scope] = configs[scope] ? listOwnedSkillDenies(configs[scope], location).includes(id) : null;
   }
   if (!entries) return { disabledIn, effective: UNKNOWN, decidedBy: null };
 
-  const decided = findDecidingSkillStatement(entries, id);
+  const decided = findDecidingSkillStatement(entries, id, location);
   if (!decided) return { disabledIn, effective: 'enabled', decidedBy: null };
   const scope = SKILL_POLICY_SCOPES.find((name) => scopes[name] && decided.path && samePath(scopes[name].path, decided.path)) ?? 'other';
   return {
@@ -291,7 +311,7 @@ function describeSkillPolicy(id, { entries, scopes, savedByScope, samePath }) {
     decidedBy: {
       ...decided,
       scope,
-      owned: scope !== 'other' && decided.effect === 'deny' && decided.resource === ownedResource(id),
+      owned: scope !== 'other' && configs[scope] !== null && isDecidedByOwnedDeny(configs[scope], id, location),
     },
   };
 }
@@ -354,18 +374,20 @@ export function createSkillPolicyService({
     return scopes;
   };
 
-  const readSaved = (scopes, location) => {
-    const savedByScope = { global: null, project: null };
+  // Each scope's parsed file; an unreadable one is `null` with its error on the scope.
+  const readConfigs = (scopes) => {
+    const configs = { global: null, project: null };
     for (const scope of SKILL_POLICY_SCOPES) {
       const target = scopes[scope];
       if (!target) continue;
       try {
-        savedByScope[scope] = new Set(listOwnedSkillDenies(readConfigFile(target.path), location));
+        configs[scope] = readConfigFile(target.path);
+        target.error = null;
       } catch (error) {
         target.error = errorMessage(error);
       }
     }
-    return savedByScope;
+    return configs;
   };
 
   const readOpenCode = async (openCode, directory) => {
@@ -395,18 +417,19 @@ export function createSkillPolicyService({
     const { version, entries } = await readOpenCode(openCode, directory);
     const location = skillPolicyLocation(version);
     const scopes = readScopes(directory);
-    const savedByScope = readSaved(scopes, location);
+    const configs = readConfigs(scopes);
     const allIds = new Set(ids.filter(isValidSkillPolicyId));
-    for (const saved of Object.values(savedByScope)) for (const id of saved ?? []) allIds.add(id);
+    for (const config of Object.values(configs)) for (const id of config ? listOwnedSkillDenies(config, location) : []) allIds.add(id);
     const skills = {};
-    for (const id of allIds) skills[id] = describeSkillPolicy(id, { entries, scopes, savedByScope, samePath });
+    for (const id of allIds) skills[id] = describeSkillPolicy(id, { entries, scopes, configs, location, samePath });
     return { ...summarize({ version, location, entries, scopes }), skills };
   };
 
-  const isConfirmed = (entries, targetPath, id, disabled, location) => {
+  // OpenCode has picked the file up when it serves the same enforced
+  // statements the file holds (a missing document counts as none).
+  const isConfirmed = (entries, targetPath, config, location) => {
     const document = entries.find((entry) => isDocument(entry) && isString(entry.path) && samePath(entry.path, targetPath));
-    if (!document) return !disabled;
-    return hasOwnedSkillDeny(document.info, id, location) === disabled;
+    return JSON.stringify(servedForm(document?.info ?? {}, location)) === JSON.stringify(servedForm(config, location));
   };
 
   /**
@@ -432,7 +455,7 @@ export function createSkillPolicyService({
     const target = scopes[scope];
     if (!target) throw statusError(409, 'scope_unavailable', 'This directory has no separate project config');
 
-    const changed = await serialize(() => {
+    const { config: written, changed } = await serialize(() => {
       let config;
       try {
         config = readConfigFile(target.path);
@@ -446,27 +469,30 @@ export function createSkillPolicyService({
         throw statusError(409, 'invalid_config', errorMessage(error));
       }
       if (didChange) writeConfig(config, target.path);
-      return didChange;
+      return { config, changed: didChange };
     });
 
-    const saved = { scope, path: target.path, disabled: !enabled, changed };
+    // `disabled` is whether the scope's file now holds the switch's own deny:
+    // off answers `false` when a deny the switch did not write already
+    // decided the skill there, so nothing was added.
+    const saved = { scope, path: target.path, disabled: listOwnedSkillDenies(written, location).includes(id), changed };
     let entries = null;
     let confirmed = false;
     for (let attempt = 0; attempt < confirmAttempts; attempt += 1) {
       if (attempt > 0) await sleep(confirmDelayMs);
       entries = await openCode.readConfigEntries(directory).then((value) => (Array.isArray(value) ? value : null), () => null);
-      if (entries && isConfirmed(entries, target.path, id, !enabled, location)) {
+      if (entries && isConfirmed(entries, target.path, written, location)) {
         confirmed = true;
         break;
       }
     }
 
-    const savedByScope = readSaved(scopes, location);
+    const configs = readConfigs(scopes);
     return {
       saved,
       confirmed,
       state: summarize({ version, location, entries, scopes }),
-      policy: describeSkillPolicy(id, { entries, scopes, savedByScope, samePath }),
+      policy: describeSkillPolicy(id, { entries, scopes, configs, location, samePath }),
     };
   };
 

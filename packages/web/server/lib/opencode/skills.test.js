@@ -88,6 +88,22 @@ describe('skills', () => {
     }
   });
 
+  it('discovers two skill folders that share a display name as two OpenCode ids', async () => {
+    const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-same-name-'));
+    try {
+      await fsPromises.mkdir(path.join(tempRoot, '.git'));
+      for (const id of ['beta-one', 'beta-two']) {
+        const dir = path.join(tempRoot, '.opencode', 'skills', id);
+        await fsPromises.mkdir(dir, { recursive: true });
+        await fsPromises.writeFile(path.join(dir, 'SKILL.md'), '---\nname: Same Name\ndescription: d\n---\nBody\n', 'utf8');
+      }
+      const discovered = (await discoverSkills(tempRoot)).filter((skill) => skill.name === 'Same Name');
+      expect(discovered.map((skill) => skill.id).sort()).toEqual(['beta-one', 'beta-two']);
+    } finally {
+      await fsPromises.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   describe('discovery over a tree with nested skills and links', () => {
     // Expected values were recorded from the synchronous discovery on main
     // before it became async; they must not move.

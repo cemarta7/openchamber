@@ -64,7 +64,11 @@ export function isValidSkillPolicyId(id: JsonValue | undefined): id is string;
 export function skillIdFromPath(skillPath: string | null | undefined): string | null;
 export function listOwnedSkillDenies(config: JsonObject, location?: SkillPolicyLocation | null): string[];
 export function setSkillDisabled(config: JsonObject, id: string, disabled: boolean, location: SkillPolicyLocation): boolean;
-export function findDecidingSkillStatement(entries: SkillPolicyConfigEntry[], id: string): SkillPolicyDecision | null;
+export function findDecidingSkillStatement(
+  entries: SkillPolicyConfigEntry[],
+  id: string,
+  location?: SkillPolicyLocation | null,
+): SkillPolicyDecision | null;
 
 export function createSkillPolicyService<Config>(dependencies: {
   resolveTargets: (directory: string | null) => { global: string; project: string | null };

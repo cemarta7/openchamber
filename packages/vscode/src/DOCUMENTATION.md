@@ -362,7 +362,21 @@ Bridge surface (`bridge-config-runtime.ts`), matching the web routes:
   written with the shared `writeWarmingEnabled` to the same file.
 - `api:config/skills` — the `GET` list adds `skillPolicy` and a skill `id` on
   every entry, as the web route does; the OpenCode list and the disk scan merge
-  by OpenCode skill id.
+  by OpenCode skill id, and the disk scan keys by id too. The webview sends the
+  request's directory (query or `x-opencode-directory`) and the host reads that
+  directory, falling back to its working directory, like `api:config/agents`.
+- `api:config/skills` (`name` set) and `api:config/skills/files` — the webview
+  forwards the request directory and the `?id=` selector as `directory` and
+  `skillId`; the host reads that directory (else its working directory) and
+  selects exactly as the web routes do (`skill-identity.js`, see "Selecting by
+  id" in `packages/web/server/lib/opencode/DOCUMENTATION.md`). Detail and
+  mutation answers carry the same `id` and `path`. Failures (unknown or invalid
+  id, a `targetPath` that is not the selected or a known skill file, a skill
+  outside managed roots) answer `success: false` with the web route's message,
+  which the webview turns into HTTP 500 `{ error }` like every other skills
+  bridge failure; the web server answers 400, 404 or 409 instead. Supporting
+  files resolve inside the selected skill's folder only (`resolveWithinSkillDir`),
+  the same confinement the web server applies.
 - `api:config/skill-policy` — `PUT /api/config/skill-policy`; payload
   `{ body: { id, scope, enabled }, directory }`. The webview route
   (`webview/main.tsx`) sends the request directory and answers the status and

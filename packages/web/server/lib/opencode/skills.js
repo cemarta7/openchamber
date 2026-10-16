@@ -23,6 +23,7 @@ import {
   isPlainObject,
 } from './shared.js';
 import { isString } from '../shared/guards.js';
+import { skillFolderToDelete } from './skill-identity.js';
 
 const BUILT_IN_SKILL_LOCATION = '<built-in>';
 
@@ -95,7 +96,9 @@ function getProjectAgentsSkillPath(workingDirectory, skillName) {
 }
 
 async function getSkillScope(skillName, workingDirectory) {
-  const discovered = (await discoverSkills(workingDirectory)).find((skill) => skill.name === skillName);
+  // Discovery keys by OpenCode id; for a display name shared by several ids
+  // the last file wins, as it did when discovery was keyed by name.
+  const discovered = (await discoverSkills(workingDirectory)).findLast((skill) => skill.name === skillName);
   if (discovered?.path) {
     return { scope: discovered.scope || null, path: discovered.path, source: discovered.source || null };
   }
@@ -331,7 +334,11 @@ function applyModelInvocation(frontmatter, disabled) {
 // `includeSupportingFiles: false` leaves `md.supportingFiles` out instead of
 // walking the skill folder: the skills list has no use for it, and a folder
 // with a bundled `.venv` or `node_modules` costs seconds to walk.
-async function getSkillSources(skillName, workingDirectory, discoveredSkill = null, { includeSupportingFiles = true } = {}) {
+// `id` (from the routes' `?id=` selector) means `discoveredSkill` is the exact
+// skill with that OpenCode id: no display-name lookup runs, and the per-source
+// candidates are looked up under the id's folder.
+async function getSkillSources(skillName, workingDirectory, discoveredSkill = null, { includeSupportingFiles = true, id = null } = {}) {
+  const folderName = id ?? skillName;
   const isReadableFile = (filePath) => {
     if (!filePath) return false;
     try {
@@ -341,28 +348,30 @@ async function getSkillSources(skillName, workingDirectory, discoveredSkill = nu
     }
   };
 
-  const projectPath = workingDirectory ? getProjectSkillPath(workingDirectory, skillName) : null;
+  const projectPath = workingDirectory ? getProjectSkillPath(workingDirectory, folderName) : null;
   const projectExists = projectPath && fs.existsSync(projectPath);
   const projectDir = projectExists ? path.dirname(projectPath) : null;
   
-  const claudePath = workingDirectory ? getClaudeSkillPath(workingDirectory, skillName) : null;
+  const claudePath = workingDirectory ? getClaudeSkillPath(workingDirectory, folderName) : null;
   const claudeExists = claudePath && fs.existsSync(claudePath);
   const claudeDir = claudeExists ? path.dirname(claudePath) : null;
-  const userClaudePath = getUserClaudeSkillPath(skillName);
+  const userClaudePath = getUserClaudeSkillPath(folderName);
   const userClaudeExists = fs.existsSync(userClaudePath);
   const userClaudeDir = userClaudeExists ? path.dirname(userClaudePath) : null;
   
-  const userPath = getUserSkillPath(skillName);
+  const userPath = getUserSkillPath(folderName);
   const userExists = fs.existsSync(userPath);
   const userDir = userExists ? path.dirname(userPath) : null;
 
-  const userAgentsPath = getUserAgentsSkillPath(skillName);
+  const userAgentsPath = getUserAgentsSkillPath(folderName);
   const userAgentsExists = fs.existsSync(userAgentsPath);
   const userAgentsDir = userAgentsExists ? path.dirname(userAgentsPath) : null;
 
-  const matchedDiscovered = discoveredSkill && discoveredSkill.name === skillName
-    ? discoveredSkill
-    : (await discoverSkills(workingDirectory)).find((skill) => skill.name === skillName);
+  const matchedDiscovered = id
+    ? (discoveredSkill?.id === id && discoveredSkill.name === skillName ? discoveredSkill : null)
+    : (discoveredSkill && discoveredSkill.name === skillName
+      ? discoveredSkill
+      : (await discoverSkills(workingDirectory)).findLast((skill) => skill.name === skillName));
   const discoveredDescription =
     matchedDiscovered && typeof matchedDiscovered.description === 'string'
       ? matchedDiscovered.description
@@ -666,6 +675,7 @@ async function updateSkillNow(skillName, updates, workingDirectory, targetPath =
   }
 
   console.log(`Updated skill: ${skillName} (path: ${mdPath})`);
+  return mdPath;
 }
 
 function deleteSkill(skillName, workingDirectory) {
@@ -774,19 +784,22 @@ function isManagedSkillPath(skillMdPath, workingDirectory) {
   return getManagedSkillRoots(workingDirectory).some((root) => isPathInside(skillDir, root));
 }
 
-function renameSkill(oldName, newName, workingDirectory) {
-  return serializeSkillWrite(() => renameSkillNow(oldName, newName, workingDirectory));
+// `skillPath` is the exact `SKILL.md` the `?id=` selector resolved; without it
+// the skill is looked up by display name as before. Resolves to the renamed
+// `SKILL.md`. The folder takes the new name, so the OpenCode id becomes
+// `newName` too.
+function renameSkill(oldName, newName, workingDirectory, { skillPath = null } = {}) {
+  return serializeSkillWrite(() => renameSkillNow(oldName, newName, workingDirectory, skillPath));
 }
 
-async function renameSkillNow(oldName, newName, workingDirectory) {
+async function renameSkillNow(oldName, newName, workingDirectory, skillPath) {
   ensureDirs();
   assertValidSkillName(newName);
 
+  const existing = skillPath ? { path: skillPath } : await getSkillScope(oldName, workingDirectory);
   if (oldName === newName) {
-    return;
+    return existing.path;
   }
-
-  const existing = await getSkillScope(oldName, workingDirectory);
   if (!existing.path) {
     throw new Error(`Skill "${oldName}" not found`);
   }
@@ -809,8 +822,14 @@ async function renameSkillNow(oldName, newName, workingDirectory) {
   }
 
   const conflict = await getSkillScope(newName, workingDirectory);
-  if (conflict.path) {
+  if (conflict.path && path.resolve(conflict.path) !== path.resolve(existing.path)) {
     throw new Error(`Skill ${newName} already exists at ${conflict.path}`);
+  }
+  // The new folder name is the new OpenCode id: refuse one another skill has.
+  const idConflict = (await discoverSkills(workingDirectory))
+    .find((skill) => skill.id === newName && path.resolve(skill.path) !== path.resolve(existing.path));
+  if (idConflict) {
+    throw new Error(`Skill ${newName} already exists at ${idConflict.path}`);
   }
 
   const oldDir = path.dirname(existing.path);
@@ -846,6 +865,28 @@ async function renameSkillNow(oldName, newName, workingDirectory) {
   }
 
   console.log(`Renamed skill: ${oldName} -> ${newName} (path: ${newPath})`);
+  return newPath;
+}
+
+/**
+ * Delete exactly one skill: the folder of `skillMdPath`, which must be a
+ * `SKILL.md` strictly inside a managed skill root (nested groups included).
+ * Resolves to the removed folder. The display-name `deleteSkill` above stays
+ * for callers without an id.
+ */
+function deleteSkillAt(skillMdPath, workingDirectory) {
+  return serializeSkillWrite(async () => {
+    const folder = skillFolderToDelete(skillMdPath, getManagedSkillRoots(workingDirectory));
+    if (!folder) {
+      throw new Error('Skill is outside managed skill directories and cannot be deleted');
+    }
+    if (!fs.existsSync(path.join(folder, 'SKILL.md'))) {
+      throw new Error('Skill not found');
+    }
+    fs.rmSync(folder, { recursive: true, force: true });
+    console.log(`Deleted skill directory: ${folder}`);
+    return folder;
+  });
 }
 
 export {
@@ -855,6 +896,7 @@ export {
   createSkill,
   updateSkill,
   deleteSkill,
+  deleteSkillAt,
   renameSkill,
   isManagedSkillPath,
 };

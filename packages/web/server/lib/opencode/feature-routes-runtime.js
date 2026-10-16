@@ -57,7 +57,7 @@ import {
   decodePluginId,
 } from './plugins.js';
 import { SKILL_DIR, SKILL_SCOPE, readSkillSupportingFile, writeSkillSupportingFile, deleteSkillSupportingFile } from './shared.js';
-import { getSkillSources, discoverSkills, mergeDiscoveredSkills, createSkill, updateSkill, deleteSkill, renameSkill, isManagedSkillPath } from './skills.js';
+import { getSkillSources, discoverSkills, mergeDiscoveredSkills, createSkill, updateSkill, deleteSkill, deleteSkillAt, renameSkill, isManagedSkillPath } from './skills.js';
 import { getCuratedSkillsSources } from '../skills-catalog/curated-sources.js';
 import { getCacheKey, scanWithCache } from '../skills-catalog/cache.js';
 import { parseSkillRepoSource } from '../skills-catalog/source.js';
@@ -598,6 +598,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       createSkill,
       updateSkill,
       deleteSkill,
+      deleteSkillAt,
       renameSkill,
       isManagedSkillPath,
       readSkillSupportingFile,

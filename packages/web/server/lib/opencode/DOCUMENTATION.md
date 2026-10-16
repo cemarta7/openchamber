@@ -230,8 +230,8 @@ Hard rules, verified against v2.0.8 (the completion stamp against v2.0.16)
 - `getJsonWriteTarget(layers, preferredScope)`: Determines write target for config updates. Throws `INVALID_JSONC` when the chosen target file is the unparseable layer.
 - `getAncestors(startDir, stopDir)`, `findWorktreeRoot(startDir)`: Git worktree helpers.
 - `isPromptFileReference(value)`, `resolvePromptFilePath(reference)`, `writePromptFile(filePath, content)`: Prompt file reference handling.
-- `walkSkillMdFiles(rootDir)`: Async. Recursively finds all SKILL.md files at any depth, following links and skipping a link back to its own ancestor. Sibling directories are read in parallel, at most 8 file-system calls at once, and the result keeps depth-first readdir order: discovery lets a later file win a duplicate name, so the order is part of the contract.
-- `addSkillFromMdFile(skillsMap, skillMdPath, parsed, scope, source)`: Indexes an already parsed skill file; `parsed` null (unreadable file) adds nothing.
+- `walkSkillMdFiles(rootDir)`: Async. Recursively finds all SKILL.md files at any depth, following links and skipping a link back to its own ancestor. Sibling directories are read in parallel, at most 8 file-system calls at once, and the result keeps depth-first readdir order: discovery lets a later file win a duplicate OpenCode skill id, and name lookups (`getSkillScope`, `getSkillSources`) take the last file with that display name, so the order is part of the contract.
+- `addSkillFromMdFile(skillsMap, skillMdPath, parsed, scope, source)`: Indexes an already parsed skill file by its OpenCode id (`skillIdFromPath`), so two ids sharing a display name are both listed; a file without a derivable id is keyed by its display name. `parsed` null (unreadable file) adds nothing.
 - `resolveSkillSearchDirectories(workingDirectory)`: Returns skill search path order (config, project, home, custom).
 - `listSkillSupportingFiles(skillDir)` (async), `readSkillSupportingFile(skillDir, relativePath)`, `writeSkillSupportingFile(skillDir, relativePath, content)`, `deleteSkillSupportingFile(skillDir, relativePath)`: Skill supporting file management.
 
@@ -922,6 +922,12 @@ within a ten-minute overall deadline.
     omits `directory`. Requests without any project still list user-scoped skills.
   - Every listed skill carries `id`, OpenCode's skill id: the `id` OpenCode reports, else the folder of `SKILL.md` (`skillIdFromPath`). The display `name` is the frontmatter `name`. The OpenCode list and the disk scan merge by id, so two ids sharing a display name stay two entries and the copies of one id collapse into the one OpenCode loads; an entry without an id falls back to the name match.
   - `GET /api/config/skills` also answers `skillPolicy` (below), or `skillPolicy: { error }` when it could not be read; the skill list itself never fails for it.
+  - Selecting by id: `GET`, `PATCH` and `DELETE /api/config/skills/:name` and `GET`, `PUT` and `DELETE /api/config/skills/:name/files/*filePath` take an optional `?id=<OpenCode skill id>` (plus the usual `directory`). With it the route acts on the listed skill with that id and display name `:name` (OpenCode's list, then the disk scan, merged by id), or answers 404 `Skill not found`; it never falls back to another skill sharing the display name. An invalid id answers 400. Without `?id=` every route keeps its display-name lookup (`skill-identity.js` holds the shared selector).
+    - Detail answers `{ name, id, path, sources, scope, source, exists }`; `id` and `path` say which skill was read (also without `?id=`).
+    - `PATCH` edits answer `{ ..., id, path }` of the edited file. With `?id=`, a `targetPath` must be the selected file (409 otherwise); without `?id=`, a `targetPath` must be a listed skill file or a `SKILL.md` under a managed skill root (400 otherwise). A selected skill without a `SKILL.md` (built-in) answers 409.
+    - `PATCH { renameTo }` with `?id=` renames exactly the selected folder, nested group folders included, and sets frontmatter `name`. The folder takes the new name, so the OpenCode id changes to `renameTo`; the answer is `{ name, id, path }` of the renamed file. A new name another skill already uses as display name or id is refused. A switch's deny for the old id stays in its config file and shows as a switched-off id with no installed skill.
+    - `DELETE` with `?id=` removes exactly the selected skill's folder: a `SKILL.md` strictly inside a managed skill root, nested groups included, never the root itself (409 outside managed roots). Other copies of the id and other skills with the display name stay. The install provenance record, keyed by install folder name (the id), is removed only when no copy of the id is left on disk. Answers `{ ..., id, path }`. Without `?id=` the legacy delete removes every folder named `:name` in the known locations, as before.
+    - Supporting files resolve only inside the selected skill's folder; a path that leaves it answers 403.
 
 ## Per-skill switches
 `skill-policy.js` turns a skill off with one statement in an OpenCode config file,
@@ -946,24 +952,37 @@ isolated OpenCode 2.0.20 through 2.0.30 servers.
   the directory (`.opencode/opencode.json` first, as for every project write). The
   skill's own location does not choose the scope. The project scope needs an explicit
   `directory`; a directory whose project file is the global one has no project scope.
-- **Ownership.** A switch owns exactly the exact-id deny in its scope's file. Off
-  appends it to the end of the version's array unless an owned deny already decides
-  the id in that file; on removes every copy of it there and nothing else. It never
-  writes an allow, a wildcard, another action or another file, so a restriction it did
-  not create stays in force. JSONC comments and layout survive, and off then on gives
-  back the original text.
+- **Ownership.** The statement a switch writes carries a provenance key:
+  `{ "action": "integration.use", "resource": "skill:<id>", "effect": "deny", "openchamber": "skill-switch" }`.
+  OpenCode 2.0.25, 2.0.28, 2.0.29 and 2.0.30 accept the key without a normalization
+  diagnostic, still enforce the statement, and serve it back from `GET /api/config`
+  without the key (measured on isolated servers for #3075; a malformed statement on
+  the same setup logs `configuration normalization diagnostic`). Off appends the marked
+  deny to the end of the version's array unless a deny already decides the id in that
+  file (the switch's own, a user's exact deny, or a wildcard); on removes the marked
+  denies for that id and nothing else. A statement without the key is never removed,
+  so a user's own exact deny survives off then on. The key records only what a switch
+  wrote: a switch never adds it to a rule it did not write and never takes over a
+  user's rule, even an identical one. The switch never writes an allow,
+  a wildcard, another action or another file, so a restriction it did not create stays
+  in force. JSONC comments and layout survive, and off then on gives back the original
+  text.
 - **Effective state.** OpenCode evaluates config documents reversed and the last
   matching statement wins, so a global rule beats a project rule in either direction
   and a root `opencode.json` beats `.opencode/opencode.jsonc`. The effective state is
-  computed from OpenCode's own `GET /api/config` documents for the directory. When that
+  computed from OpenCode's own `GET /api/config` documents for the directory, reading
+  only the arrays the running version enforces: on 2.0.25 to 2.0.28 a top-level
+  `policies` array is ignored. Because served statements lack the provenance key,
+  `decidedBy.owned` is read from the scope's file itself. When that
   read fails the state is `unknown`; a skill missing from OpenCode's skill list is never
   taken as switched off (a cold location answers an empty list first). Statements
   from a connected Console workspace are not in `/api/config` and are not shown.
 - **Writes.** Read, change and write of a file run one at a time per process, and the
   file write is atomic with the usual comment-preserving writer. A failed read or write
   changes nothing and answers an error. After a write the service reads OpenCode's
-  documents up to 8 times, 250 ms apart, and reports `confirmed: false` when OpenCode has
-  not shown the saved rule yet; the rule is saved either way.
+  documents up to 8 times, 250 ms apart, and reports `confirmed: false` until the
+  document OpenCode serves for the file holds the same enforced statements as the
+  file (compared on action, resource and effect); the rule is saved either way.
 
 Contract, identical on web (`skill-routes.js`) and VS Code (`api:config/skill-policy`):
 
@@ -971,17 +990,22 @@ Contract, identical on web (`skill-routes.js`) and VS Code (`api:config/skill-po
   `{ version, location: 'experimental.policies' | 'policies' | null, writable,
   effectiveAvailable, scopes: { global: { path, error }, project: { path, error } | null },
   skills: { [id]: { disabledIn: { global, project }, effective, decidedBy } } }`.
-  `disabledIn.<scope>` is whether that scope's file holds the switch's own deny (`null`
+  `disabledIn.<scope>` is whether that scope's file holds the switch's own marked deny (`null`
   when the scope has no file or it could not be read). `effective` is `enabled`,
   `disabled` or `unknown`. `decidedBy` is the deciding statement
   `{ path, resource, effect, scope: 'global' | 'project' | 'other', owned }` or `null`
-  (no rule: enabled). `skills` also lists ids a scope switches off that no installed
+  (no rule: enabled); `owned: false` with `scope` `global` or `project` means a rule the
+  user wrote in that file decides, which the switch will not remove. `skills` also lists
+  ids a scope switches off with a marked deny that no installed
   skill has any more, so they can still be switched back on. `writable: false` means
   OpenCode could not be read or does not enforce skill policies.
 - `PUT /api/config/skill-policy` (directory in the query or `x-opencode-directory`),
   body `{ id, scope: 'global' | 'project', enabled: boolean }`, answers
   `{ ok: true, id, saved: { scope, path, disabled, changed }, confirmed, state, policy }`
-  with `state` the summary above and `policy` the id's entry. Errors answer
+  with `state` the summary above and `policy` the id's entry. `saved.disabled` is
+  whether the scope's file now holds the switch's own marked deny: switching off a
+  skill a user rule already denies in that file answers `disabled: false, changed: false`
+  and adds nothing. Errors answer
   `{ ok: false, error: { code, message } }`: 400 `invalid_id`, `invalid_scope`,
   `invalid_enabled`, `invalid_directory`, `directory_required` (VS Code also
   `invalid_request`); 404 `unknown_skill`; 409 `unsupported_version`,
