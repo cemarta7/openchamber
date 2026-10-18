@@ -211,6 +211,16 @@ function getPrimaryUserConfigPath(userPaths) {
   return CONFIG_FILE;
 }
 
+/**
+ * The user and project config files `readConfigLayers` reads, without reading
+ * them: a caller that handles each file's read error itself (the skill switches)
+ * must not fail on another file it never asked for.
+ */
+function getConfigFilePaths(workingDirectory) {
+  const { userPaths, projectPath } = getConfigPaths(workingDirectory);
+  return { userPath: getPrimaryUserConfigPath(userPaths), projectPath };
+}
+
 const INVALID_JSONC = 'INVALID_JSONC';
 
 function isInvalidJsoncError(error) {
@@ -957,6 +967,7 @@ export {
   readConfigLayer,
   isPlainObject,
   readConfigLayers,
+  getConfigFilePaths,
   readConfig,
   readWorktreeDirectorySetting,
   getConfigForPath,

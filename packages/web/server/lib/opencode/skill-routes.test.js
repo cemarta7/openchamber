@@ -681,7 +681,7 @@ describe('skill policy routes', () => {
   // A stand-in OpenCode serving what the routes read: its version, its config
   // documents (read from the files on every request, as a watching OpenCode
   // would), and the skills those documents leave enabled.
-  const startOpenCodeStub = async ({ globalPath, projectPath, projectRoot, betaNames }) => {
+  const startOpenCodeStub = async ({ globalPath, projectPath, projectRoot, betaNames, extra, listing }) => {
     // OpenCode serves statements without the provenance key (measured on 2.0.25, 2.0.28, 2.0.29 and 2.0.30).
     const served = (info) => {
       const copy = { ...info };
@@ -705,13 +705,15 @@ describe('skill policy routes', () => {
       { id: 'alpha-skill', name: 'Alpha Display', path: path.join(projectRoot, '.opencode', 'skills', 'alpha-skill', 'SKILL.md'), description: 'a' },
       { id: 'beta-one', name: betaNames[0], path: path.join(projectRoot, '.opencode', 'skills', 'beta-one', 'SKILL.md'), description: 'b1' },
       { id: 'beta-two', name: betaNames[1], path: path.join(projectRoot, '.opencode', 'skills', 'beta-two', 'SKILL.md'), description: 'b2' },
+      ...extra.map(({ id, name }) => ({ id, name, path: path.join(projectRoot, '.opencode', 'skills', id, 'SKILL.md'), description: id })),
     ];
     const stub = express();
     stub.get('/api/info', (_req, res) => res.json({ version: '2.0.29', pid: 1, urls: [], paths: { tmp: os.tmpdir() } }));
     stub.get('/api/config', (_req, res) => res.json(readDocuments()));
     stub.get('/api/skill', (_req, res) => {
       const off = denied();
-      res.json({ location: { directory: projectRoot }, data: all.filter((skill) => !off.has(skill.id)) });
+      // A cold OpenCode answers an empty list at first.
+      res.json({ location: { directory: projectRoot }, data: listing.cold ? [] : all.filter((skill) => !off.has(skill.id)) });
     });
     const server = await new Promise((resolve) => {
       const started = stub.listen(0, () => resolve(started));
@@ -721,8 +723,9 @@ describe('skill policy routes', () => {
   };
 
   // `betaNames`: the display names of beta-one and beta-two, the same name to
-  // put both ids behind one row.
-  const setupApp = async ({ betaNames = ['Beta One', 'Beta Two'] } = {}) => {
+  // put both ids behind one row. `extra`: more skills `{ id, name }`.
+  // `diskOnly`: skill folders `{ dir, name }` OpenCode does not list.
+  const setupApp = async ({ betaNames = ['Beta One', 'Beta Two'], extra = [], diskOnly = [] } = {}) => {
     const projectRoot = fs.realpathSync(createTempProject());
     const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-skill-policy-global-'));
     cleanups.push(() => {
@@ -732,11 +735,14 @@ describe('skill policy routes', () => {
     writeSkill(projectRoot, '.opencode/skills/alpha-skill', 'Alpha Display');
     writeSkill(projectRoot, '.opencode/skills/beta-one', betaNames[0]);
     writeSkill(projectRoot, '.opencode/skills/beta-two', betaNames[1]);
+    for (const { id, name } of extra) writeSkill(projectRoot, `.opencode/skills/${id}`, name);
+    for (const { dir, name } of diskOnly) writeSkill(projectRoot, dir, name);
     const globalPath = path.join(configDir, 'opencode.json');
     const globalText = '{\n  "theme": "dark"\n}\n';
     fs.writeFileSync(globalPath, globalText);
     const projectPath = path.join(projectRoot, '.opencode', 'opencode.json');
-    const port = await startOpenCodeStub({ globalPath, projectPath, projectRoot, betaNames });
+    const listing = { cold: false };
+    const port = await startOpenCodeStub({ globalPath, projectPath, projectRoot, betaNames, extra, listing });
     const handle = startSkillsApp({
       projectRoot,
       overrides: {
@@ -757,7 +763,7 @@ describe('skill policy routes', () => {
       body: JSON.stringify(body),
     });
     const list = async () => (await fetch(`${handle.baseUrl}/api/config/skills${query}`)).json();
-    return { globalPath, globalText, projectPath, put, list };
+    return { globalPath, globalText, projectPath, put, list, listing };
   };
 
   it('lists skills by OpenCode id, switches one off and on in the project, and keeps it listed while off', async () => {
@@ -819,7 +825,7 @@ describe('skill policy routes', () => {
 
     const before = await list();
     // One row per display name, as the list always had; the policy still has both ids.
-    expect(before.skills.filter((skill) => skill.name === 'Same Name').map((skill) => skill.id)).toEqual(['beta-one']);
+    expect(before.skills.filter((skill) => skill.name === 'Same Name').map((skill) => [skill.id, skill.switchId])).toEqual([['beta-one', null]]);
     expect([...byId(before.skillPolicy).keys()]).toEqual(expect.arrayContaining(['beta-one', 'beta-two']));
 
     const off = await put({ id: 'beta-two', scope: 'project', enabled: false });
@@ -834,6 +840,68 @@ describe('skill policy routes', () => {
 
     expect((await put({ id: 'beta-two', scope: 'project', enabled: true })).status).toBe(200);
     expect(readConfigFile(projectPath)).toEqual({ policies: [] });
+  });
+
+  it('gives every skill id and each row the same switch target before and after OpenCode lists its skills', async () => {
+    // Two ids share the display name `Twin`; another skill's display name is the id `beta-two`.
+    const app = await setupApp({ betaNames: ['Twin', 'Twin'], extra: [{ id: 'name-holder', name: 'beta-two' }] });
+    const targets = async () => {
+      const listed = await app.list();
+      return {
+        rows: Object.fromEntries(listed.skills.map((skill) => [skill.name, skill.switchId])),
+        ids: [...byId(listed.skillPolicy).keys()].sort(),
+      };
+    };
+    app.listing.cold = true;
+    const cold = await targets();
+    app.listing.cold = false;
+    const warm = await targets();
+
+    expect(cold).toEqual(warm);
+    expect(warm.ids).toEqual(['alpha-skill', 'beta-one', 'beta-two', 'name-holder']);
+    // `Twin` has no row switch: each of its ids is switched on its own. The
+    // row named `beta-two` switches its own id, never the id `beta-two`.
+    expect(warm.rows).toEqual({ 'Alpha Display': 'alpha-skill', Twin: null, 'beta-two': 'name-holder' });
+
+    // Switched off while cold, the id stays known, and the warm list keeps it.
+    app.listing.cold = true;
+    expect((await app.put({ id: 'beta-two', scope: 'project', enabled: false })).status).toBe(200);
+    app.listing.cold = false;
+    expect(await targets()).toEqual(warm);
+    expect(byId((await app.list()).skillPolicy).get('beta-two')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+  });
+
+  it('lets each display name of one id switch that id, before and after OpenCode lists it', async () => {
+    // Two copies of `shared-id` whose names differ; OpenCode loads the `.opencode` one.
+    const app = await setupApp({ extra: [{ id: 'shared-id', name: 'Copy A' }], diskOnly: [{ dir: '.claude/skills/shared-id', name: 'Copy B' }] });
+    const targets = async () => Object.fromEntries((await app.list()).skills.map((skill) => [skill.name, skill.switchId]));
+    app.listing.cold = true;
+    const cold = await targets();
+    app.listing.cold = false;
+    expect(await targets()).toEqual(cold);
+    expect(cold).toMatchObject({ 'Copy A': 'shared-id', 'Copy B': 'shared-id' });
+  });
+
+  it.skipIf(process.getuid?.() === 0)('keeps the global switch and refuses the project one while the project file cannot be read', async () => {
+    const { globalPath, projectPath, put, list } = await setupApp();
+    const projectText = '{\n  "model": "a/b"\n}\n';
+    fs.writeFileSync(projectPath, projectText);
+    fs.chmodSync(projectPath, 0o000);
+    cleanups.push(() => fs.chmodSync(projectPath, 0o644));
+
+    const listed = await list();
+    expect(listed.skillPolicy.scopes.global.error).toBeNull();
+    expect(listed.skillPolicy.scopes.project.error).toBeTruthy();
+    expect(byId(listed.skillPolicy).get('alpha-skill')).toMatchObject({ disabledIn: { global: false, project: null }, effective: 'unknown' });
+
+    const project = await put({ id: 'alpha-skill', scope: 'project', enabled: false });
+    expect(project.status).toBe(409);
+    expect((await project.json()).error.code).toBe('read_failed');
+
+    expect((await put({ id: 'alpha-skill', scope: 'global', enabled: false })).status).toBe(200);
+    expect(readConfigFile(globalPath).policies).toEqual([{ action: 'integration.use', resource: 'skill:alpha-skill', effect: 'deny', openchamber: 'skill-switch' }]);
+    fs.chmodSync(projectPath, 0o644);
+    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
   });
 
   it('refuses a project switch without an explicit directory', async () => {

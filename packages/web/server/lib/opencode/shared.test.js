@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { parseMdFile, writeMdFile, readConfigFile, readConfigLayers, writeConfig, walkSkillMdFiles } from './shared.js';
+import { parseMdFile, writeMdFile, readConfigFile, readConfigLayers, getConfigFilePaths, writeConfig, walkSkillMdFiles } from './shared.js';
 import { updateAgent } from './agents.js';
 import { updateMcpConfig, createMcpConfig, deleteMcpConfig } from './mcp.js';
 
@@ -778,5 +778,24 @@ describe('writeConfig replaces the file atomically', () => {
 
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readConfigFile(real)).toEqual({ a: 2 });
+  });
+});
+
+describe('getConfigFilePaths', () => {
+  it.skipIf(process.getuid?.() === 0)('names the user and project files without reading an unreadable one', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-config-paths-'));
+    const projectFile = path.join(project, '.opencode', 'opencode.json');
+    fs.mkdirSync(path.dirname(projectFile), { recursive: true });
+    fs.writeFileSync(projectFile, '{}');
+    fs.chmodSync(projectFile, 0o000);
+    try {
+      expect(() => readConfigLayers(project)).toThrow();
+      const paths = getConfigFilePaths(project);
+      expect(paths.projectPath).toBe(projectFile);
+      expect(paths.userPath).toBe(readConfigLayers(os.tmpdir()).paths.userPath);
+    } finally {
+      fs.chmodSync(projectFile, 0o644);
+      fs.rmSync(project, { recursive: true, force: true });
+    }
   });
 });

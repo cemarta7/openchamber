@@ -124,17 +124,17 @@ const isSkillSwitchedOff = (policy: SkillPolicyState | null, id: string): boolea
 type SkillIdentity = { id: string; name: string };
 
 /**
- * Ids the policy state has that no row of the skills list carries. The list
- * keeps one row per display name, so a second id with the same name has no
- * row; OpenCode also stops listing a switched-off built-in or config-sourced
- * skill. Settings still offers the switches of each such id.
+ * Ids the policy state has that no row's switch names (`switchId`). The list
+ * keeps one row per display name, so every id of a name several ids share is
+ * here, as is a switched-off id OpenCode no longer lists (a built-in, say).
+ * Settings offers the switches of each such id on its own.
  */
 export const switchOnlyIds = (
-  skills: readonly SkillIdentity[],
+  skills: readonly { switchId: string | null }[],
   policy: SkillPolicyState | null,
 ): string[] => {
   if (!policy) return [];
-  const listed = new Set(skills.map((skill) => skill.id));
+  const listed = new Set(skills.map((skill) => skill.switchId));
   return [...policy.skills.keys()]
     .filter((id) => !listed.has(id))
     .sort((a, b) => a.localeCompare(b));
@@ -150,4 +150,22 @@ export const filterAvailableSkills = <T extends SkillIdentity>(
 ): T[] => {
   if (!policy || !skills.some((skill) => isSkillSwitchedOff(policy, skill.id))) return skills;
   return skills.filter((skill) => !isSkillSwitchedOff(policy, skill.id));
+};
+
+/**
+ * Whether the policy state proves that a switch-only `id` is gone. Only a read
+ * that succeeded, reached OpenCode (`effectiveAvailable`: its own list holds
+ * ids no skill file has, a built-in say) and read every scope's file lists
+ * every installed id and every switch rule, so only then does a missing id
+ * have nothing left to switch. Otherwise the id's skill or rule may be hidden:
+ * nothing is concluded, and the page keeps the id with the read error.
+ */
+export const isSwitchOnlyIdGone = (
+  view: { state: SkillPolicyState | null; error: string | null } | null,
+  id: string,
+): boolean => {
+  const state = view?.state;
+  if (!state || view?.error || !state.effectiveAvailable) return false;
+  if (state.scopes.global.error || state.scopes.project?.error) return false;
+  return !state.skills.has(id);
 };

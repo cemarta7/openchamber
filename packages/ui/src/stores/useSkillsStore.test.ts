@@ -101,6 +101,7 @@ describe('useSkillsStore directory resolution', () => {
     // `skills`, so that list must keep describing the active project.
     const activeSkills = [{
       id: 'active-only',
+      switchId: 'active-only',
       name: 'active-only',
       path: `${activeProjectPath}/.agents/skills/active-only/SKILL.md`,
       scope: 'project' as const,
@@ -131,6 +132,8 @@ describe('useSkillsStore directory resolution', () => {
     expect(runtimeFetchCalls[0]?.url).toContain(`directory=${encodeURIComponent(activeProjectPath)}`);
     expect(useSkillsStore.getState().skills).toEqual([{
       id: 'repo-local-skill',
+      // An answer without `switchId` offers no row switch.
+      switchId: null,
       name: 'repo-local-skill',
       path: `${activeProjectPath}/.agents/skills/repo-local-skill/SKILL.md`,
       scope: 'project',
@@ -146,6 +149,7 @@ describe('useSkillsStore directory resolution', () => {
       skills: [
         {
           name: 'managed-skill',
+          switchId: 'managed-skill',
           path: `${activeProjectPath}/.opencode/skills/managed-skill/SKILL.md`,
           scope: 'project',
           source: 'opencode',
@@ -169,6 +173,7 @@ describe('useSkillsStore directory resolution', () => {
     expect(useSkillsStore.getState().skills).toEqual([
       {
         id: 'managed-skill',
+        switchId: 'managed-skill',
         name: 'managed-skill',
         path: `${activeProjectPath}/.opencode/skills/managed-skill/SKILL.md`,
         scope: 'project',
@@ -179,6 +184,7 @@ describe('useSkillsStore directory resolution', () => {
       },
       {
         id: 'cache-skill',
+        switchId: null,
         name: 'cache-skill',
         path: '/home/ubuntu/.cache/opencode/skills/hash/cache-skill/SKILL.md',
         scope: 'user',
@@ -245,6 +251,7 @@ describe('useSkillsStore directory resolution', () => {
   test('a partial list keeps previously known OpenCode skills and is not cached as fresh', async () => {
     const builtIn = {
       id: 'OpenCode',
+      switchId: 'OpenCode',
       name: 'OpenCode',
       path: '<built-in>',
       scope: 'user' as const,
@@ -255,6 +262,7 @@ describe('useSkillsStore directory resolution', () => {
     };
     const deletedManaged = {
       id: 'deleted-managed',
+      switchId: 'deleted-managed',
       name: 'deleted-managed',
       path: `${activeProjectPath}/.opencode/skills/deleted-managed/SKILL.md`,
       scope: 'project' as const,

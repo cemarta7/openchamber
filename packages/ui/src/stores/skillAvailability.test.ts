@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   filterAvailableSkills,
+  isSwitchOnlyIdGone,
   parseSkillPolicyRead,
   parseSkillPolicyWrite,
   switchOnlyIds,
@@ -56,14 +57,39 @@ describe('policy parsing', () => {
 });
 
 describe('switchOnlyIds', () => {
-  test('lists every id the policy has that no row carries, on or off', () => {
+  test('lists every id the policy has that no row switch names, on or off', () => {
     const policy = state({
       'deploy-web': entry('disabled', { global: true, project: false }),
       'built-in-review': entry('disabled', { global: null, project: true }),
-      // A second id behind a display name another row shows.
       'deploy-api': entry('enabled'),
+      'code-audit': entry('enabled'),
     });
-    expect(switchOnlyIds([web], policy)).toEqual(['built-in-review', 'deploy-api']);
-    expect(switchOnlyIds([web], null)).toEqual([]);
+    // `deploy-web` has its row switch; the `audit` row has none, because
+    // another id shares its display name, so its id is switched on its own.
+    const rows = [{ switchId: 'deploy-web' }, { switchId: null }];
+    expect(switchOnlyIds(rows, policy)).toEqual(['built-in-review', 'code-audit', 'deploy-api']);
+    expect(switchOnlyIds(rows, null)).toEqual([]);
+  });
+});
+
+describe('isSwitchOnlyIdGone', () => {
+  const complete = state({ 'deploy-web': entry('enabled') });
+  test('only a successful read with every scope file read proves an id gone', () => {
+    expect(isSwitchOnlyIdGone({ state: complete, error: null }, 'old-rule')).toBe(true);
+    expect(isSwitchOnlyIdGone({ state: complete, error: null }, 'deploy-web')).toBe(false);
+  });
+
+  test('an unreadable scope file, a failed read or no read concludes nothing', () => {
+    const projectUnreadable = { ...complete, scopes: { ...complete.scopes, project: { path: '/p/opencode.json', error: 'EACCES' } } };
+    const globalUnreadable = { ...complete, scopes: { ...complete.scopes, global: { path: '/config/opencode.json', error: 'EACCES' } } };
+    expect(isSwitchOnlyIdGone({ state: projectUnreadable, error: null }, 'old-rule')).toBe(false);
+    expect(isSwitchOnlyIdGone({ state: globalUnreadable, error: null }, 'old-rule')).toBe(false);
+    expect(isSwitchOnlyIdGone({ state: complete, error: 'OpenCode is not running' }, 'old-rule')).toBe(false);
+    // OpenCode down while both files read fine: the server answers a state
+    // without effective data, and an OpenCode-only id (a built-in) is missing.
+    const openCodeDown = { ...complete, version: null, location: null, writable: false, effectiveAvailable: false, skills: new Map() };
+    expect(isSwitchOnlyIdGone({ state: openCodeDown, error: null }, 'built-in-review')).toBe(false);
+    expect(isSwitchOnlyIdGone({ state: null, error: null }, 'old-rule')).toBe(false);
+    expect(isSwitchOnlyIdGone(null, 'old-rule')).toBe(false);
   });
 });

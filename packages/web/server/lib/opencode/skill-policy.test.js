@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
+  collectSkillIds,
   createSkillPolicyService,
   editSkillSwitchText,
   findDecidingSkillStatement,
@@ -12,6 +13,7 @@ import {
   setSkillDisabled,
   skillIdFromPath,
   skillPolicyLocation,
+  withSwitchIds,
 } from './skill-policy.js';
 import { readConfigFile } from './shared.js';
 
@@ -713,5 +715,41 @@ describe('handleSkillPolicyWrite', () => {
 
     const saved = await call({ id: 'alpha-skill', scope: 'global', enabled: false });
     expect(saved).toMatchObject({ status: 200, body: { ok: true, confirmed: true, saved: { disabled: true, changed: true } } });
+  });
+});
+
+describe('withSwitchIds', () => {
+  const targets = (rows, openCode, disk) => {
+    const diskIds = new Map();
+    for (const [id, name] of disk) {
+      if (!diskIds.has(id)) diskIds.set(id, new Set());
+      diskIds.get(id).add(name);
+    }
+    const ids = collectSkillIds(openCode.map(([id, name]) => ({ id, name })), diskIds);
+    const withIds = withSwitchIds(rows.map(([id, name]) => ({ id, name })), ids);
+    // Every row without a switch names an id that no row switches.
+    const switched = new Set(withIds.map((row) => row.switchId).filter(Boolean));
+    for (const row of withIds) if (!row.switchId) expect(switched.has(row.id)).toBe(false);
+    return Object.fromEntries(withIds.map((row) => [row.name, row.switchId]));
+  };
+
+  it('gives no row switch to a name two ids share, and keeps an id that equals another name apart', () => {
+    const disk = [['dup-one', 'Twin'], ['dup-two', 'Twin'], ['name-holder', 'dup-two']];
+    expect(targets([['dup-one', 'Twin'], ['name-holder', 'dup-two']], [], disk)).toEqual({ Twin: null, 'dup-two': 'name-holder' });
+    expect(targets([['dup-two', 'Twin'], ['name-holder', 'dup-two']], [['dup-one', 'Twin']], disk)).toEqual({ Twin: null, 'dup-two': 'name-holder' });
+  });
+
+  it('lets each name of one id switch that id, cold and warm alike', () => {
+    // Two copies of `shared-id` whose frontmatter names differ.
+    const disk = [['shared-id', 'Copy A'], ['shared-id', 'Copy B']];
+    const rows = [['shared-id', 'Copy A'], ['shared-id', 'Copy B']];
+    expect(targets(rows, [], disk)).toEqual({ 'Copy A': 'shared-id', 'Copy B': 'shared-id' });
+    expect(targets(rows, [['shared-id', 'Copy B']], disk)).toEqual({ 'Copy A': 'shared-id', 'Copy B': 'shared-id' });
+  });
+
+  it('gives no row switch to an id one of whose names another id shares', () => {
+    // `mixed` is listed as `Solo` and as `Twin`; `other` is `Twin` too.
+    const disk = [['mixed', 'Solo'], ['mixed', 'Twin'], ['other', 'Twin']];
+    expect(targets([['mixed', 'Solo'], ['other', 'Twin']], [], disk)).toEqual({ Solo: null, Twin: null });
   });
 });

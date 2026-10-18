@@ -361,8 +361,10 @@ Bridge surface (`bridge-config-runtime.ts`), matching the web routes:
   warming on (`true`, keeping a hand-tuned object) or off (removes the key),
   written with the shared `writeWarmingEnabled` to the same file.
 - `api:config/skills` — the `GET` list adds `skillPolicy` and a skill `id` on
-  every entry, as the web route does; `skillPolicy` and the switch also take the
-  ids of OpenCode's own list that the name merge leaves without a row. The webview sends the request's directory
+  every entry, as the web route does, with the same `switchId` and the same id
+  inventory (OpenCode's list and every skill file `discoverSkills(dir, { ids })`
+  finds). The switch targets come from `getConfigPaths` without reading the files,
+  so an unreadable project file is that scope's error only. The webview sends the request's directory
   (query or `x-opencode-directory`) for the list only, and the host reads that
   directory, falling back to its working directory, so the policy state matches
   the directory the switches write for. Other skill calls keep the host's

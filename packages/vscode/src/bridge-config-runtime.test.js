@@ -356,7 +356,9 @@ describe('VS Code skill policy parity', () => {
   };
 
   // `hostDirectory` is the host's working directory; the requests name `root`.
-  const setup = ({ hostDirectory = null, openCodeSkills = null } = {}) => {
+  // `openCodeSkills`: OpenCode's own list; `readOpenCodeSkills` answers it per
+  // read instead, for a list that changes during the test.
+  const setup = ({ hostDirectory = null, openCodeSkills = null, readOpenCodeSkills = () => openCodeSkills } = {}) => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-policy-')));
     tempRoots.push(root);
     fs.mkdirSync(path.join(root, '.git'));
@@ -365,7 +367,7 @@ describe('VS Code skill policy parity', () => {
     // A watching OpenCode: it serves whatever the config files hold now.
     const policyDeps = {
       ...deps,
-      fetchOpenCodeSkillsFromApi: async () => openCodeSkills,
+      fetchOpenCodeSkillsFromApi: async () => readOpenCodeSkills(),
       createOpenCodePolicyReader: () => ({
         readVersion: async () => '2.0.29',
         // A file OpenCode cannot parse is left out of what it serves.
@@ -470,7 +472,7 @@ describe('VS Code skill policy parity', () => {
     const { root, projectConfigPath, send, list } = setup({ openCodeSkills: [skill('beta-one'), skill('beta-two')] });
 
     const listed = await list(root);
-    expect(listed.data.skills.filter((entry) => entry.name === 'Same Name').map((entry) => entry.id)).toEqual(['beta-one']);
+    expect(listed.data.skills.filter((entry) => entry.name === 'Same Name').map((entry) => [entry.id, entry.switchId])).toEqual([['beta-one', null]]);
     expect([...byId(listed.data.skillPolicy).keys()]).toEqual(expect.arrayContaining(['beta-one', 'beta-two']));
 
     const off = await send({ directory: root, body: { id: 'beta-two', scope: 'project', enabled: false } });
@@ -478,6 +480,69 @@ describe('VS Code skill policy parity', () => {
     expect(readJson(projectConfigPath)).toEqual({
       policies: [{ action: 'integration.use', resource: 'skill:beta-two', effect: 'deny', openchamber: 'skill-switch' }],
     });
+  });
+
+  test('gives every skill id and each row the same switch target before and after OpenCode lists its skills, like the web server', async () => {
+    let cold = true;
+    const project = (root, id, name) => ({ id, name, path: path.join(root, '.opencode', 'skills', id, 'SKILL.md'), scope: 'project', source: 'opencode' });
+    let warmList = [];
+    const { root, list } = setup({ readOpenCodeSkills: () => (cold ? [] : warmList) });
+    // Two ids share the display name `Twin`; another skill's display name is the id `beta-two`.
+    const fixtures = [['alpha-skill', 'Alpha Display'], ['beta-one', 'Twin'], ['beta-two', 'Twin'], ['name-holder', 'beta-two']];
+    for (const [id, name] of fixtures.slice(1)) writeSkill(root, id, name);
+    warmList = fixtures.map(([id, name]) => project(root, id, name));
+    const targets = async () => {
+      const listed = (await list(root)).data;
+      return {
+        rows: Object.fromEntries(listed.skills.map((entry) => [entry.name, entry.switchId])),
+        ids: [...byId(listed.skillPolicy).keys()].sort(),
+      };
+    };
+
+    const coldTargets = await targets();
+    cold = false;
+    expect(await targets()).toEqual(coldTargets);
+    expect(coldTargets).toEqual({
+      rows: { 'Alpha Display': 'alpha-skill', Twin: null, 'beta-two': 'name-holder' },
+      ids: ['alpha-skill', 'beta-one', 'beta-two', 'name-holder'],
+    });
+  });
+
+  test('lets each display name of one id switch that id, before and after OpenCode lists it, like the web server', async () => {
+    let cold = true;
+    let warmList = [];
+    const { root, list } = setup({ readOpenCodeSkills: () => (cold ? [] : warmList) });
+    // Two copies of `shared-id` whose names differ; OpenCode loads the `.opencode` one.
+    writeSkill(root, 'shared-id', 'Copy A');
+    const claudeCopy = path.join(root, '.claude', 'skills', 'shared-id', 'SKILL.md');
+    fs.mkdirSync(path.dirname(claudeCopy), { recursive: true });
+    fs.writeFileSync(claudeCopy, '---\nname: Copy B\ndescription: copy\n---\nBody\n');
+    warmList = [{ id: 'shared-id', name: 'Copy A', path: path.join(root, '.opencode', 'skills', 'shared-id', 'SKILL.md'), scope: 'project', source: 'opencode' }];
+    const targets = async () => Object.fromEntries((await list(root)).data.skills.map((entry) => [entry.name, entry.switchId]));
+
+    const coldTargets = await targets();
+    cold = false;
+    expect(await targets()).toEqual(coldTargets);
+    expect(coldTargets).toMatchObject({ 'Copy A': 'shared-id', 'Copy B': 'shared-id' });
+  });
+
+  test.skipIf(process.getuid?.() === 0)('keeps the global switch and refuses the project one while the project file cannot be read, like the web server', async () => {
+    const { root, projectConfigPath, send, list } = setup();
+    const projectText = '{\n  "model": "a/b"\n}\n';
+    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+    fs.writeFileSync(projectConfigPath, projectText);
+    fs.chmodSync(projectConfigPath, 0o000);
+    try {
+      const policy = (await list(root)).data.skillPolicy;
+      expect(policy.scopes.global.error).toBeNull();
+      expect(policy.scopes.project.error).toBeTruthy();
+      const refused = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } });
+      expect(refused.data).toMatchObject({ status: 409, body: { error: { code: 'read_failed' } } });
+      expect((await send({ directory: root, body: { id: 'alpha-skill', scope: 'global', enabled: false } })).data.status).toBe(200);
+    } finally {
+      fs.chmodSync(projectConfigPath, 0o644);
+    }
+    expect(fs.readFileSync(projectConfigPath, 'utf8')).toBe(projectText);
   });
 
   test('keeps a user exact deny through off and on, like the web server', async () => {

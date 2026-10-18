@@ -920,15 +920,20 @@ within a ten-minute overall deadline.
     back to the active project / `lastDirectory` so repository-local
     `.agents/skills` and `.opencode/skills` remain discoverable when the client
     omits `directory`. Requests without any project still list user-scoped skills.
-  - Every listed skill carries `id`, OpenCode's skill id: the `id` OpenCode reports, else the folder of `SKILL.md` (`skillIdFromPath`). The display `name` is the frontmatter `name`; the list still merges by name, so a second id with a name another row shows has no row. `skillPolicy` and the switch route still take every id OpenCode lists, so that id stays switchable.
+  - Every listed skill carries `id`, OpenCode's skill id: the `id` OpenCode reports, else the folder of `SKILL.md` (`skillIdFromPath`). The display `name` is the frontmatter `name`; the list still merges by name, so a second id with a name another row shows has no row. It also carries `switchId`, and `skillPolicy` covers every installed id; see "Per-skill switches".
   - `GET /api/config/skills` also answers `skillPolicy` (below), or `skillPolicy: { error }` when it could not be read; the skill list itself never fails for it.
 
 ## Per-skill switches
 `skill-policy.js` turns a skill off with one statement in an OpenCode config file,
 `{ "action": "integration.use", "resource": "skill:<id>", "effect": "deny" }`.
-OpenCode then drops the skill from its registry, from the model's skill list and
-from explicit `session.skill` calls and prompt attachments, live and without a
-restart. The skill files stay where they are.
+Once OpenCode reloads the config, without a restart, it refuses to load the skill:
+the model's own `skill` call, explicit `session.skill` calls and prompt
+attachments all fail, and switching it back on lets them load it again. The
+model's `<available_skills>` list is built once per session, at its first prompt
+(measured on 2.0.29): a session started while the skill was on keeps listing it,
+and loading it there fails; a session started while it was off does not list it
+after it is switched back on, though attachments and the model's call load it.
+New sessions list the current set. The skill files stay where they are.
 
 - **Config key by version.** 2.0.25 to 2.0.28 enforce only `experimental.policies`;
   2.0.29 and newer also read top-level `policies`, and the switch writes there.
@@ -942,7 +947,11 @@ restart. The skill files stay where they are.
 - **Scopes.** `global` writes the user's OpenCode config (`opencode.json[c]` in the
   OpenCode config directory), `project` the project config file OpenChamber writes for
   the directory. The project scope needs an explicit `directory`; a directory whose
-  project file is the global one has no project scope.
+  project file is the global one has no project scope. The two paths are resolved
+  without reading either file (`getConfigFilePaths`), and each scope's file is read
+  on its own: one that cannot be read (permissions, invalid JSONC) reports its error
+  on that scope and refuses that scope's writes with 409 (`read_failed` or
+  `invalid_config`), while the other scope keeps working.
 - **Ownership.** The statement a switch writes carries a provenance key,
   `"openchamber": "skill-switch"`. OpenCode 2.0.25 to 2.0.30 accept the key, still
   enforce the statement, and serve it back from `GET /api/config` without the key.
@@ -965,7 +974,7 @@ restart. The skill files stay where they are.
   statements lack the provenance key, `decidedBy.owned` is read from the scope's file
   itself. When OpenCode's config cannot be read the state is `unknown`; a skill missing
   from OpenCode's skill list is never taken as switched off. While a scope's own file
-  cannot be parsed (`scopes.<scope>.error`), the state is `unknown` too unless a deny
+  cannot be read or parsed (`scopes.<scope>.error`), the state is `unknown` too unless a deny
   still decides the skill: OpenCode leaves that file out of `GET /api/config`.
   Statements from a connected Console workspace are not in `/api/config` and are not shown.
 - **Writes.** Read, change and write of a file run one at a time per process, and the
@@ -998,6 +1007,14 @@ Contract, identical on web (`skill-routes.js`) and VS Code (`api:config/skill-po
   `skills` also lists ids a scope switches off with a marked deny that no installed
   skill has any more, so they can still be switched back on. `writable: false` means
   OpenCode could not be read or does not enforce skill policies.
+  `skills` holds every installed id, from OpenCode's own list and every skill file
+  the disk scan finds (`collectSkillIds`), so it does not depend on OpenCode's list
+  being warm; it keeps every display name each id has, also when copies of one id
+  differ in name. Each listed skill carries `switchId` (`withSwitchIds`): its own id
+  when its display name belongs to that one id and every name of that id belongs to
+  it alone, else `null`, because which copy a name-merged row shows can change once
+  OpenCode's list arrives. The id of a row without a switch is never another row's
+  switch, so it is switched on its own.
 - `PUT /api/config/skill-policy` (directory in the query or `x-opencode-directory`),
   body `{ id, scope: 'global' | 'project', enabled: boolean }`, answers
   `{ ok: true, id, saved: { scope, path, disabled, changed }, confirmed, state, policy }`

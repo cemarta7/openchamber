@@ -179,12 +179,20 @@ The Skills page reads the server's own `skillPolicy` instead (see
 `stores/DOCUMENTATION.md`). A skill's id is its `SKILL.md` folder name, not its
 display name, and one switch covers every source copy of that id. The sidebar
 marks a row "Off" when a switch decides it and "Blocked" when a rule the
-switches did not write does. Every id the policy state has but no row
-carries is listed under "Other skill IDs": a second id behind a display name
-another row shows, or a switched-off id OpenCode no longer lists (a built-in,
-say). Selecting one opens only its switches, through `selectedSwitchOnlyId`,
-which is kept apart from the name selection so an id that equals another
-skill's name never opens that skill.
+switches did not write does. A row has switches only when the server gives it
+a `switchId`: its display name belongs to that one installed id, and that id's
+other names belong to it alone. A row whose
+name several ids share says so instead, and every id without a row switch is
+listed under "Other skill IDs" (`switchOnlyIds`), as is a switched-off id
+OpenCode no longer lists (a built-in, say). So a row's switch never names a
+different id once OpenCode's own list arrives. Selecting an Other skill ID
+opens only its switches, through `selectedSwitchOnlyId`, which is kept apart
+from the name selection so an id that equals another skill's name never opens
+that skill. An Other skill ID that a complete policy read no longer has (the
+old id of a renamed skill switched back on) closes its page
+(`isSwitchOnlyIdGone`). After a failed read, or while a scope's file cannot be
+read, the page stays with that read error, since the missing file may hold
+the id's rule.
 `skills/SkillSwitchesSection.tsx` shows one switch per scope (all projects, and
 this project when the directory has its own config file), each showing only
 the switch's own rule in that file, plus a status line from

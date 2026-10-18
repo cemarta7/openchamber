@@ -17,7 +17,7 @@ import {
 } from 'jsonc-parser';
 import { resolveNpmRegistryRequest } from '../../web/server/lib/opencode/npm-registry-config.js';
 import { writeFileAtomic } from '../../web/server/lib/opencode/atomic-write.js';
-import { createSkillPolicyService, skillIdFromPath } from '../../web/server/lib/opencode/skill-policy.js';
+import { addSkillIdName, createSkillPolicyService, skillIdFromPath } from '../../web/server/lib/opencode/skill-policy.js';
 import {
   toAgentEntity,
   fromAgentEntity,
@@ -2803,9 +2803,10 @@ export const BUILT_IN_SKILL_LOCATION = '<built-in>';
  * project config file this extension writes for the directory.
  */
 export const skillPolicyService = createSkillPolicyService({
+  // The paths only: each scope's file is read, and its error kept, by the service.
   resolveTargets: (directory) => {
-    const { paths } = readConfigLayers(directory ?? undefined);
-    return { global: paths.userPath, project: directory ? paths.projectPath : null };
+    const { userPaths, projectPath } = getConfigPaths(directory ?? undefined);
+    return { global: getPrimaryUserConfigPath(userPaths), project: directory ? projectPath : null };
   },
   readConfigFile,
 });
@@ -2836,7 +2837,7 @@ export const mergeDiscoveredSkills = (
 };
 
 const addSkillFromMdFile = (
-  skillsMap: Map<string, DiscoveredSkill>,
+  skillsMap: Pick<Map<string, DiscoveredSkill>, 'set'>,
   skillMdPath: string,
   scope: SkillScope,
   source: SkillSource
@@ -2976,8 +2977,19 @@ const listSupportingFiles = (skillDir: string): SupportingFile[] => {
   return files;
 };
 
-export const discoverSkills = (workingDirectory?: string): DiscoveredSkill[] => {
-  const skills = new Map<string, DiscoveredSkill>();
+// Mirror of the web server's `discoverSkills`: `ids`, when given, receives
+// every skill file's OpenCode id and display name (the skill switches).
+export const discoverSkills = (
+  workingDirectory?: string,
+  { ids = null }: { ids?: Map<string, Set<string>> | null } = {},
+): DiscoveredSkill[] => {
+  const found = new Map<string, DiscoveredSkill>();
+  const skills: Pick<Map<string, DiscoveredSkill>, 'set'> = {
+    set: (key, skill) => {
+      if (ids) addSkillIdName(ids, skill.id, skill.name);
+      return found.set(key, skill);
+    },
+  };
 
   // 1) External global (.claude, .agents)
   for (const externalRootName of ['.claude', '.agents']) {
@@ -3064,7 +3076,7 @@ export const discoverSkills = (workingDirectory?: string): DiscoveredSkill[] => 
     }
   }
 
-  return Array.from(skills.values());
+  return Array.from(found.values());
 };
 
 // "Only when asked" is written as two frontmatter keys: the portable

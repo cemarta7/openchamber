@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { CodeMirrorEditor } from '@/components/ui/CodeMirrorEditor';
 import { toast } from '@/components/ui';
 import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
-import { selectSkillsForDirectory, useSkillsStore, type SkillConfig, type SkillScope, type SupportingFile, type PendingFile } from '@/stores/useSkillsStore';
+import { selectSkillPolicyForDirectory, selectSkillsForDirectory, useSkillsStore, type SkillConfig, type SkillScope, type SupportingFile, type PendingFile } from '@/stores/useSkillsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
@@ -23,6 +23,7 @@ import {
   SettingsStackedField,
   SettingsCheckboxRow,
   SETTINGS_FIELD_LABEL_CLASS,
+  SETTINGS_HELPER_CLASS,
 } from '@/components/sections/shared/SettingsSection';
 import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import {
@@ -44,6 +45,7 @@ import { SimpleMarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { PreviewToggleButton } from '@/components/views/PreviewToggleButton';
 import { SkillsCatalogPage } from './catalog/SkillsCatalogPage';
 import { SkillSwitchesSection } from './SkillSwitchesSection';
+import { isSwitchOnlyIdGone } from '@/stores/skillAvailability';
 import {
   SKILL_LOCATION_OPTIONS,
   locationPartsFrom,
@@ -148,7 +150,12 @@ const SkillsInstalledPage: React.FC = () => {
   const selectedSkill = selectedSkillName ? getSkillByName(selectedSkillName, settingsDirectory) : null;
   const isNewSkill = Boolean(skillDraft && skillDraft.name === selectedSkillName && !selectedSkill);
   const selectedSwitchOnlyId = useSkillsStore((state) => state.selectedSwitchOnlyId);
-  const hasStaleSelection = Boolean(selectedSkillName && !selectedSkill && !skillDraft);
+  const policyView = useSkillsStore((state) => selectSkillPolicyForDirectory(state, settingsDirectory));
+  // A switch-only id a complete policy read no longer has (no skill file and
+  // no switch rule left, e.g. the old id of a renamed skill switched back on)
+  // has nothing to switch: the page closes like any stale selection.
+  const switchOnlyGone = Boolean(selectedSwitchOnlyId && isSwitchOnlyIdGone(policyView, selectedSwitchOnlyId));
+  const hasStaleSelection = Boolean((selectedSkillName && !selectedSkill && !skillDraft) || switchOnlyGone);
   const isReadOnlySkill = selectedSkill?.path === '<built-in>';
 
   React.useEffect(() => {
@@ -581,7 +588,7 @@ const SkillsInstalledPage: React.FC = () => {
   };
 
   // An id without a row of its own: only its switches, never another skill's page.
-  if (selectedSwitchOnlyId) {
+  if (selectedSwitchOnlyId && !switchOnlyGone) {
     return (
       <SettingsPageLayout
         title={selectedSwitchOnlyId}
@@ -711,8 +718,13 @@ const SkillsInstalledPage: React.FC = () => {
 
         </SettingsSection>
 
-        {selectedSkill && !isNewSkill ? (
-          <SkillSwitchesSection id={selectedSkill.id} name={selectedSkill.name} directory={settingsDirectory} />
+        {selectedSkill && !isNewSkill && selectedSkill.switchId ? (
+          <SkillSwitchesSection id={selectedSkill.switchId} name={selectedSkill.name} directory={settingsDirectory} />
+        ) : null}
+        {selectedSkill && !isNewSkill && !selectedSkill.switchId ? (
+          <SettingsSection title={t('settings.skills.switches.title')}>
+            <p className={SETTINGS_HELPER_CLASS}>{t('settings.skills.switches.sharedName')}</p>
+          </SettingsSection>
         ) : null}
 
         <SettingsSection

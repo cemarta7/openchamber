@@ -87,6 +87,18 @@ export function createSkillPolicyService<Config>(dependencies: {
   confirmDelayMs?: number;
 }): SkillPolicyService;
 
+export function addSkillIdName(ids: Map<string, Set<string>>, id: string | null | undefined, name: string): void;
+
+export function collectSkillIds(
+  openCodeSkills: Array<{ id?: string | null; name: string }> | null,
+  diskIds: Map<string, Set<string>>,
+): Map<string, Set<string>>;
+
+export function withSwitchIds<T extends { id?: string | null; name: string }>(
+  skills: T[],
+  ids: Map<string, Set<string>>,
+): Array<T & { switchId: string | null }>;
+
 export function handleSkillPolicyWrite(input: {
   service: SkillPolicyService;
   body: JsonValue | undefined;

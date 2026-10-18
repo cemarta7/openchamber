@@ -277,7 +277,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                       <SkillListItem
                         key={skill.name}
                         skill={skill}
-                        policy={policyState?.skills.get(skill.id)}
+                        policy={skill.switchId ? policyState?.skills.get(skill.switchId) : undefined}
                         isSelected={selectedSkillName === skill.name}
                         onSelect={() => {
                           setSelectedSkill(skill.name);
@@ -297,7 +297,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                   <SkillListItem
                     key={skill.name}
                     skill={skill}
-                    policy={policyState?.skills.get(skill.id)}
+                    policy={skill.switchId ? policyState?.skills.get(skill.switchId) : undefined}
                     isSelected={selectedSkillName === skill.name}
                     onSelect={() => {
                       setSelectedSkill(skill.name);
@@ -330,7 +330,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                       <SkillListItem
                         key={skill.name}
                         skill={skill}
-                        policy={policyState?.skills.get(skill.id)}
+                        policy={skill.switchId ? policyState?.skills.get(skill.switchId) : undefined}
                         isSelected={selectedSkillName === skill.name}
                         onSelect={() => {
                           setSelectedSkill(skill.name);
@@ -350,7 +350,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                   <SkillListItem
                     key={skill.name}
                     skill={skill}
-                    policy={policyState?.skills.get(skill.id)}
+                    policy={skill.switchId ? policyState?.skills.get(skill.switchId) : undefined}
                     isSelected={selectedSkillName === skill.name}
                     onSelect={() => {
                       setSelectedSkill(skill.name);

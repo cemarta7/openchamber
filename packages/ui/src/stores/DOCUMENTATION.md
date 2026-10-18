@@ -657,7 +657,9 @@ list rather than clearing it.
 
 Each skill carries OpenCode's skill `id`, the folder of `SKILL.md`, which the
 frontmatter `name` can differ from. The per-skill switches and the policy state
-key on it; selection and the skill routes keep using the display name. An id
+key on it; selection and the skill routes keep using the display name. A
+row's switch names its `switchId` (null when several installed ids share its
+display name; see `packages/web/server/lib/opencode/DOCUMENTATION.md`). An id
 with no row of its own (`switchOnlyIds`) is selected through
 `selectedSwitchOnlyId`, which is not persisted and clears, and is cleared by,
 `selectedSkillName`.

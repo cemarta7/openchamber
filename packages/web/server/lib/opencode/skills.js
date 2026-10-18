@@ -22,6 +22,7 @@ import {
   findWorktreeRoot,
   isPlainObject,
 } from './shared.js';
+import { addSkillIdName } from './skill-policy.js';
 
 const BUILT_IN_SKILL_LOCATION = '<built-in>';
 
@@ -151,8 +152,14 @@ async function getSkillWritePath(skillName, workingDirectory, requestedScope) {
   };
 }
 
-async function discoverSkills(workingDirectory) {
+// `ids`, when given, receives every skill file's OpenCode id and display name
+// (`addSkillIdName`), also those the name-keyed list keeps only one of (the
+// skill switches).
+async function discoverSkills(workingDirectory, { ids = null } = {}) {
   const skills = new Map();
+  const sink = ids
+    ? { set: (key, skill) => { skills.set(key, skill); addSkillIdName(ids, skill.id, skill.name); } }
+    : skills;
 
   // A root can come up twice in one discovery: a home directory opened as a
   // project lists `~/.claude/skills` and `~/.agents/skills` once as user
@@ -171,7 +178,7 @@ async function discoverSkills(workingDirectory) {
       if (!parsedFiles.has(skillMdPath)) {
         parsedFiles.set(skillMdPath, await parseMdFileAsync(skillMdPath).catch(() => null));
       }
-      addSkillFromMdFile(skills, skillMdPath, parsedFiles.get(skillMdPath), scope, source);
+      addSkillFromMdFile(sink, skillMdPath, parsedFiles.get(skillMdPath), scope, source);
     }
   };
 

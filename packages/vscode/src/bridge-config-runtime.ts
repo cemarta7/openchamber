@@ -62,7 +62,9 @@ import {
   type SnippetScope,
 } from './opencodeConfig';
 import {
+  collectSkillIds,
   handleSkillPolicyWrite,
+  withSwitchIds,
   type SkillPolicyOpenCodeReader,
 } from '../../web/server/lib/opencode/skill-policy.js';
 import { parseWebSearchSelection } from './opencode-config-v2';
@@ -111,12 +113,6 @@ const resolveSkillPolicyDirectory = (raw: string | undefined) => {
   }
 };
 
-// Every installed id, also one whose display name another skill already
-// shows: the list merges by name, OpenCode's own list does not (the web
-// route's `installedSkillIds`).
-const skillIdsOf = (...lists: Array<DiscoveredSkill[] | null>) => [
-  ...new Set(lists.flatMap((skills) => (skills ?? []).flatMap((skill) => (skill.id ? [skill.id] : [])))),
-];
 
 const AGENTS_MD_PATH = path.join(OPENCODE_CONFIG_DIR, 'AGENTS.md');
 const MAX_BEHAVIOR_PROMPT_SIZE = 1024 * 1024;
@@ -156,6 +152,19 @@ const parseSkillsCatalogSources = (settings: Record<string, unknown>): SkillsCat
       return normalized;
     })
     .filter((value): value is SkillsCatalogSourceConfig => value !== null);
+};
+
+// Mirror of the web route's `readSkillInventory`: the list merged by display
+// name, and every installed skill id from OpenCode's list and one disk scan.
+const readSkillInventory = async (
+  deps: ConfigRuntimeDeps,
+  ctx: BridgeContext | undefined,
+  workingDirectory?: string,
+) => {
+  const openCodeSkills = await deps.fetchOpenCodeSkillsFromApi(ctx, workingDirectory);
+  const diskIds = new Map<string, Set<string>>();
+  const localSkills = discoverSkills(workingDirectory, { ids: diskIds });
+  return { openCodeSkills, localSkills, ids: collectSkillIds(openCodeSkills, diskIds) };
 };
 
 const resolveDiscoveredSkills = async (
@@ -681,13 +690,13 @@ export async function handleConfigBridgeMessage(
         // A failed OpenCode list is flagged so the store treats the disk scan as
         // partial instead of caching it as the complete list (#3921).
         const listDirectory = resolveWorkingDirectory(ctx, directory);
-        const openCodeSkills = await deps.fetchOpenCodeSkillsFromApi(ctx, listDirectory);
-        const skills = mergeDiscoveredSkills(openCodeSkills || [], discoverSkills(listDirectory));
+        const { openCodeSkills, localSkills, ids } = await readSkillInventory(deps, ctx, listDirectory);
+        const skills = withSwitchIds(mergeDiscoveredSkills(openCodeSkills || [], localSkills), ids);
         // Same `skillPolicy` the web route adds; a failure answers `{ error }`
         // and leaves the list intact.
         const skillPolicy = await skillPolicyService.readState({
           directory: listDirectory ?? null,
-          ids: skillIdsOf(skills, openCodeSkills),
+          ids: [...ids.keys()],
           openCode: deps.createOpenCodePolicyReader(ctx),
         }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
         return {
@@ -807,10 +816,7 @@ export async function handleConfigBridgeMessage(
         body: parsed.data.body,
         directory: policyDirectory,
         openCode: deps.createOpenCodePolicyReader(ctx),
-        listInstalledSkillIds: async (target) => new Set(skillIdsOf(
-          await resolveDiscoveredSkills(deps, ctx, target ?? undefined),
-          await deps.fetchOpenCodeSkillsFromApi(ctx, target ?? undefined),
-        )),
+        listInstalledSkillIds: async (target) => new Set((await readSkillInventory(deps, ctx, target ?? undefined)).ids.keys()),
       });
       return { id, type, success: true, data };
     }

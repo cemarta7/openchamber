@@ -100,6 +100,12 @@ export interface DiscoveredSkill {
    * `name` can differ from. Skill policies and the per-skill switches name it.
    */
   id: string;
+  /**
+   * The id this row's switch names: its own id when no other installed id has
+   * its display name, else null, and each id of that name is switched on its
+   * own (`switchOnlyIds`). The server decides it from every installed id.
+   */
+  switchId: string | null;
   name: string;
   path: string;
   scope: SkillScope;
@@ -141,6 +147,7 @@ const skillIdFromPath = (path: string): string | null => {
 // Raw skill response from API before transformation
 interface RawSkillResponse {
   id?: string;
+  switchId?: string | null;
   name: string;
   path: string;
   scope?: SkillScope;
@@ -310,6 +317,7 @@ const toDiscoveredSkill = (raw: RawSkillResponse): DiscoveredSkill => ({
   // The server sends the id; an entry without one gets the id OpenCode would
   // derive from its path, and only a path without one falls back to the name.
   id: raw.id || skillIdFromPath(raw.path) || raw.name,
+  switchId: raw.switchId ?? null,
   name: raw.name,
   path: raw.path,
   scope: raw.scope ?? 'user',
@@ -387,6 +395,8 @@ const upsertSkillLocal = (
     ...existing,
     // A new skill's folder, and so its id, is the name it is created with.
     id: existing?.id ?? name,
+    // Read from the next list; until then no row switch is offered.
+    switchId: existing?.switchId ?? null,
     name,
     path,
     scope: config.scope ?? existing?.scope ?? 'user',

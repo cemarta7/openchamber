@@ -5,8 +5,10 @@
  *
  *   { "action": "integration.use", "resource": "skill:<id>", "effect": "deny" }
  *
- * OpenCode then drops the skill from its registry, from the model's list and
- * from explicit `session.skill` / prompt attachments, without a restart. The
+ * Once OpenCode reloads the config it refuses to load the skill (the model's
+ * call, `session.skill`, prompt attachments); the model's list of available
+ * skills is fixed per session at its first prompt, so open sessions keep
+ * their old list. The
  * id is OpenCode's path-derived skill id (the folder of `SKILL.md`), never the
  * display name, and one id covers every source copy of a skill.
  *
@@ -658,6 +660,52 @@ export function createSkillPolicyService({
   };
 
   return { readState, setEnabled };
+}
+
+/** Records that skill id `id` is installed under display name `name`. */
+export function addSkillIdName(ids, id, name) {
+  if (!isValidSkillPolicyId(id)) return;
+  if (!ids.has(id)) ids.set(id, new Set());
+  ids.get(id).add(name);
+}
+
+/**
+ * Every installed skill id with every display name it has: OpenCode's own
+ * list, and every skill file the disk scan found (`discoverSkills(dir, { ids })`,
+ * which records each file with `addSkillIdName`). The disk part does not depend
+ * on OpenCode being warm, and nothing here is merged by display name, so an id
+ * another skill's name hides is in it, and so is each name of an id whose
+ * copies differ in name.
+ */
+export function collectSkillIds(openCodeSkills, diskIds) {
+  const ids = new Map();
+  for (const skill of openCodeSkills ?? []) addSkillIdName(ids, skill?.id, skill?.name);
+  for (const [id, names] of diskIds) for (const name of names) addSkillIdName(ids, id, name);
+  return ids;
+}
+
+/**
+ * The id each listed skill's switch names (`switchId`): its own id when its
+ * display name belongs to that one id and every name of that id belongs to it
+ * alone. The list keeps one row per display name, and which copy a row shows
+ * can change once OpenCode's own list arrives; with this rule no row's target
+ * can change with it. Every other row gets `null`, and its id is never a row
+ * switch anywhere, so it is switched on its own (`switchOnlyIds` in the UI).
+ */
+export function withSwitchIds(skills, ids) {
+  const idsByName = new Map();
+  for (const [id, names] of ids) {
+    for (const name of names) {
+      if (!idsByName.has(name)) idsByName.set(name, new Set());
+      idsByName.get(name).add(id);
+    }
+  }
+  const ownsItsNames = (id) => [...(ids.get(id) ?? [])].every((name) => idsByName.get(name)?.size === 1);
+  return skills.map((skill) => {
+    const named = idsByName.get(skill.name);
+    const owned = named?.size === 1 && named.has(skill.id) && ownsItsNames(skill.id);
+    return { ...skill, switchId: owned ? skill.id : null };
+  });
 }
 
 /**

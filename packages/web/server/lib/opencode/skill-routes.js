@@ -1,11 +1,13 @@
 import { OpenCode } from '@opencode/client';
 import { buildAppliedResponse } from './config-mutation-response.js';
-import { OPENCODE_CONFIG_DIR, readConfigFile, readConfigLayers } from './shared.js';
+import { OPENCODE_CONFIG_DIR, getConfigFilePaths, readConfigFile } from './shared.js';
 import {
+  collectSkillIds,
   createSkillPolicyService,
   handleSkillPolicyWrite,
   isValidSkillPolicyId,
   skillIdFromPath,
+  withSwitchIds,
 } from './skill-policy.js';
 import { asNonEmptyString, isString } from '../shared/guards.js';
 import { appendInstalledSources, isInstalledFromSource, readInstalledSources, removeInstalledSources } from '../skills-catalog/installed-sources.js';
@@ -63,8 +65,8 @@ export const registerSkillRoutes = (app, dependencies) => {
     // switch the project config file OpenChamber writes for the directory.
     skillPolicyService = createSkillPolicyService({
       resolveTargets: (directory) => {
-        const { paths } = readConfigLayers(directory);
-        return { global: paths.userPath, project: directory ? paths.projectPath : null };
+        const { userPath, projectPath } = getConfigFilePaths(directory);
+        return { global: userPath, project: directory ? projectPath : null };
       },
       readConfigFile,
     }),
@@ -346,17 +348,16 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   };
 
-  // Every installed id, also one whose display name another skill already
-  // shows: the list merges by name, OpenCode's own list does not, so its ids
-  // are added back. Each one stays switchable.
-  const installedSkillIds = (listed, openCodeSkills) => [
-    ...new Set([...listed, ...(openCodeSkills ?? [])].map((skill) => skill.id).filter(isString)),
-  ];
-
-  const listInstalledSkillIds = async (directory) => {
+  // The list (merged by display name) and every installed skill id
+  // (`collectSkillIds`), from one disk scan.
+  const readSkillInventory = async (directory) => {
     const openCodeSkills = await fetchOpenCodeDiscoveredSkills(directory);
-    return new Set(installedSkillIds(mergeDiscoveredSkills(openCodeSkills ?? [], await discoverSkills(directory)), openCodeSkills));
+    const diskIds = new Map();
+    const localSkills = await discoverSkills(directory, { ids: diskIds });
+    return { openCodeSkills, localSkills, ids: collectSkillIds(openCodeSkills, diskIds) };
   };
+
+  const listInstalledSkillIds = async (directory) => new Set((await readSkillInventory(directory)).ids.keys());
 
   // Switch one skill on or off in one scope: body `{ id, scope, enabled }`,
   // `id` being OpenCode's skill id. See skill-policy.js for what is written.
@@ -384,9 +385,8 @@ export const registerSkillRoutes = (app, dependencies) => {
       if (error) {
         return res.status(400).json({ error });
       }
-      const openCodeSkills = await fetchOpenCodeDiscoveredSkills(directory);
-      const localSkills = await discoverSkills(directory);
-      const skills = mergeDiscoveredSkills(openCodeSkills ?? [], localSkills);
+      const { openCodeSkills, localSkills, ids } = await readSkillInventory(directory);
+      const skills = withSwitchIds(mergeDiscoveredSkills(openCodeSkills ?? [], localSkills), ids);
 
       // One skill at a time: each await hands the event loop back, so other
       // requests are served while hundreds of skills are read.
@@ -431,7 +431,7 @@ export const registerSkillRoutes = (app, dependencies) => {
       if (openCodeSkills === null) {
         body.openCodeSkillsUnavailable = true;
       }
-      body.skillPolicy = await readSkillPolicyForList(directory, installedSkillIds(enrichedSkills, openCodeSkills));
+      body.skillPolicy = await readSkillPolicyForList(directory, [...ids.keys()]);
       res.json(body);
     } catch (error) {
       console.error('Failed to list skills:', error);
