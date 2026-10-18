@@ -211,7 +211,6 @@ mock.module("@/stores/useSkillsStore", () => ({
     }),
   },
   selectAvailableSkillsForDirectory: () => [],
-  skillFallbackInstruction: () => () => null,
 }))
 
 mock.module("@/components/ui", () => ({

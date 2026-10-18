@@ -3,9 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import yaml from 'yaml';
-import { z } from 'zod';
 import {
   applyEdits,
+  createScanner,
   findNodeAtLocation,
   modify,
   parse as parseJsonc,
@@ -17,14 +17,7 @@ import {
 } from 'jsonc-parser';
 import { resolveNpmRegistryRequest } from '../../web/server/lib/opencode/npm-registry-config.js';
 import { writeFileAtomic } from '../../web/server/lib/opencode/atomic-write.js';
-import {
-  arrayItemTextEdits,
-  diffArrayItems,
-  removeNodeEdits,
-  type ArrayItemEdit,
-} from '../../web/server/lib/opencode/jsonc-edits.js';
 import { createSkillPolicyService, skillIdFromPath } from '../../web/server/lib/opencode/skill-policy.js';
-import { isSkillFolderName, removeSkillFolder, skillFolderToDelete } from '../../web/server/lib/opencode/skill-identity.js';
 import {
   toAgentEntity,
   fromAgentEntity,
@@ -862,8 +855,11 @@ const isJsonObject = (value: JsonValue): value is JsonObject => isPlainObject(va
 
 type ConfigEdit =
   | { type: 'set'; path: JSONPath; value: unknown }
-  | { type: 'remove'; path: JSONPath }
-  | ArrayItemEdit;
+  | { type: 'remove'; path: JSONPath };
+
+// jsonc-parser's SyntaxKind is an ambient const enum, which cannot be imported
+// as a value under verbatimModuleSyntax; mirror the token code used below.
+const JSONC_COMMA_TOKEN = 5;
 
 const deepEqualJsonValue = (a: JsonValue, b: JsonValue): boolean => {
   if (a === b) return true;
@@ -879,10 +875,8 @@ const deepEqualJsonValue = (a: JsonValue, b: JsonValue): boolean => {
 };
 
 // Structural diff between the parsed on-disk config and the desired config.
-// Object keys are compared per key (order-insensitive); an array that only
-// gains items at its end or only loses items is edited item by item (shared
-// with the web writer in `jsonc-edits.js`), any other array and every scalar
-// is replaced whole. The desired config must already be JSON-normalized (no
+// Object keys are compared per key (order-insensitive); arrays and scalars are
+// replaced whole. The desired config must already be JSON-normalized (no
 // `undefined` values), so absent keys are the only removal signal.
 const collectConfigEdits = (
   current: JsonValue,
@@ -890,13 +884,6 @@ const collectConfigEdits = (
   basePath: JSONPath,
   edits: ConfigEdit[],
 ): void => {
-  if (Array.isArray(current) && Array.isArray(next)) {
-    const itemEdits = diffArrayItems(current, next, basePath, deepEqualJsonValue);
-    if (itemEdits) {
-      edits.push(...itemEdits);
-      return;
-    }
-  }
   if (!isJsonObject(current) || !isJsonObject(next)) {
     if (!deepEqualJsonValue(current, next)) {
       edits.push({ type: 'set', path: basePath, value: next });
@@ -919,11 +906,22 @@ const collectConfigEdits = (
   }
 };
 
-// Removes exactly the property node plus one adjacent separator comma, and the
-// property's line when nothing else is on it. The scanner-based comma lookup
-// keeps comments in the surrounding gaps (including commas inside comments),
-// and avoids jsonc-parser's own removal leaving a stray comma when the last
-// property of an object is deleted.
+const findSeparatorComma = (text: string, start: number, end: number): number => {
+  if (end <= start) return -1;
+  const scanner = createScanner(text, true);
+  scanner.setPosition(start);
+  const token = scanner.scan();
+  const offset = scanner.getTokenOffset();
+  if (token === JSONC_COMMA_TOKEN && offset < end) {
+    return offset;
+  }
+  return -1;
+};
+
+// Removes exactly the property node plus one adjacent separator comma. The
+// scanner-based comma lookup keeps comments in the surrounding gaps (including
+// commas inside comments), and avoids jsonc-parser's own removal leaving a
+// stray comma when the last property of an object is deleted.
 const removePropertyEdits = (text: string, propertyPath: JSONPath): Edit[] => {
   const root = parseTree(text, [], { allowTrailingComma: true });
   const valueNode = root ? findNodeAtLocation(root, propertyPath) : undefined;
@@ -942,12 +940,25 @@ const removePropertyEdits = (text: string, propertyPath: JSONPath): Edit[] => {
 
   const siblings = objectNode.children;
   const index = siblings.indexOf(propertyNode);
+  const propStart = propertyNode.offset;
+  const propEnd = propertyNode.offset + propertyNode.length;
+  const edits: Edit[] = [{ offset: propStart, length: propEnd - propStart, content: '' }];
+
+  const objectEnd = objectNode.offset + objectNode.length;
   const nextSibling = index < siblings.length - 1 ? siblings[index + 1] : null;
-  const previousSibling = index > 0 ? siblings[index - 1] : null;
-  return removeNodeEdits(text, propertyNode.offset, propertyNode.offset + propertyNode.length, {
-    nextStart: nextSibling ? nextSibling.offset : objectNode.offset + objectNode.length - 1,
-    previousEnd: previousSibling ? previousSibling.offset + previousSibling.length : objectNode.offset + 1,
-  });
+  const afterGapEnd = nextSibling ? nextSibling.offset : objectEnd - 1;
+  let commaOffset = findSeparatorComma(text, propEnd, afterGapEnd);
+  if (commaOffset === -1) {
+    const previousSibling = index > 0 ? siblings[index - 1] : null;
+    const beforeGapStart = previousSibling
+      ? previousSibling.offset + previousSibling.length
+      : objectNode.offset + 1;
+    commaOffset = findSeparatorComma(text, beforeGapStart, propStart);
+  }
+  if (commaOffset !== -1) {
+    edits.push({ offset: commaOffset, length: 1, content: '' });
+  }
+  return edits;
 };
 
 const applyConfigEdits = (existingText: string, edits: ConfigEdit[]): string => {
@@ -960,11 +971,6 @@ const applyConfigEdits = (existingText: string, edits: ConfigEdit[]): string => 
   for (const edit of edits) {
     if (edit.type === 'remove') {
       text = applyEdits(text, removePropertyEdits(text, edit.path));
-    } else if (edit.type === 'insert-item') {
-      const itemEdits = arrayItemTextEdits(text, edit, formattingOptions.eol);
-      text = applyEdits(text, itemEdits ?? modify(text, edit.path, edit.value, { formattingOptions, isArrayInsertion: true }));
-    } else if (edit.type === 'remove-item') {
-      text = applyEdits(text, arrayItemTextEdits(text, edit, formattingOptions.eol) ?? []);
     } else {
       text = applyEdits(text, modify(text, edit.path, edit.value, { formattingOptions }));
     }
@@ -2791,8 +2797,6 @@ export type DiscoveredSkill = {
 
 export const BUILT_IN_SKILL_LOCATION = '<built-in>';
 
-const frontmatterNameSchema = z.string();
-
 /**
  * Mirror of the web server's skill policy service (`skill-routes.js`): the
  * global switch writes the user's OpenCode config, the project switch the
@@ -2804,7 +2808,6 @@ export const skillPolicyService = createSkillPolicyService({
     return { global: paths.userPath, project: directory ? paths.projectPath : null };
   },
   readConfigFile,
-  writeConfig,
 });
 
 export const mergeDiscoveredSkills = (
@@ -2812,20 +2815,16 @@ export const mergeDiscoveredSkills = (
   fallbackSkills: DiscoveredSkill[] = []
 ): DiscoveredSkill[] => {
   const merged: DiscoveredSkill[] = [];
-  const seenIds = new Set<string>();
   const seenNames = new Set<string>();
 
-  // Mirror of the web server's `mergeDiscoveredSkills`: one entry per
-  // OpenCode skill id; the display name decides only for an entry without one.
   const appendSkill = (skill: DiscoveredSkill | null | undefined) => {
     if (!skill) {
       return;
     }
     const name = typeof skill?.name === 'string' ? skill.name.trim() : '';
-    if (!name || (skill.id ? seenIds.has(skill.id) : seenNames.has(name))) {
+    if (!name || seenNames.has(name)) {
       return;
     }
-    if (skill.id) seenIds.add(skill.id);
     seenNames.add(name);
     merged.push(skill);
   };
@@ -2837,7 +2836,7 @@ export const mergeDiscoveredSkills = (
 };
 
 const addSkillFromMdFile = (
-  skillsMap: Pick<Map<string, DiscoveredSkill>, 'set'>,
+  skillsMap: Map<string, DiscoveredSkill>,
   skillMdPath: string,
   scope: SkillScope,
   source: SkillSource
@@ -2855,12 +2854,8 @@ const addSkillFromMdFile = (
       return;
     }
 
-    // Mirror of the web server's `addSkillFromMdFile`: keyed by OpenCode id,
-    // so two skills sharing a display name both stay listed; a later file
-    // still wins over an earlier one with the same id.
-    const id = skillIdFromPath(skillMdPath);
-    skillsMap.set(id ?? `name:${name}`, {
-      id,
+    skillsMap.set(name, {
+      id: skillIdFromPath(skillMdPath),
       name,
       path: skillMdPath,
       scope,
@@ -2927,9 +2922,7 @@ const getSkillScope = (skillName: string, workingDirectory?: string): {
   path: string | null;
   source: SkillSource | null;
 } => {
-  // Discovery keys by OpenCode id; for a display name shared by several ids
-  // the last file wins, as it did when discovery was keyed by name.
-  const discovered = discoverSkills(workingDirectory).reverse().find((skill) => skill.name === skillName);
+  const discovered = discoverSkills(workingDirectory).find((skill) => skill.name === skillName);
   if (discovered?.path) {
     return { scope: discovered.scope, path: discovered.path, source: discovered.source };
   }
@@ -2983,14 +2976,8 @@ const listSupportingFiles = (skillDir: string): SupportingFile[] => {
   return files;
 };
 
-// Mirror of the web server's `discoverSkills`: `allCopies` lists every skill
-// file found, also the copies one OpenCode id shadows.
-export const discoverSkills = (workingDirectory?: string, { allCopies = false }: { allCopies?: boolean } = {}): DiscoveredSkill[] => {
-  const byId = new Map<string, DiscoveredSkill>();
-  const byPath = new Map<string, DiscoveredSkill>();
-  const skills: Pick<Map<string, DiscoveredSkill>, 'set'> = allCopies
-    ? { set: (_key, skill) => byPath.set(skill.path, skill) }
-    : byId;
+export const discoverSkills = (workingDirectory?: string): DiscoveredSkill[] => {
+  const skills = new Map<string, DiscoveredSkill>();
 
   // 1) External global (.claude, .agents)
   for (const externalRootName of ['.claude', '.agents']) {
@@ -3077,7 +3064,7 @@ export const discoverSkills = (workingDirectory?: string, { allCopies = false }:
     }
   }
 
-  return Array.from((allCopies ? byPath : byId).values());
+  return Array.from(skills.values());
 };
 
 // "Only when asked" is written as two frontmatter keys: the portable
@@ -3126,17 +3113,12 @@ const applyModelInvocation = (frontmatter: SkillFrontmatter, disabled: boolean):
   }
 };
 
-// Mirror of the web server's `getSkillSources`: `id` (the routes' `?id=`
-// selector) means `discoveredSkill` is the exact skill with that OpenCode id;
-// no display-name lookup runs and the per-source candidates use the id's folder.
 export const getSkillSources = (
   skillName: string,
   workingDirectory?: string,
-  discoveredSkill?: DiscoveredSkill | null,
-  { id = null }: { id?: string | null } = {},
+  discoveredSkill?: DiscoveredSkill | null
 ): SkillConfigSources => {
   ensureSkillDirs();
-  const folderName = id ?? skillName;
   const isReadableFile = (filePath: string | null): boolean => {
     if (!filePath) return false;
     try {
@@ -3147,23 +3129,21 @@ export const getSkillSources = (
   };
   
   // Check all possible locations
-  const projectPath = workingDirectory ? getProjectSkillPath(workingDirectory, folderName) : null;
+  const projectPath = workingDirectory ? getProjectSkillPath(workingDirectory, skillName) : null;
   const projectExists = projectPath ? fs.existsSync(projectPath) : false;
-  const projectDir = projectExists && workingDirectory ? getProjectSkillDir(workingDirectory, folderName) : null;
+  const projectDir = projectExists && workingDirectory ? getProjectSkillDir(workingDirectory, skillName) : null;
   
-  const claudePath = workingDirectory ? getClaudeSkillPath(workingDirectory, folderName) : null;
+  const claudePath = workingDirectory ? getClaudeSkillPath(workingDirectory, skillName) : null;
   const claudeExists = claudePath ? fs.existsSync(claudePath) : false;
-  const claudeDir = claudeExists && workingDirectory ? getClaudeSkillDir(workingDirectory, folderName) : null;
+  const claudeDir = claudeExists && workingDirectory ? getClaudeSkillDir(workingDirectory, skillName) : null;
   
-  const userPath = getUserSkillPath(folderName);
+  const userPath = getUserSkillPath(skillName);
   const userExists = fs.existsSync(userPath);
-  const userDir = userExists ? getUserSkillDir(folderName) : null;
+  const userDir = userExists ? getUserSkillDir(skillName) : null;
 
-  const matchedDiscovered = id
-    ? (discoveredSkill?.id === id && discoveredSkill.name === skillName ? discoveredSkill : null)
-    : (discoveredSkill?.name === skillName
-      ? discoveredSkill
-      : discoverSkills(workingDirectory).reverse().find((skill) => skill.name === skillName));
+  const matchedDiscovered = discoveredSkill?.name === skillName
+    ? discoveredSkill
+    : discoverSkills(workingDirectory).find((skill) => skill.name === skillName);
   const discoveredPath = typeof matchedDiscovered?.path === 'string' ? matchedDiscovered.path : null;
   const isBuiltInDiscovered = discoveredPath === BUILT_IN_SKILL_LOCATION;
   
@@ -3237,32 +3217,20 @@ export const getSkillSources = (
   };
 };
 
-// Mirror of the web server's `assertPathWithinSkillDir`: a supporting file
-// resolves inside its own skill folder or the call is refused.
-const resolveWithinSkillDir = (skillDir: string, relativePath: string): string => {
-  const root = fs.realpathSync(skillDir);
-  const target = path.resolve(root, relativePath);
-  const relative = path.relative(root, target);
-  if (relative !== '' && (relative.startsWith('..') || path.isAbsolute(relative))) {
-    throw codedError('Access to file denied', 'EACCES');
-  }
-  return target;
-};
-
 export const readSkillSupportingFile = (skillDir: string, relativePath: string): string | null => {
-  const fullPath = resolveWithinSkillDir(skillDir, relativePath);
+  const fullPath = path.join(skillDir, relativePath);
   if (!fs.existsSync(fullPath)) return null;
   return fs.readFileSync(fullPath, 'utf8');
 };
 
 export const writeSkillSupportingFile = (skillDir: string, relativePath: string, content: string): void => {
-  const fullPath = resolveWithinSkillDir(skillDir, relativePath);
+  const fullPath = path.join(skillDir, relativePath);
   fs.mkdirSync(path.dirname(fullPath), { recursive: true });
   fs.writeFileSync(fullPath, content, 'utf8');
 };
 
 export const deleteSkillSupportingFile = (skillDir: string, relativePath: string): void => {
-  const fullPath = resolveWithinSkillDir(skillDir, relativePath);
+  const fullPath = path.join(skillDir, relativePath);
   if (fs.existsSync(fullPath)) {
     fs.unlinkSync(fullPath);
     // Clean up empty parent directories
@@ -3359,24 +3327,13 @@ export const createSkill = (skillName: string, config: Record<string, unknown>, 
   }
 };
 
-// `targetPath` is a `SKILL.md` the bridge already checked (the `?id=` skill or a
-// known skill file); without it the skill is found by display name. Returns
-// the edited file.
-export const updateSkill = (skillName: string, updates: Record<string, unknown>, workingDirectory?: string, targetPath: string | null = null): string => {
-  const existing = targetPath ? { path: targetPath } : getSkillScope(skillName, workingDirectory);
+export const updateSkill = (skillName: string, updates: Record<string, unknown>, workingDirectory?: string): void => {
+  const existing = getSkillScope(skillName, workingDirectory);
   if (!existing.path) {
     throw new Error(`Skill "${skillName}" not found`);
   }
   
   const mdPath = existing.path;
-  // A chosen file must still carry the name the request used (a frontmatter
-  // without a string name keeps matching, as on the web server).
-  if (targetPath) {
-    const frontmatterName = frontmatterNameSchema.safeParse(parseMdFile(mdPath).frontmatter?.name);
-    if (frontmatterName.success && frontmatterName.data !== skillName) {
-      throw new Error(`Skill "${skillName}" does not match ${mdPath}`);
-    }
-  }
   const mdDir = path.dirname(mdPath);
   const mdData = parseMdFile(mdPath);
   let mdModified = false;
@@ -3417,49 +3374,9 @@ export const updateSkill = (skillName: string, updates: Record<string, unknown>,
   if (mdModified) {
     writeMdFile(mdPath, mdData.frontmatter, mdData.body);
   }
-  return mdPath;
 };
 
-/** One skill folder location: a scope and the tool convention it follows. */
-export type SkillLocation = { scope: SkillScope; source: SkillSource };
-
-/**
- * Mirror of the web server's `getSkillDirAt`: the folder a skill of this name
- * has in one scope and source, or null when that location needs a project.
- */
-const getSkillDirAt = (location: SkillLocation, skillName: string, workingDirectory?: string): string | null => {
-  if (location.scope === SKILL_SCOPE.USER) {
-    if (location.source === 'agents') return getUserAgentsSkillDir(skillName);
-    if (location.source === 'claude') return path.join(os.homedir(), '.claude', 'skills', skillName);
-    return getUserSkillDir(skillName);
-  }
-  if (!workingDirectory) return null;
-  if (location.source === 'agents') return getProjectAgentsSkillDir(workingDirectory, skillName);
-  if (location.source === 'claude') return getClaudeSkillDir(workingDirectory, skillName);
-  return getProjectSkillDir(workingDirectory, skillName);
-};
-
-/**
- * Mirror of the web server's `deleteSkill`. Without `location` every copy of
- * the name goes; with it only the copy there, so a caller that installed a
- * skill to one place cannot remove a same-named skill the user keeps
- * elsewhere.
- */
-export const deleteSkill = (skillName: string, workingDirectory?: string, location?: SkillLocation): void => {
-  // The name is joined onto each root; one that is not a single folder name
-  // could reach outside it.
-  if (!isSkillFolderName(skillName)) {
-    throw new Error('Invalid skill name');
-  }
-  if (location) {
-    const dir = getSkillDirAt(location, skillName, workingDirectory);
-    if (!dir || !fs.existsSync(dir)) {
-      throw new Error(`Skill "${skillName}" not found`);
-    }
-    removeSkillFolder(dir);
-    return;
-  }
-
+export const deleteSkill = (skillName: string, workingDirectory?: string): void => {
   let deleted = false;
   
   // Check and delete from all locations
@@ -3556,54 +3473,15 @@ const isManagedSkillPath = (skillMdPath: string, workingDirectory?: string): boo
 
 export { isManagedSkillPath };
 
-/**
- * Mirror of the web server's `isDeletableSkillPath`: whether `deleteSkillAt`
- * may remove this skill file's folder, symlinks followed.
- */
-export const isDeletableSkillPath = (skillMdPath: string, workingDirectory?: string): boolean => (
-  skillFolderToDelete(skillMdPath, getManagedSkillRoots(workingDirectory)) !== null
-);
-
-/**
- * Mirror of the web server's `deleteSkillAt`: delete exactly the folder of one
- * `SKILL.md` strictly inside a managed skill root (nested groups included),
- * reached without a symlink leading out of that root. A folder that is itself
- * a symlink loses only the link. Returns the removed folder.
- */
-export const deleteSkillAt = (skillMdPath: string, workingDirectory?: string): string => {
-  const folder = skillFolderToDelete(skillMdPath, getManagedSkillRoots(workingDirectory));
-  if (!folder) {
-    throw new Error('Skill is outside managed skill directories and cannot be deleted');
-  }
-  if (!fs.existsSync(path.join(folder, 'SKILL.md'))) {
-    throw new Error('Skill not found');
-  }
-  removeSkillFolder(folder);
-  return folder;
-};
-
-// Mirror of the web server's `renameSkill`: `skillPath` is the exact `SKILL.md`
-// the `?id=` selector resolved. Returns the renamed file; the folder takes the
-// new name, so the OpenCode id becomes `newName`. `beforeMove` runs once every
-// check passed and before anything moves (throwing stops the rename); its
-// `undo()` runs when the move or the frontmatter write fails and the folder
-// is back in place.
-export const renameSkill = async (
-  oldName: string,
-  newName: string,
-  workingDirectory?: string,
-  { skillPath = null, beforeMove = null }: {
-    skillPath?: string | null;
-    beforeMove?: ((paths: { oldPath: string; newPath: string }) => Promise<{ undo?: () => Promise<void> } | null>) | null;
-  } = {},
-): Promise<string | null> => {
+export const renameSkill = (oldName: string, newName: string, workingDirectory?: string): void => {
   ensureSkillDirs();
   validateSkillName(newName);
 
-  const existing = skillPath ? { path: skillPath } : getSkillScope(oldName, workingDirectory);
   if (oldName === newName) {
-    return existing.path;
+    return;
   }
+
+  const existing = getSkillScope(oldName, workingDirectory);
   if (!existing.path) {
     throw new Error(`Skill "${oldName}" not found`);
   }
@@ -3626,14 +3504,8 @@ export const renameSkill = async (
   }
 
   const conflict = getSkillScope(newName, workingDirectory);
-  if (conflict.path && path.resolve(conflict.path) !== path.resolve(existing.path)) {
+  if (conflict.path) {
     throw new Error(`Skill ${newName} already exists at ${conflict.path}`);
-  }
-  // The new folder name is the new OpenCode id: refuse one another skill has.
-  const idConflict = discoverSkills(workingDirectory)
-    .find((skill) => skill.id === newName && path.resolve(skill.path) !== path.resolve(existing.path ?? ''));
-  if (idConflict) {
-    throw new Error(`Skill ${newName} already exists at ${idConflict.path}`);
   }
 
   const oldDir = path.dirname(existing.path);
@@ -3644,18 +3516,11 @@ export const renameSkill = async (
     throw new Error(`Skill directory already exists at ${newDir}`);
   }
 
-  const newPath = path.join(newDir, 'SKILL.md');
-  const prepared = beforeMove ? await beforeMove({ oldPath: existing.path, newPath }) : null;
-
-  try {
-    if (directoriesDiffer) {
-      fs.renameSync(oldDir, newDir);
-    }
-  } catch (error) {
-    await prepared?.undo?.();
-    throw error;
+  if (directoriesDiffer) {
+    fs.renameSync(oldDir, newDir);
   }
 
+  const newPath = path.join(newDir, 'SKILL.md');
   try {
     const mdData = parseMdFile(newPath);
     mdData.frontmatter = {
@@ -3671,12 +3536,6 @@ export const renameSkill = async (
         // Best-effort rollback; surface the original write failure.
       }
     }
-    // Undo only once the folder is back: a skill left under the new name
-    // keeps what `beforeMove` prepared (the carried switch stays off).
-    if (!directoriesDiffer || (fs.existsSync(oldDir) && !fs.existsSync(newDir))) {
-      await prepared?.undo?.();
-    }
     throw error;
   }
-  return newPath;
 };

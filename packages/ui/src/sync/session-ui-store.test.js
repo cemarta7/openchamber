@@ -341,7 +341,7 @@ describe('routeMessage inline skills', () => {
         providerID: 'provider-a',
         modelID: 'model-a',
         additionalParts: [{ text: 'quoted code', synthetic: true }],
-        skills: { skills: [{ id: 'deploy', name: 'deploy' }], instructionFor: (skills) => `use: ${skills.map((skill) => skill.name).join(',')}` },
+        skills: { names: ['deploy'], instructionFor: (names) => `use: ${names.join(',')}` },
       });
     } finally {
       opencodeClient.listCommands = originalListCommands;
@@ -1315,11 +1315,6 @@ describe('routeMessage skill invocation', () => {
   let originalListCommands;
   let originalLoadSkills;
   let liveSkillsLoad = async () => true;
-  // The installed and the available lists are the same here: nothing is switched off.
-  const seedSkills = (directory, skills) => useSkillsStore.setState({
-    skillsByDirectory: { [directory]: skills },
-    availableSkillsByDirectory: { [directory]: skills },
-  });
 
   beforeEach(() => {
     sendCommandCalls.length = 0;
@@ -1349,7 +1344,7 @@ describe('routeMessage skill invocation', () => {
     // Commands and skills are resolved per directory. The commands store
     // excludes user skills, so a skill is only known to the skills store.
     useCommandsStore.setState({ commands: [], commandsByDirectory: {} });
-    useSkillsStore.setState({ skills: [], skillsByDirectory: {}, availableSkillsByDirectory: {}, policyByDirectory: {} });
+    useSkillsStore.setState({ skills: [], skillsByDirectory: {}, availableSkillsByDirectory: {} });
 
     originalSendCommand = opencodeClient.sendCommand;
     originalSendMessage = opencodeClient.sendMessage;
@@ -1375,13 +1370,16 @@ describe('routeMessage skill invocation', () => {
     opencodeClient.sendCommand = originalSendCommand;
     opencodeClient.sendMessage = originalSendMessage;
     opencodeClient.listCommands = originalListCommands;
-    useSkillsStore.setState({ skills: [], skillsByDirectory: {}, availableSkillsByDirectory: {}, policyByDirectory: {}, loadSkills: originalLoadSkills });
+    useSkillsStore.setState({ skills: [], skillsByDirectory: {}, availableSkillsByDirectory: {}, loadSkills: originalLoadSkills });
     useCommandsStore.setState({ commands: [], commandsByDirectory: {} });
   });
 
   test('loads skills for an unloaded directory and attaches a skill found there', async () => {
     liveSkillsLoad = async (directory) => {
-      seedSkills(directory, [{ id: 'late-skill', name: 'late-skill', path: '/skills/late-skill/SKILL.md', scope: 'project', source: 'opencode' }]);
+      useSkillsStore.setState({
+        skillsByDirectory: { [directory]: [{ name: 'late-skill', path: '/skills/late-skill/SKILL.md', scope: 'project', source: 'opencode' }] },
+        availableSkillsByDirectory: { [directory]: [{ name: 'late-skill', path: '/skills/late-skill/SKILL.md', scope: 'project', source: 'opencode' }] },
+      });
       return true;
     };
 
@@ -1396,13 +1394,16 @@ describe('routeMessage skill invocation', () => {
     expect(liveLookupCalls).toEqual(['/skills/project']);
     expect(sendCommandCalls).toHaveLength(0);
     expect(sendMessageCalls).toHaveLength(1);
-    expect(sendMessageCalls[0].skills.skills).toEqual([{ id: 'late-skill', name: 'late-skill' }]);
+    expect(sendMessageCalls[0].skills.names).toEqual(['late-skill']);
   });
 
   test('keeps command precedence when the live lookups find both', async () => {
     liveLookup = async () => [{ name: 'both' }];
     liveSkillsLoad = async (directory) => {
-      seedSkills(directory, [{ id: 'both', name: 'both', path: '/skills/both/SKILL.md', scope: 'project', source: 'opencode' }]);
+      useSkillsStore.setState({
+        skillsByDirectory: { [directory]: [{ name: 'both', path: '/skills/both/SKILL.md', scope: 'project', source: 'opencode' }] },
+        availableSkillsByDirectory: { [directory]: [{ name: 'both', path: '/skills/both/SKILL.md', scope: 'project', source: 'opencode' }] },
+      });
       return true;
     };
 
@@ -1432,7 +1433,10 @@ describe('routeMessage skill invocation', () => {
   });
 
   test('attaches a user-installed skill without caller-provided mentions', async () => {
-    seedSkills('/skills/project', [{ id: 'grill-with-docs', name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }]);
+    useSkillsStore.setState({
+      skillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+      availableSkillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+    });
 
     await routeMessage({
       sessionId: 'session-skill',
@@ -1447,10 +1451,10 @@ describe('routeMessage skill invocation', () => {
     expect(sendMessageCalls[0]).toMatchObject({
       text: '/grill-with-docs',
       directory: '/skills/project',
-      skills: { skills: [{ id: 'grill-with-docs', name: 'grill-with-docs' }] },
+      skills: { names: ['grill-with-docs'] },
     });
     // Without a caller builder the skill is still named if it cannot attach.
-    expect(sendMessageCalls[0].skills.instructionFor([{ id: 'grill-with-docs', name: 'grill-with-docs' }])).toContain('$grill-with-docs');
+    expect(sendMessageCalls[0].skills.instructionFor(['grill-with-docs'])).toContain('$grill-with-docs');
     expect(liveLookupCalls).toEqual([]);
   });
 
@@ -1476,54 +1480,11 @@ describe('routeMessage skill invocation', () => {
     expect(sendMessageCalls[0].skills).toBeUndefined();
   });
 
-  test('a display name two skills share attaches neither; the id attaches its own skill', async () => {
-    seedSkills('/skills/project', [
-      { id: 'deploy-web', name: 'deploy', path: '/skills/deploy-web/SKILL.md', scope: 'project', source: 'opencode' },
-      { id: 'deploy-api', name: 'deploy', path: '/skills/deploy-api/SKILL.md', scope: 'project', source: 'opencode' },
-    ]);
-
-    await routeMessage({ sessionId: 'session-skill', directory: '/skills/project', content: '/deploy now', providerID: 'provider-a', modelID: 'model-a' });
-    await routeMessage({ sessionId: 'session-skill', directory: '/skills/project', content: '/deploy-api now', providerID: 'provider-a', modelID: 'model-a' });
-
-    expect(sendMessageCalls).toHaveLength(2);
-    expect(sendMessageCalls[0].skills).toBeUndefined();
-    expect(sendMessageCalls[1].skills.skills).toEqual([{ id: 'deploy-api', name: 'deploy-api' }]);
-  });
-
-  test('the default fallback never names a skill the policy switches off', async () => {
-    seedSkills('/skills/project', [{ id: 'grill-with-docs', name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }]);
-    await routeMessage({ sessionId: 'session-skill', directory: '/skills/project', content: '/grill-with-docs', providerID: 'provider-a', modelID: 'model-a' });
-
-    // Switched off after the send started: OpenCode answers "Skill not found",
-    // and the instruction for it must not tell the model to use it anyway.
-    useSkillsStore.setState({
-      policyByDirectory: {
-        '/skills/project': {
-          error: null,
-          state: {
-            version: '2.0.29',
-            location: 'policies',
-            writable: true,
-            effectiveAvailable: true,
-            scopes: { global: { path: '/config/opencode.json', error: null }, project: null },
-            skills: new Map([
-              ['grill-with-docs', {
-                disabledIn: { global: true, project: null },
-                effective: 'disabled',
-                decidedBy: { path: '/config/opencode.json', resource: 'skill:grill-with-docs', effect: 'deny', scope: 'global', owned: true },
-              }],
-            ]),
-          },
-        },
-      },
-    });
-    const { instructionFor } = sendMessageCalls[0].skills;
-    expect(instructionFor([{ id: 'grill-with-docs', name: 'grill-with-docs' }])).toBeNull();
-    expect(instructionFor([{ id: 'other', name: 'other' }])).toContain('$other');
-  });
-
   test('preserves trailing arguments in the skill prompt', async () => {
-    seedSkills('/skills/project', [{ id: 'grill-with-docs', name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }]);
+    useSkillsStore.setState({
+      skillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+      availableSkillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+    });
 
     await routeMessage({
       sessionId: 'session-skill',
@@ -1536,12 +1497,15 @@ describe('routeMessage skill invocation', () => {
     expect(sendCommandCalls).toHaveLength(0);
     expect(sendMessageCalls).toHaveLength(1);
     expect(sendMessageCalls[0].text).toBe('/grill-with-docs focus on auth');
-    expect(sendMessageCalls[0].skills.skills).toEqual([{ id: 'grill-with-docs', name: 'grill-with-docs' }]);
+    expect(sendMessageCalls[0].skills.names).toEqual(['grill-with-docs']);
   });
 
   test('merges the leading skill with inline mentions and preserves their instruction builder', async () => {
-    seedSkills('/skills/project', [{ id: 'grill-with-docs', name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'project', source: 'agents' }]);
-    const instructionFor = (skills) => `use: ${skills.map((skill) => skill.name).join(',')}`;
+    useSkillsStore.setState({
+      skillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'project', source: 'agents' }] },
+      availableSkillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'project', source: 'agents' }] },
+    });
+    const instructionFor = (names) => `use: ${names.join(',')}`;
     let submissions = 0;
 
     const route = await routeMessage({
@@ -1552,7 +1516,7 @@ describe('routeMessage skill invocation', () => {
       providerID: 'provider-a',
       modelID: 'model-a',
       delivery: 'steer',
-      skills: { skills: [{ id: 'code-audit', name: 'audit' }, { id: 'grill-with-docs', name: 'grill-with-docs' }], instructionFor },
+      skills: { names: ['audit', 'grill-with-docs'], instructionFor },
       appendSubmissions: () => { submissions += 1; },
     });
 
@@ -1562,15 +1526,18 @@ describe('routeMessage skill invocation', () => {
     expect(sendMessageCalls[0]).toMatchObject({
       runtimeKey: getRuntimeKey(),
       delivery: 'steer',
-      skills: { skills: [{ id: 'grill-with-docs', name: 'grill-with-docs' }, { id: 'code-audit', name: 'audit' }] },
+      skills: { names: ['grill-with-docs', 'audit'] },
     });
-    expect(sendMessageCalls[0].skills.instructionFor([{ id: 'code-audit', name: 'audit' }])).toBe('use: audit');
+    expect(sendMessageCalls[0].skills.instructionFor(['audit'])).toBe('use: audit');
     expect(sendMessageCalls[0].messageId).toBeTruthy();
     expect(submissions).toBe(1);
   });
 
   test('prefers a cached command over a same-name skill', async () => {
-    seedSkills('/skills/project', [{ id: 'inspect', name: 'inspect', path: '/skills/inspect/SKILL.md', scope: 'project', source: 'agents' }]);
+    useSkillsStore.setState({
+      skillsByDirectory: { '/skills/project': [{ name: 'inspect', path: '/skills/inspect/SKILL.md', scope: 'project', source: 'agents' }] },
+      availableSkillsByDirectory: { '/skills/project': [{ name: 'inspect', path: '/skills/inspect/SKILL.md', scope: 'project', source: 'agents' }] },
+    });
     useCommandsStore.setState({
       commandsByDirectory: { '/skills/project': [{ name: 'inspect', template: 'Inspect $ARGUMENTS carefully.' }] },
     });
@@ -1591,7 +1558,10 @@ describe('routeMessage skill invocation', () => {
   });
 
   test('sends a skill prompt with its quoted context', async () => {
-    seedSkills('/skills/project', [{ id: 'grill-with-docs', name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }]);
+    useSkillsStore.setState({
+      skillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+      availableSkillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+    });
     const additionalParts = [createContextPart({
       kind: 'code-comment',
       source: 'file',
@@ -1615,7 +1585,7 @@ describe('routeMessage skill invocation', () => {
     expect(route).toBe('prompt');
     expect(sendCommandCalls).toHaveLength(0);
     expect(sendMessageCalls).toHaveLength(1);
-    expect(sendMessageCalls[0].skills.skills).toEqual([{ id: 'grill-with-docs', name: 'grill-with-docs' }]);
+    expect(sendMessageCalls[0].skills.names).toEqual(['grill-with-docs']);
     expect(sendMessageCalls[0].context).toEqual([{ id: expect.stringMatching(/^msg_/), text: additionalParts[0].text, metadata: additionalParts[0].metadata }]);
   });
 
@@ -1662,7 +1632,10 @@ describe('routeMessage skill invocation', () => {
   });
 
   test('includes pinned knowledge with the skill prompt', async () => {
-    seedSkills('/skills/project', [{ id: 'grill-with-docs', name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }]);
+    useSkillsStore.setState({
+      skillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+      availableSkillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+    });
 
     const route = await routeMessage({
       sessionId: 'session-skill',
@@ -1680,7 +1653,10 @@ describe('routeMessage skill invocation', () => {
   });
 
   test('keeps primary file attachments on the skill prompt', async () => {
-    seedSkills('/skills/project', [{ id: 'grill-with-docs', name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }]);
+    useSkillsStore.setState({
+      skillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+      availableSkillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+    });
     const files = [{
       type: 'file',
       mime: 'text/plain',
@@ -1705,7 +1681,10 @@ describe('routeMessage skill invocation', () => {
   });
 
   test('carries unmarked synthetic instructions with the skill prompt', async () => {
-    seedSkills('/skills/project', [{ id: 'grill-with-docs', name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }]);
+    useSkillsStore.setState({
+      skillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+      availableSkillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
+    });
     const instructions = [{ text: 'Resolve the prepared conflict first.', synthetic: true }];
 
     const route = await routeMessage({
@@ -1780,7 +1759,10 @@ describe('routeMessage skill invocation', () => {
   });
 
   test('does not match a skill or command cached for a different directory', async () => {
-    seedSkills('/other/project', [{ id: 'grill-with-docs', name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'project', source: 'opencode' }]);
+    useSkillsStore.setState({
+      skillsByDirectory: { '/other/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'project', source: 'opencode' }] },
+      availableSkillsByDirectory: { '/other/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'project', source: 'opencode' }] },
+    });
     useCommandsStore.setState({
       commandsByDirectory: { '/other/project': [{ name: 'grill-with-docs', template: 'Other $ARGUMENTS' }] },
     });

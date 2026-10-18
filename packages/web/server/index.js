@@ -1105,7 +1105,6 @@ const messageQueueRuntime = createMessageQueueRuntime({
   // shared control stream for SSE clients and the existing WS fan-out.
   broadcastGlobalUiEvent: broadcastOpenChamberUiEvent,
   resolveAutoSelection: (send) => routingRuntime.resolveAutoSelection(send),
-  readQueuedSkillPolicy: (input) => featureRoutesRuntime.readQueuedSkillPolicy(input),
   onPromptSent: (sessionId) => sessionRuntime.markUserMessageSent(sessionId),
   beforeScheduledTaskSend: (...args) => scheduledTasksRuntime.beforeScheduledTaskSend(...args),
   validateScheduledTaskTarget: (...args) => scheduledTasksRuntime.validateTarget(...args),

@@ -56,10 +56,10 @@ test('skill refresh preserves newer editor text while a save is pending and swit
   const skill = { id: 'one', name: 'one', path: '/test/one/SKILL.md', scope: 'user', source: 'opencode' } satisfies import('@/stores/useSkillsStore').DiscoveredSkill;
   let persisted = 'initial';
   const writes: Array<{ instructions: string; finish: () => void }> = [];
-  useSkillsStore.setState({ selectedSkillId: 'one', skills: [skill],
-    getSkillById: (id) => useSkillsStore.getState().skills.find((entry) => entry.id === id),
-    getSkillDetail: async ({ name }) => ({ name, sources: { md: { exists: true, path: skill.path, dir: '/test/one', fields: [], supportingFiles: [], description: name, instructions: persisted } } }),
-    updateSkill: async (_skill, input) => new Promise((resolve) => {
+  useSkillsStore.setState({ selectedSkillName: 'one', skills: [skill],
+    getSkillByName: (name) => useSkillsStore.getState().skills.find((entry) => entry.name === name),
+    getSkillDetail: async (name) => ({ name, sources: { md: { exists: true, path: skill.path, dir: '/test/one', fields: [], supportingFiles: [], description: name, instructions: persisted } } }),
+    updateSkill: async (_name, input) => new Promise((resolve) => {
       const instructions = input.instructions ?? '';
       writes.push({ instructions, finish: () => {
         persisted = instructions + '\n';
@@ -90,15 +90,15 @@ test('skill refresh preserves newer editor text while a save is pending and swit
   expect(currentView().state.doc.toString()).toContain('newer');
   expect(writes.map((write) => write.instructions)).toEqual(['older', 'newer']);
   await act(async () => { writes[1].finish(); });
-  await act(async () => useSkillsStore.setState({ selectedSkillId: 'two', skills: [{ ...skill, id: 'two', name: 'two' }] }));
+  await act(async () => useSkillsStore.setState({ selectedSkillName: 'two', skills: [{ ...skill, id: 'two', name: 'two' }] }));
   expect(currentView().state.doc.toString()).toContain('description: two');
   let finishPending = () => {};
   await act(async () => useSkillsStore.setState({
-    selectedSkillId: 'loading', skills: [{ ...skill, id: 'loading', name: 'loading' }],
+    selectedSkillName: 'loading', skills: [{ ...skill, id: 'loading', name: 'loading' }],
     getSkillDetail: async () => new Promise<null>((resolve) => { finishPending = () => resolve(null); }),
   }));
   await act(async () => useSkillsStore.setState({
-    selectedSkillId: 'draft',
+    selectedSkillName: 'draft',
     skillDraft: { name: 'draft', scope: 'user', description: 'new draft', instructions: 'draft body' },
   }));
   expect(currentView().state.doc.toString()).toContain('description: new draft');

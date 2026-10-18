@@ -1,6 +1,5 @@
 /**
- * Which installed skills an agent can use, and how a typed skill name maps to
- * one skill.
+ * Which installed skills an agent can use.
  *
  * The skills list is the installed inventory: OpenCode's own list merged with
  * a disk scan, so a skill switched off by an `integration.use` deny is still
@@ -11,7 +10,6 @@
  * because absence from a cold OpenCode list proves nothing.
  */
 import { z } from 'zod';
-import { isPrefixTokenName } from '@/components/chat/composer/language/prefixTokens';
 
 export type SkillPolicyScope = 'global' | 'project';
 
@@ -119,26 +117,26 @@ export const parseSkillPolicyWrite = (
 };
 
 /** Whether OpenCode lets agents use the skill, as far as the policy state knows. */
-export const isSkillSwitchedOff = (policy: SkillPolicyState | null, id: string): boolean => (
+const isSkillSwitchedOff = (policy: SkillPolicyState | null, id: string): boolean => (
   policy?.skills.get(id)?.effective === 'disabled'
 );
 
 type SkillIdentity = { id: string; name: string };
 
 /**
- * Ids a scope's file switches off that the skills list does not have:
- * OpenCode stops listing a switched-off built-in or config-sourced skill, and
- * Settings still has to offer the switch that turns it back on.
+ * Ids the policy state has that no row of the skills list carries. The list
+ * keeps one row per display name, so a second id with the same name has no
+ * row; OpenCode also stops listing a switched-off built-in or config-sourced
+ * skill. Settings still offers the switches of each such id.
  */
-export const unlistedSwitchedOffIds = (
+export const switchOnlyIds = (
   skills: readonly SkillIdentity[],
   policy: SkillPolicyState | null,
 ): string[] => {
   if (!policy) return [];
   const listed = new Set(skills.map((skill) => skill.id));
-  return [...policy.skills]
-    .filter(([id, entry]) => !listed.has(id) && (entry.disabledIn.global === true || entry.disabledIn.project === true))
-    .map(([id]) => id)
+  return [...policy.skills.keys()]
+    .filter((id) => !listed.has(id))
     .sort((a, b) => a.localeCompare(b));
 };
 
@@ -152,49 +150,4 @@ export const filterAvailableSkills = <T extends SkillIdentity>(
 ): T[] => {
   if (!policy || !skills.some((skill) => isSkillSwitchedOff(policy, skill.id))) return skills;
   return skills.filter((skill) => !isSkillSwitchedOff(policy, skill.id));
-};
-
-/**
- * The one skill a typed `$token` or `/token` names. An id always names its own
- * skill, since ids are unique; otherwise a display name names a skill when no
- * other skill shares it. A name two skills share names none, so the send never
- * picks one of them at random.
- */
-export const resolveSkillToken = <T extends SkillIdentity>(skills: readonly T[], token: string): T | null => {
-  const byId = skills.find((skill) => skill.id === token);
-  if (byId) return byId;
-  const byName = skills.filter((skill) => skill.name === token);
-  return byName.length === 1 ? byName[0] : null;
-};
-
-/**
- * The token the composer inserts for a skill: its name when the name can be
- * typed as one token (`isPrefixTokenName`) and selects this skill, otherwise
- * its id. "Alpha Display" would end at the space and select nothing.
- */
-export const skillTokenFor = <T extends SkillIdentity>(skills: readonly T[], skill: T): string => (
-  isPrefixTokenName(skill.name) && resolveSkillToken(skills, skill.name)?.id === skill.id ? skill.name : skill.id
-);
-
-/** The skills a message's tokens name, in order, once each; tokens naming no single skill are left out. */
-export const resolveSkillMentions = <T extends SkillIdentity>(
-  skills: readonly T[],
-  tokens: readonly string[],
-): Array<{ id: string; name: string }> => {
-  const mentions: Array<{ id: string; name: string }> = [];
-  for (const token of tokens) {
-    const skill = resolveSkillToken(skills, token);
-    if (skill && !mentions.some((mention) => mention.id === skill.id)) mentions.push({ id: skill.id, name: token });
-  }
-  return mentions;
-};
-
-/** Every token that resolves to some skill, for highlighting and mention collection. */
-export const knownSkillTokens = (skills: readonly SkillIdentity[]): Set<string> => {
-  const tokens = new Set<string>();
-  for (const skill of skills) {
-    tokens.add(skillTokenFor(skills, skill));
-    tokens.add(skill.id);
-  }
-  return tokens;
 };

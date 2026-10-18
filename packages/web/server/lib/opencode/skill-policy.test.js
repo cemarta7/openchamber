@@ -3,8 +3,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
-  carryOwnedSkillDeny,
   createSkillPolicyService,
+  editSkillSwitchText,
   findDecidingSkillStatement,
   handleSkillPolicyWrite,
   isValidSkillPolicyId,
@@ -13,7 +13,7 @@ import {
   skillIdFromPath,
   skillPolicyLocation,
 } from './skill-policy.js';
-import { readConfigFile, writeConfig } from './shared.js';
+import { readConfigFile } from './shared.js';
 
 const deny = (resource) => ({ action: 'integration.use', resource, effect: 'deny' });
 const allow = (resource) => ({ action: 'integration.use', resource, effect: 'allow' });
@@ -167,6 +167,83 @@ describe('setSkillDisabled', () => {
   });
 });
 
+describe('editSkillSwitchText', () => {
+  // The edit for one switch, from the file's text as the service does it.
+  const flip = (text, id, disabled, location = 'policies') => {
+    const before = readJsonc(text);
+    const desired = structuredClone(before);
+    setSkillDisabled(desired, id, disabled, location);
+    return editSkillSwitchText(text, before, desired, id, disabled, location);
+  };
+  const readJsonc = (text) => {
+    const file = path.join(makeTemp(), 'opencode.jsonc');
+    fs.writeFileSync(file, text);
+    return readConfigFile(file);
+  };
+
+  it('keeps comments between, beside and after the user rules, and off then on gives the text back', () => {
+    const text = [
+      '{',
+      '  "policies": [',
+      '    // block the wild ones',
+      '    { "action": "integration.use", "resource": "skill:wild-*", "effect": "deny" }, // user rule',
+      '    /* and this one */ { "action": "integration.use", "resource": "skill:other", "effect": "deny" }',
+      '    // last word',
+      '  ]',
+      '}',
+      '',
+    ].join('\n');
+    const off = flip(text, 'alpha-skill', true);
+    for (const comment of ['// block the wild ones', '// user rule', '/* and this one */', '// last word']) {
+      expect(off).toContain(comment);
+    }
+    expect(readJsonc(off).policies).toEqual([deny('skill:wild-*'), deny('skill:other'), owned('alpha-skill')]);
+    expect(flip(off, 'alpha-skill', false)).toBe(text);
+  });
+
+  it('removes only the marked deny, keeping a user exact deny and the comment on its line', () => {
+    const text = '{\n  "policies": [\n    { "action": "integration.use", "resource": "skill:alpha-skill", "effect": "deny" }, // mine\n    { "action": "integration.use", "resource": "skill:alpha-skill", "effect": "deny", "openchamber": "skill-switch" } // switch\n  ]\n}\n';
+    const on = flip(text, 'alpha-skill', false);
+    expect(readJsonc(on).policies).toEqual([deny('skill:alpha-skill')]);
+    expect(on).toContain('// mine');
+    expect(on).toContain('// switch');
+  });
+
+  it('edits a list on one line, an empty list with a comment, and a missing experimental object', () => {
+    const inline = flip('{ "policies": [{ "action": "integration.use", "resource": "skill:x", "effect": "allow" }] } // tail\n', 'alpha-skill', true);
+    expect(readJsonc(inline).policies).toEqual([allow('skill:x'), owned('alpha-skill')]);
+    expect(inline).toContain('// tail');
+
+    const empty = flip('{\n  "policies": [ /* none yet */ ]\n}\n', 'alpha-skill', true);
+    expect(empty).toContain('/* none yet */');
+    expect(readJsonc(empty).policies).toEqual([owned('alpha-skill')]);
+
+    const created = flip('{\n  // keep\n  "model": "a/b"\n}\n', 'alpha-skill', true, 'experimental.policies');
+    expect(created).toContain('// keep');
+    expect(readJsonc(created)).toEqual({ model: 'a/b', experimental: { policies: [owned('alpha-skill')] } });
+  });
+
+  it('keeps CRLF line endings', () => {
+    const text = '{\r\n  "policies": [\r\n    { "action": "integration.use", "resource": "skill:x", "effect": "deny" } // c\r\n  ]\r\n}\r\n';
+    const off = flip(text, 'alpha-skill', true);
+    expect(off.replaceAll('\r\n', '')).not.toContain('\n');
+    expect(off).toContain('// c');
+    expect(flip(off, 'alpha-skill', false)).toContain('// c');
+  });
+
+  it('keeps the comment of a comment-only file and a byte order mark', () => {
+    const commentOnly = flip('// only a comment\n', 'alpha-skill', true);
+    expect(commentOnly).toContain('// only a comment');
+    expect(readJsonc(commentOnly)).toEqual({ policies: [owned('alpha-skill')] });
+    expect(editSkillSwitchText('\ufeff{}', {}, { policies: [owned('alpha-skill')] }, 'alpha-skill', true, 'policies')?.startsWith('\ufeff{')).toBe(true);
+  });
+
+  it('answers null when the edit would not give the intended config', () => {
+    // `desired` that the text edit cannot produce: something else changed.
+    expect(editSkillSwitchText('{ "model": "a/b" }', { model: 'a/b' }, { model: 'c/d', policies: [owned('alpha-skill')] }, 'alpha-skill', true, 'policies')).toBeNull();
+  });
+});
+
 describe('findDecidingSkillStatement', () => {
   const globalPath = '/home/u/.config/opencode/opencode.json';
   const projectPath = '/repo/.opencode/opencode.json';
@@ -283,7 +360,6 @@ const setup = ({ globalText = null, projectText = null, version = '2.0.29', live
   const service = createSkillPolicyService({
     resolveTargets: (directory) => ({ global: globalPath, project: directory ? projectPath : null }),
     readConfigFile,
-    writeConfig,
     sleep: async () => {},
     confirmAttempts: 3,
   });
@@ -291,7 +367,7 @@ const setup = ({ globalText = null, projectText = null, version = '2.0.29', live
 };
 
 describe('createSkillPolicyService', () => {
-  it('saves a project switch, confirms it, and restores the JSONC file on re-enable', async () => {
+  it('saves a project switch, confirms it, and keeps user rules and their comments through off and on', async () => {
     const projectText = [
       '{',
       '  // keep this comment',
@@ -316,14 +392,18 @@ describe('createSkillPolicyService', () => {
     });
     const savedText = fs.readFileSync(projectPath, 'utf8');
     expect(savedText).toContain('// keep this comment');
-    expect(savedText).toContain('// user rule');
+    // The comment inside the policy list stays with the user's rule.
+    expect(savedText).toContain('"skill:wild-*", "effect": "deny" }, // user rule');
     expect(fs.readFileSync(globalPath, 'utf8')).toBe(globalText);
 
     const on = await service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'project', enabled: true, openCode: openCode.reader });
     expect(on.saved.changed).toBe(true);
     expect(on.confirmed).toBe(true);
     expect(on.policy).toMatchObject({ disabledIn: { project: false }, effective: 'enabled', decidedBy: null });
-    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
+    expect(readConfigFile(projectPath)).toEqual({ model: 'a/b', policies: [deny('skill:wild-*')] });
+    const restoredText = fs.readFileSync(projectPath, 'utf8');
+    expect(restoredText).toContain('// keep this comment');
+    expect(restoredText).toContain('"skill:wild-*", "effect": "deny" }, // user rule');
     expect(fs.readFileSync(globalPath, 'utf8')).toBe(globalText);
   });
 
@@ -475,17 +555,62 @@ describe('createSkillPolicyService', () => {
       .rejects.toMatchObject({ status: 409, code: 'scope_unavailable' });
   });
 
-  it('leaves the file unchanged when the write itself fails', async () => {
-    const { projectDir, globalPath, openCode } = setup({ globalText: '{}' });
-    const service = createSkillPolicyService({
-      resolveTargets: () => ({ global: globalPath, project: null }),
-      readConfigFile,
-      writeConfig: () => { throw new Error('Failed to write OpenCode configuration'); },
-      sleep: async () => {},
+  it('creates a missing file and its folder with only the switch rule', async () => {
+    const { projectDir, projectPath, openCode, service } = setup();
+    fs.rmSync(path.dirname(projectPath), { recursive: true });
+    const off = await service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'project', enabled: false, openCode: openCode.reader });
+    expect(off.saved).toMatchObject({ disabled: true, changed: true });
+    expect(readConfigFile(projectPath)).toEqual({ policies: [owned('alpha-skill')] });
+  });
+
+  // A file another writer changes while the switch is saved: OpenCode, an
+  // editor, another OpenChamber. `when` is before or after the switch reads
+  // the config the change is made to.
+  for (const when of ['before', 'after']) {
+    it(`writes nothing over an edit made ${when} the switch reads the config`, async () => {
+      const projectText = '{\n  "policies": [\n    // mine\n    { "action": "integration.use", "resource": "skill:wild-*", "effect": "deny" }\n  ]\n}\n';
+      const { projectDir, projectPath, openCode } = setup({ projectText });
+      const intervening = '{\n  "provider": { "acme": { "name": "Acme" } },\n  "policies": [\n    // mine\n    { "action": "integration.use", "resource": "skill:wild-*", "effect": "deny" },\n    { "action": "integration.use", "resource": "skill:foreign", "effect": "deny" }\n  ]\n}\n';
+      const service = createSkillPolicyService({
+        resolveTargets: (directory) => ({ global: path.join(projectDir, 'unused.json'), project: directory ? projectPath : null }),
+        readConfigFile: (filePath) => {
+          if (when === 'before') fs.writeFileSync(filePath, intervening);
+          const config = readConfigFile(filePath);
+          if (when === 'after') fs.writeFileSync(filePath, intervening);
+          return config;
+        },
+        sleep: async () => {},
+      });
+      await expect(service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'project', enabled: false, openCode: openCode.reader }))
+        .rejects.toMatchObject({ status: 409, code: 'conflict' });
+      expect(fs.readFileSync(projectPath, 'utf8')).toBe(intervening);
     });
-    await expect(service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'global', enabled: false, openCode: openCode.reader }))
-      .rejects.toThrow('Failed to write OpenCode configuration');
-    expect(fs.readFileSync(globalPath, 'utf8')).toBe('{}');
+  }
+
+  it('keeps a byte order mark and the comments inside the list through off and on', async () => {
+    const projectText = '\ufeff{\n  "policies": [\n    // mine\n    { "action": "integration.use", "resource": "skill:wild-*", "effect": "deny" }, // user rule\n  ],\n}\n';
+    const { projectDir, projectPath, openCode, service } = setup({ projectText });
+    await service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'project', enabled: false, openCode: openCode.reader });
+    const offText = fs.readFileSync(projectPath, 'utf8');
+    expect(offText.startsWith('\ufeff{')).toBe(true);
+    expect(offText).toContain('// mine');
+    expect(offText).toContain('"effect": "deny" }, // user rule');
+    expect(readConfigFile(projectPath).policies).toEqual([deny('skill:wild-*'), owned('alpha-skill')]);
+    await service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'project', enabled: true, openCode: openCode.reader });
+    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('leaves an existing file unchanged when its edit cannot be written', async () => {
+    const globalText = '{\n  // mine\n  "policies": []\n}\n';
+    const { projectDir, globalPath, openCode, service } = setup({ globalText });
+    fs.chmodSync(globalPath, 0o444);
+    try {
+      await expect(service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'global', enabled: false, openCode: openCode.reader }))
+        .rejects.toThrow('Failed to write OpenCode configuration');
+    } finally {
+      fs.chmodSync(globalPath, 0o644);
+    }
+    expect(fs.readFileSync(globalPath, 'utf8')).toBe(globalText);
   });
 
   it('reads saved and effective state, including switched-off ids no longer installed', async () => {
@@ -588,119 +713,5 @@ describe('handleSkillPolicyWrite', () => {
 
     const saved = await call({ id: 'alpha-skill', scope: 'global', enabled: false });
     expect(saved).toMatchObject({ status: 200, body: { ok: true, confirmed: true, saved: { disabled: true, changed: true } } });
-  });
-});
-
-describe('carryOwnedSkillDeny', () => {
-  it('adds the switch rule for the new id next to the old one, in the same array, and copies no user rule', () => {
-    const config = {
-      experimental: { policies: [owned('old-id')] },
-      policies: [deny('skill:old-id'), deny('skill:old-*'), owned('old-id')],
-    };
-    expect(carryOwnedSkillDeny(config, 'old-id', 'new-id')).toEqual([['experimental', 'policies'], ['policies']]);
-    expect(config.experimental.policies).toEqual([owned('old-id'), owned('new-id')]);
-    expect(config.policies).toEqual([deny('skill:old-id'), deny('skill:old-*'), owned('old-id'), owned('new-id')]);
-  });
-
-  it('changes nothing when only user rules name the old id, or the new id already has the switch rule', () => {
-    const userOnly = { policies: [deny('skill:old-id')] };
-    expect(carryOwnedSkillDeny(userOnly, 'old-id', 'new-id')).toEqual([]);
-    expect(userOnly).toEqual({ policies: [deny('skill:old-id')] });
-    const already = { policies: [owned('old-id'), owned('new-id')] };
-    expect(carryOwnedSkillDeny(already, 'old-id', 'new-id')).toEqual([]);
-  });
-});
-
-describe('carryForRename', () => {
-  const read = (file) => readConfigFile(file);
-
-  it('carries the switch rule in both scope files and drops the old one when no copy is left', async () => {
-    const globalText = '{\n  // mine\n  "model": "a/b",\n  "policies": [\n    { "action": "integration.use", "resource": "skill:keep-*", "effect": "deny" }\n  ]\n}\n';
-    const { projectDir, globalPath, projectPath, service } = setup({ globalText, projectText: JSON.stringify({ experimental: { policies: [owned('old-id')] } }) });
-    const withGlobal = read(globalPath);
-    setSkillDisabled(withGlobal, 'old-id', true, 'policies');
-    writeConfig(withGlobal, globalPath);
-
-    const carry = await service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false });
-    expect(carry.carried.map((entry) => entry.scope).sort()).toEqual(['global', 'project']);
-    expect(read(globalPath).policies).toEqual([deny('skill:keep-*'), owned('old-id'), owned('new-id')]);
-    expect(read(projectPath)).toEqual({ experimental: { policies: [owned('old-id'), owned('new-id')] } });
-
-    const outcome = await carry.finish();
-    expect(outcome.removed.map((entry) => entry.scope).sort()).toEqual(['global', 'project']);
-    expect(read(globalPath).policies).toEqual([deny('skill:keep-*'), owned('new-id')]);
-    expect(read(projectPath)).toEqual({ experimental: { policies: [owned('new-id')] } });
-    expect(fs.readFileSync(globalPath, 'utf8')).toContain('// mine');
-  });
-
-  it('keeps the old rule while another copy of the old id stays installed', async () => {
-    const { projectDir, projectPath, service } = setup({ projectText: JSON.stringify({ policies: [owned('old-id')] }) });
-    const carry = await service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: true });
-    const outcome = await carry.finish();
-    expect(outcome.kept.map((entry) => entry.scope)).toEqual(['project']);
-    expect(read(projectPath)).toEqual({ policies: [owned('old-id'), owned('new-id')] });
-  });
-
-  it('undo gives back the files byte for byte', async () => {
-    const projectText = '{\n  "policies": [\n    {"action":"integration.use","resource":"skill:old-id","effect":"deny","openchamber":"skill-switch"}\n  ]\n}\n';
-    const { projectDir, projectPath, globalPath, service } = setup({ globalText: '{}\n', projectText });
-    const carry = await service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false });
-    expect(carry.carried).toHaveLength(1);
-    expect(await carry.undo()).toEqual([]);
-    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
-    expect(fs.readFileSync(globalPath, 'utf8')).toBe('{}\n');
-  });
-
-  it('leaves empty policy lists a user wrote in place through carry, undo and finish', async () => {
-    const projectText = JSON.stringify({ experimental: { policies: [] }, policies: [owned('old-id')] }, null, 2);
-    const globalText = '{ "policies": [] }\n';
-    const { projectDir, globalPath, projectPath, service } = setup({ globalText, projectText });
-
-    const undone = await service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false });
-    expect(await undone.undo()).toEqual([]);
-    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
-
-    const carry = await service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false });
-    expect((await carry.finish()).removed.map((entry) => entry.scope)).toEqual(['project']);
-    expect(read(projectPath)).toEqual({ experimental: { policies: [] }, policies: [owned('new-id')] });
-    expect(fs.readFileSync(globalPath, 'utf8')).toBe(globalText);
-  });
-
-  it('writes nothing and does not carry user-written rules', async () => {
-    const globalText = JSON.stringify({ policies: [deny('skill:old-id')] });
-    const { projectDir, globalPath, projectPath, service } = setup({ globalText });
-    const carry = await service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false });
-    expect(carry.owning).toEqual([]);
-    expect(fs.readFileSync(globalPath, 'utf8')).toBe(globalText);
-    expect(fs.existsSync(projectPath)).toBe(false);
-  });
-
-  it('stops before writing when a scope file cannot be read', async () => {
-    const projectText = JSON.stringify({ policies: [owned('old-id')] });
-    const { projectDir, projectPath, service } = setup({ globalText: '{ nope', projectText });
-    await expect(service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false }))
-      .rejects.toMatchObject({ status: 409, code: 'invalid_config' });
-    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
-  });
-
-  it('restores the files already written when a later write fails', async () => {
-    const { projectDir, globalPath, projectPath } = setup({
-      globalText: JSON.stringify({ policies: [owned('old-id')] }),
-      projectText: JSON.stringify({ policies: [owned('old-id')] }),
-    });
-    const globalBefore = fs.readFileSync(globalPath, 'utf8');
-    const projectBefore = fs.readFileSync(projectPath, 'utf8');
-    const service = createSkillPolicyService({
-      resolveTargets: () => ({ global: globalPath, project: projectPath }),
-      readConfigFile,
-      writeConfig: (config, file) => {
-        if (file === projectPath && JSON.stringify(config).includes('new-id')) throw new Error('disk full');
-        writeConfig(config, file);
-      },
-    });
-    await expect(service.carryForRename({ directory: projectDir, oldId: 'old-id', newId: 'new-id', keepOldRules: false }))
-      .rejects.toMatchObject({ status: 500, code: 'write_failed' });
-    expect(read(globalPath)).toEqual(JSON.parse(globalBefore));
-    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectBefore);
   });
 });

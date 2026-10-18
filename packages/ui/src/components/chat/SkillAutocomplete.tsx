@@ -1,7 +1,6 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 import { selectAvailableSkillsForDirectory, useSkillsStore } from '@/stores/useSkillsStore';
-import { skillTokenFor } from '@/stores/skillAvailability';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useUIStore } from '@/stores/useUIStore';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
@@ -10,7 +9,6 @@ import { AutocompleteRowTooltip } from './composer/ui/AutocompleteRowTooltip';
 import { rankSkillAutocompleteItems } from './skillAutocompleteItems';
 
 interface SkillInfo {
-  id: string;
   name: string;
   scope: string;
   source?: string;
@@ -23,8 +21,7 @@ export interface SkillAutocompleteHandle {
 
 interface SkillAutocompleteProps {
   searchQuery: string;
-  /** Receives the token to insert: the skill's name, or its id when another skill shares the name. */
-  onSkillSelect: (skillToken: string) => void;
+  onSkillSelect: (skillName: string) => void;
   onClose: () => void;
   style?: React.CSSProperties;
 }
@@ -114,11 +111,11 @@ export const SkillAutocomplete = React.forwardRef<SkillAutocompleteHandle, Skill
         const safeIndex = ((selectedIndexRef.current % filteredSkills.length) + filteredSkills.length) % filteredSkills.length;
         const skill = filteredSkills[safeIndex];
         if (skill) {
-          onSkillSelect(skillTokenFor(skills, skill));
+          onSkillSelect(skill.name);
         }
       }
     },
-  }), [filteredSkills, skills, onSkillSelect, onClose]);
+  }), [filteredSkills, onSkillSelect, onClose]);
 
   const renderSkill = (skill: SkillInfo, index: number) => {
     const isProject = skill.scope === 'project';
@@ -126,7 +123,7 @@ export const SkillAutocomplete = React.forwardRef<SkillAutocompleteHandle, Skill
     return (
       <AutocompleteRowTooltip description={skill.description} active={!isMobile && index === selectedIndex}>
       <div
-        key={skill.id}
+        key={`${skill.name}-${skill.scope}`}
         ref={(el) => {
           itemRefs.current[index] = el;
         }}
@@ -135,7 +132,7 @@ export const SkillAutocomplete = React.forwardRef<SkillAutocompleteHandle, Skill
             isMobile ? 'items-center' : 'items-start',
           index === selectedIndex && 'bg-interactive-selection'
         )}
-        onClick={() => onSkillSelect(skillTokenFor(skills, skill))}
+        onClick={() => onSkillSelect(skill.name)}
         onMouseMove={() => {
           keyboardNavigationRef.current = false;
           setSelectedIndex(index);
@@ -144,9 +141,6 @@ export const SkillAutocomplete = React.forwardRef<SkillAutocompleteHandle, Skill
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="font-semibold truncate">{skill.name}</span>
-            {skillTokenFor(skills, skill) !== skill.name ? (
-              <span className="typography-micro text-muted-foreground truncate" dir="ltr">{skill.id}</span>
-            ) : null}
             <span className={cn(
               "text-[10px] leading-none uppercase font-bold tracking-tight px-1.5 py-1 rounded border flex-shrink-0 transition-colors",
               isProject 

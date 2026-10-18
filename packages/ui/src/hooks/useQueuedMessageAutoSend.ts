@@ -13,7 +13,6 @@ import { useDirectorySync } from '@/sync/sync-context';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { createInputHistorySubmission } from '@/stores/useInputHistoryStore';
-import { withoutSwitchedOffQueuedSkills } from '@/stores/useSkillsStore';
 
 type SessionStatusType = 'idle' | 'busy' | 'retry';
 
@@ -80,7 +79,7 @@ const getAbortHoldUntil = (sessionId: string): number | null => {
   return Date.now() < holdUntil ? holdUntil : null;
 };
 
-export const buildQueuedAutoSendPayload = (queue: QueuedMessage[], directory: string) => {
+export const buildQueuedAutoSendPayload = (queue: QueuedMessage[]) => {
   const queued = queue[0];
   if (!queued) {
     return null;
@@ -88,16 +87,13 @@ export const buildQueuedAutoSendPayload = (queue: QueuedMessage[], directory: st
 
   // A queued message is delivered as captured: mention already stripped,
   // file mentions resolved, and the context it was queued with following it.
-  // Only its skill instruction is checked again, against the session
-  // directory's skill policy now, so a skill switched off while the message
-  // waited is not named.
   return {
     queuedMessageId: queued.id,
     historySubmissions: [createInputHistorySubmission(queued.content, queued.attachments ?? [])],
     primaryText: queued.text,
     primaryAttachments: queued.attachments ?? [],
     agentMentionName: queued.agentMention,
-    additionalParts: queuedContextToParts(withoutSwitchedOffQueuedSkills(queued.context ?? [], directory)),
+    additionalParts: queuedContextToParts(queued.context ?? []),
     sendConfig: queued.sendConfig,
   };
 };
@@ -305,7 +301,7 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
 
       // Read the queue back at dispatch time and skip anything already being
       // delivered, rather than trusting the render-time snapshot.
-      const payload = buildQueuedAutoSendPayload(useMessageQueueStore.getState().getSendableQueue(target), target.directory);
+      const payload = buildQueuedAutoSendPayload(useMessageQueueStore.getState().getSendableQueue(target));
       if (!payload) {
         return;
       }

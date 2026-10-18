@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { z } from "zod";
 import type { StoreApi, UseBoundStore } from "zustand";
 import { devtools, persist } from "zustand/middleware";
 import { emitConfigChange, scopeMatches, subscribeToConfigChanges } from "@/lib/configSync";
@@ -10,18 +9,14 @@ import {
 } from "@/lib/configUpdate";
 import { waitForOpenCodeConnection } from "@/stores/waitForOpenCodeConnection";
 import { createDeferredSafeJSONStorage } from "./utils/safeStorage";
-import { runtimeFetch, type RuntimeFetchOptions } from "@/lib/runtime-fetch";
+import { runtimeFetch } from "@/lib/runtime-fetch";
 import { runBackgroundNetworkTask } from "@/lib/background-network";
 import { useProjectsStore } from "@/stores/useProjectsStore";
 
-import { opencodeClient, type SkillAttachmentRef } from '@/lib/opencode/client';
-import { buildSkillMentionInstruction, parseSkillMentionInstruction } from '@/lib/skillMentionInstruction';
-import { normalizePath } from '@/lib/pathNormalization';
-import type { QueuedContextPart } from './messageQueueStore';
+import { opencodeClient } from '@/lib/opencode/client';
 import { filterSkillsByRuntimeFlags } from './skillVisibility';
 import {
   filterAvailableSkills,
-  isSkillSwitchedOff,
   parseSkillPolicyRead,
   parseSkillPolicyWrite,
   type SkillPolicyRead,
@@ -102,8 +97,7 @@ interface SkillSources {
 export interface DiscoveredSkill {
   /**
    * OpenCode's skill id: the folder of `SKILL.md`, which the frontmatter
-   * `name` can differ from. Unique within one directory's list, so it is the
-   * key for selection, local updates and mutations; `name` is only a label.
+   * `name` can differ from. Skill policies and the per-skill switches name it.
    */
   id: string;
   name: string;
@@ -165,6 +159,7 @@ export interface SkillConfig {
   instructions?: string;
   scope?: SkillScope;
   source?: SkillSource;
+  targetPath?: string;
   supportingFiles?: Array<{ path: string; content: string }>;
   disableModelInvocation?: boolean;
 }
@@ -190,31 +185,6 @@ interface SkillDetail {
   source?: SkillSource | null;
 }
 
-/** The fields that name one installed skill to the server. */
-type SkillTarget = Pick<DiscoveredSkill, 'id' | 'name'>;
-/** A skill target with the file it was listed at. */
-type SkillRef = SkillTarget & Pick<DiscoveredSkill, 'path'>;
-/** One skill folder location: a scope and the tool convention it follows. */
-type SkillLocation = { scope: SkillScope; source: SkillSource };
-
-const renameAnswerSchema = z.object({
-  id: z.string().min(1).optional(),
-  switches: z.object({
-    oldRuleCleanupFailed: z.array(z.object({ scope: z.enum(['global', 'project']), path: z.string() })),
-  }).nullable().optional(),
-});
-
-/**
- * What a rename did. `ok` follows the server's answer alone: a list that
- * fails to reload afterwards does not make a done rename look failed.
- * `oldRuleCleanupFailed` names the config files that still hold the switch
- * rule for the old id after the skill moved: the rename and the carried rule
- * for the new id are in place, only that leftover could not be removed.
- */
-export type SkillRenameResult =
-  | { ok: true; id: string; oldRuleCleanupFailed: Array<{ scope: SkillPolicyScope; path: string }> }
-  | { ok: false };
-
 /** The policy state Settings shows for one directory. */
 export interface SkillPolicyView {
   /** The latest state read, or the last one known when the latest read failed; null before any. */
@@ -222,8 +192,6 @@ export interface SkillPolicyView {
   /** Why the latest read failed; null when it succeeded. */
   error: string | null;
 }
-
-type DecidedSkillState = 'enabled' | 'disabled';
 
 /** A switch write for one skill in one directory, from the click until the next policy read. */
 type SkillSwitchStatus =
@@ -233,8 +201,13 @@ type SkillSwitchStatus =
   | { phase: 'failed'; scope: SkillPolicyScope; message: string };
 
 interface SkillsStore {
-  /** Id of the skill Settings shows, or the name of an unsaved draft. */
-  selectedSkillId: string | null;
+  selectedSkillName: string | null;
+  /**
+   * An id Settings shows only with its switches, because no row of the list
+   * carries it (`switchOnlyIds`). Kept apart from `selectedSkillName`, so an
+   * id that equals another skill's display name never opens that skill.
+   */
+  selectedSwitchOnlyId: string | null;
   /** Installed skills of the project the app is on. */
   skills: DiscoveredSkill[];
   /** Installed skills of every directory loaded so far, including the ambient one. Settings reads this. */
@@ -244,26 +217,20 @@ interface SkillsStore {
   /** Per directory, the installed skills minus the ones a policy switches off. */
   availableSkillsByDirectory: Record<string, DiscoveredSkill[]>;
   policyByDirectory: Record<string, SkillPolicyView>;
-  /**
-   * Per directory and skill id, the last `enabled` or `disabled` a policy read
-   * or switch reported, kept through later `unknown` answers. Only queued
-   * delivery reads it, so a skill last seen off stays out of a queued
-   * instruction; Settings and the composer show the latest state as it is.
-   */
-  lastDecidedByDirectory: Record<string, ReadonlyMap<string, DecidedSkillState>>;
   /** Keyed by `skillSwitchKey(directory, id)`. */
   switchStatus: Record<string, SkillSwitchStatus>;
   isLoading: boolean;
   skillDraft: SkillDraft | null;
 
-  setSelectedSkill: (id: string | null) => void;
+  setSelectedSkill: (name: string | null) => void;
+  selectSwitchOnlyId: (id: string) => void;
   setSkillDraft: (draft: SkillDraft | null) => void;
   loadSkills: (directory?: string | null) => Promise<boolean>;
   /**
    * Switches a skill on or off in one scope's config file. One write per skill
    * and directory at a time; a second call while one runs answers `pending`.
-   * The policy the server answers replaces the shown one, failed or not saved
-   * alike: nothing is assumed before the answer.
+   * The policy the server answers replaces the shown one: nothing is assumed
+   * before the answer.
    */
   setSkillEnabled: (
     id: string,
@@ -271,18 +238,13 @@ interface SkillsStore {
     enabled: boolean,
     directory?: string | null,
   ) => Promise<SkillPolicyWriteResult>;
-  /** Null when the read failed or the server answered for another file. */
-  getSkillDetail: (skill: SkillRef, directory?: string | null) => Promise<SkillDetail | null>;
+  getSkillDetail: (name: string, directory?: string | null) => Promise<SkillDetail | null>;
   createSkill: (config: SkillConfig, directory?: string | null) => Promise<boolean>;
-  updateSkill: (skill: SkillRef, config: Partial<SkillConfig>, directory?: string | null) => Promise<boolean>;
-  renameSkill: (skill: SkillTarget, newName: string, directory?: string | null) => Promise<SkillRenameResult>;
-  /**
-   * Without `location` the server deletes exactly the listed skill with this
-   * id. With it, only the folder named by the id in that scope and source,
-   * whichever copy OpenCode lists first.
-   */
-  deleteSkill: (skill: SkillTarget, directory?: string | null, location?: SkillLocation) => Promise<boolean>;
-  getSkillById: (id: string, directory?: string | null) => DiscoveredSkill | undefined;
+  updateSkill: (name: string, config: Partial<SkillConfig>, directory?: string | null) => Promise<boolean>;
+  renameSkill: (name: string, newName: string, directory?: string | null) => Promise<boolean>;
+  /** `location` deletes only the copy in that scope and source; without it every copy of the name goes. */
+  deleteSkill: (name: string, directory?: string | null, location?: { scope: SkillScope; source: SkillSource }) => Promise<boolean>;
+  getSkillByName: (name: string, directory?: string | null) => DiscoveredSkill | undefined;
   /**
    * Skills are discovered on the connected instance and cached by directory,
    * which two instances can share — so a switch must drop the caches rather
@@ -291,9 +253,9 @@ interface SkillsStore {
   resetForRuntimeSwitch: () => void;
 
   // Supporting files
-  readSupportingFile: (skill: SkillTarget, filePath: string, directory?: string | null) => Promise<string | null>;
-  writeSupportingFile: (skill: SkillTarget, filePath: string, content: string, directory?: string | null) => Promise<boolean>;
-  deleteSupportingFile: (skill: SkillTarget, filePath: string, directory?: string | null) => Promise<boolean>;
+  readSupportingFile: (skillName: string, filePath: string, directory?: string | null) => Promise<string | null>;
+  writeSupportingFile: (skillName: string, filePath: string, content: string, directory?: string | null) => Promise<boolean>;
+  deleteSupportingFile: (skillName: string, filePath: string, directory?: string | null) => Promise<boolean>;
 }
 
 declare global {
@@ -339,8 +301,8 @@ const mergePartialSkills = (
   partial: DiscoveredSkill[],
   previous: DiscoveredSkill[],
 ): DiscoveredSkill[] => {
-  const partialIds = new Set(partial.map((skill) => skill.id));
-  const carried = previous.filter((skill) => !partialIds.has(skill.id) && skill.renamable !== true);
+  const partialNames = new Set(partial.map((skill) => skill.name));
+  const carried = previous.filter((skill) => !partialNames.has(skill.name) && skill.renamable !== true);
   return carried.length > 0 ? [...partial, ...carried] : partial;
 };
 
@@ -356,46 +318,6 @@ const toDiscoveredSkill = (raw: RawSkillResponse): DiscoveredSkill => ({
   group: parseSkillGroup(raw.path),
   renamable: raw.renamable === true,
 });
-
-/**
- * A route under `/api/config/skills/:name`. The path keeps the display name
- * older servers read; the `id` query selects the skill, and a server given an
- * id matches it exactly, never by name, so two ids sharing a name stay apart.
- */
-const skillRoute = (skill: SkillTarget, subPath = ''): string => (
-  `/api/config/skills/${encodeURIComponent(skill.name)}${subPath}`
-);
-
-const directoryHeaders = (directory: string | null, hasBody: boolean): Headers => {
-  const headers = new Headers();
-  if (hasBody) headers.set('Content-Type', 'application/json');
-  if (directory) headers.set('x-opencode-directory', directory);
-  return headers;
-};
-
-const skillRouteInit = (
-  skill: SkillTarget,
-  directory: string | null,
-  init: RequestInit = {},
-  location?: SkillLocation,
-): RuntimeFetchOptions => ({
-  ...init,
-  query: { id: skill.id, directory, ...location },
-  headers: directoryHeaders(directory, Boolean(init.body)),
-});
-
-const supportingFilePath = (filePath: string): string => `/files/${encodeURIComponent(filePath)}`;
-
-const BUILT_IN_SKILL_LOCATION = '<built-in>';
-
-const normalizeSkillPath = (path: string): string => path.replace(/\\/g, '/');
-
-/** Whether a detail answer describes the file `skill` points at. */
-const isDetailFor = (skill: SkillRef, detail: SkillDetail): boolean => {
-  const detailPath = detail.sources.md.path;
-  if (skill.path === BUILT_IN_SKILL_LOCATION) return detailPath === null;
-  return detailPath !== null && normalizeSkillPath(detailPath) === normalizeSkillPath(skill.path);
-};
 
 const getSkillsCacheKey = (directory: string | null): string => {
   return directory?.trim() || DEFAULT_SKILLS_CACHE_KEY;
@@ -418,30 +340,6 @@ export const invalidateSkillsLoadCache = (directory: string | null = getRequestD
 };
 
 /**
- * Marks every directory read so far as possibly changed, without reading any:
- * a global config file applies to all of them, and each re-reads when it is
- * next shown. Returns the directories that hold a list.
- */
-export const invalidateAllSkillsLoads = (): string[] => {
-  const keys = Object.keys(useSkillsStore.getState().skillsByDirectory);
-  for (const key of keys) markSkillsChanged(key);
-  markSkillsChanged(ambientCacheKey());
-  return keys.filter((key) => key !== DEFAULT_SKILLS_CACHE_KEY);
-};
-
-/** `lastDecided` updated with the `enabled` and `disabled` states of `policy`; null when that changes nothing. */
-const withDecided = (
-  lastDecided: ReadonlyMap<string, DecidedSkillState> | undefined,
-  policy: SkillPolicyState | null,
-): ReadonlyMap<string, DecidedSkillState> | null => {
-  const changes: Array<[string, DecidedSkillState]> = [];
-  for (const [id, { effective }] of policy?.skills ?? []) {
-    if (effective !== 'unknown' && lastDecided?.get(id) !== effective) changes.push([id, effective]);
-  }
-  return changes.length > 0 ? new Map([...(lastDecided ?? []), ...changes]) : null;
-};
-
-/**
  * One directory's lists after a change to its inventory or policy, with the
  * available list derived from both and the ambient mirrors following when the
  * directory is the one the app is on now.
@@ -458,11 +356,7 @@ const commitDirectory = (
     skillsByDirectory: { ...state.skillsByDirectory, [cacheKey]: skills },
     availableSkillsByDirectory: { ...state.availableSkillsByDirectory, [cacheKey]: available },
   };
-  if (patch.policy) {
-    next.policyByDirectory = { ...state.policyByDirectory, [cacheKey]: patch.policy };
-    const lastDecided = withDecided(state.lastDecidedByDirectory[cacheKey], patch.policy.state);
-    if (lastDecided) next.lastDecidedByDirectory = { ...state.lastDecidedByDirectory, [cacheKey]: lastDecided };
-  }
+  if (patch.policy) next.policyByDirectory = { ...state.policyByDirectory, [cacheKey]: patch.policy };
   if (cacheKey === ambientCacheKey()) {
     next.skills = skills;
     next.availableSkills = available;
@@ -478,45 +372,45 @@ const withoutUnconfirmed = (statuses: Record<string, SkillSwitchStatus>, cacheKe
   return kept.length === entries.length ? statuses : Object.fromEntries(kept);
 };
 
-/** A new skill's folder, and so its id, is the name it is created with. */
 const upsertSkillLocal = (
   set: (updater: (state: SkillsStore) => Partial<SkillsStore>) => void,
-  skill: Pick<DiscoveredSkill, 'id' | 'name'> & { path?: string },
+  get: () => SkillsStore,
+  name: string,
   config: Partial<SkillConfig>,
   directory: string | null,
 ) => {
   const cacheKey = getSkillsCacheKey(directory);
-  set((state) => {
-    const current = state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
-    const existing = current.find((entry) => entry.id === skill.id);
-    const path = skill.path ?? existing?.path ?? '';
-    const nextSkill: DiscoveredSkill = {
-      ...existing,
-      id: skill.id,
-      name: skill.name,
-      path,
-      scope: config.scope ?? existing?.scope ?? 'user',
-      source: config.source ?? existing?.source ?? 'opencode',
-      description: config.description ?? existing?.description ?? '',
-      group: parseSkillGroup(path),
-    };
-    const nextSkills = existing
-      ? current.map((entry) => (entry.id === skill.id ? nextSkill : entry))
-      : [...current, nextSkill];
-    return commitDirectory(state, cacheKey, { skills: nextSkills });
-  });
+  const current = get().skillsByDirectory[cacheKey] ?? [];
+  const existing = current.find((skill) => skill.name === name);
+  const path = config.targetPath ?? existing?.path ?? '';
+  const nextSkill: DiscoveredSkill = {
+    ...existing,
+    // A new skill's folder, and so its id, is the name it is created with.
+    id: existing?.id ?? name,
+    name,
+    path,
+    scope: config.scope ?? existing?.scope ?? 'user',
+    source: config.source ?? existing?.source ?? 'opencode',
+    description: config.description ?? existing?.description ?? '',
+    group: parseSkillGroup(path),
+  };
+  const nextSkills = current.some((skill) => skill.name === name)
+    ? current.map((skill) => (skill.name === name ? nextSkill : skill))
+    : [...current, nextSkill];
+  set((state) => commitDirectory(state, cacheKey, { skills: nextSkills }));
 };
 
 const removeSkillLocal = (
   set: (updater: (state: SkillsStore) => Partial<SkillsStore>) => void,
-  id: string,
+  name: string,
   directory: string | null,
 ) => {
   const cacheKey = getSkillsCacheKey(directory);
   set((state) => {
-    const nextSkills = (state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS).filter((skill) => skill.id !== id);
-    const next = commitDirectory(state, cacheKey, { skills: nextSkills });
-    if (state.selectedSkillId === id) next.selectedSkillId = null;
+    const next = commitDirectory(state, cacheKey, {
+      skills: (state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS).filter((skill) => skill.name !== name),
+    });
+    if (state.selectedSkillName === name) next.selectedSkillName = null;
     return next;
   });
 };
@@ -553,85 +447,6 @@ export const selectSkillPolicyForDirectory = (
   return state.policyByDirectory[cacheKey] ?? null;
 };
 
-/**
- * The instruction that names skills a prompt could not attach. A skill the
- * directory's policy switches off is never named: the model would be told to
- * use a skill OpenCode refuses to load.
- */
-export const skillFallbackInstruction = (directory: string | null | undefined) => (
-  skills: readonly SkillAttachmentRef[],
-): string | null => {
-  const policy = selectSkillPolicyForDirectory(useSkillsStore.getState(), directory)?.state ?? null;
-  return buildSkillMentionInstruction(
-    skills.filter((skill) => !isSkillSwitchedOff(policy, skill.id)).map((skill) => skill.name),
-  );
-};
-
-/**
- * A directory's stored lists, found also when the caller spells the directory
- * the way the message queue does (`normalizePath`) and the store was loaded
- * with another spelling of the same path.
- */
-const findDirectoryKey = (state: SkillsStore, directory: string | null | undefined): string => {
-  const cacheKey = getSkillsCacheKey(resolveDirectory(directory));
-  if (state.skillsByDirectory[cacheKey] || state.policyByDirectory[cacheKey] || !directory) return cacheKey;
-  const wanted = normalizePath(directory);
-  return Object.keys(state.skillsByDirectory).find((key) => normalizePath(key) === wanted) ?? cacheKey;
-};
-
-/**
- * A queued message's captured context, checked again when it is delivered:
- * its skill instruction leaves out skills switched off in the directory, and
- * goes when it names none left. A skill is off when the latest policy read
- * says so, or says `unknown` and the last `enabled` or `disabled` before it
- * was `disabled` (the server queue's rule). A token from an instruction
- * queued without ids is dropped only when every installed skill it names by
- * name or id is off. Everything else, and an instruction this check cannot
- * read, is delivered as captured. The message text itself is never changed.
- */
-export const withoutSwitchedOffQueuedSkills = (
-  context: readonly QueuedContextPart[],
-  directory: string | null | undefined,
-): QueuedContextPart[] => {
-  const state = useSkillsStore.getState();
-  const cacheKey = findDirectoryKey(state, directory);
-  const policy = state.policyByDirectory[cacheKey]?.state ?? null;
-  const lastDecided = state.lastDecidedByDirectory[cacheKey];
-  if (!policy && !lastDecided) return [...context];
-  const installed = state.skillsByDirectory[cacheKey] ?? EMPTY_SKILLS;
-  const isOff = (id: string): boolean => {
-    const effective = policy?.skills.get(id)?.effective;
-    return (effective === 'enabled' || effective === 'disabled' ? effective : lastDecided?.get(id)) === 'disabled';
-  };
-  const tokenIsOff = (token: string): boolean => {
-    const candidates = installed.filter((skill) => skill.name === token || skill.id === token);
-    return candidates.length > 0 && candidates.every((skill) => isOff(skill.id));
-  };
-
-  const revised: QueuedContextPart[] = [];
-  for (const part of context) {
-    if (part.kind !== 'instruction') {
-      revised.push(part);
-      continue;
-    }
-    if (part.skills) {
-      const kept = part.skills.filter((skill) => !isOff(skill.id));
-      if (kept.length === part.skills.length) revised.push(part);
-      else if (kept.length > 0) revised.push({ kind: 'instruction', text: buildSkillMentionInstruction(kept.map((skill) => skill.name)) ?? '', skills: kept });
-      continue;
-    }
-    const tokens = parseSkillMentionInstruction(part.text);
-    if (!tokens) {
-      revised.push(part);
-      continue;
-    }
-    const kept = tokens.filter((token) => !tokenIsOff(token));
-    if (kept.length === tokens.length) revised.push(part);
-    else if (kept.length > 0) revised.push({ kind: 'instruction', text: buildSkillMentionInstruction(kept) ?? '' });
-  }
-  return revised;
-};
-
 /** What one `GET /api/config/skills` gave, before it is committed. */
 type SkillsSnapshot = {
   skills: DiscoveredSkill[];
@@ -642,7 +457,7 @@ type SkillsSnapshot = {
 
 /** Reads one directory's skills, retrying twice; null when every attempt failed. */
 const fetchSkillsSnapshot = async (directory: string | null): Promise<SkillsSnapshot | null> => {
-  let lastError: Error | null = null;
+  let lastError: unknown = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const queryParams = directory ? `?directory=${encodeURIComponent(directory)}` : '';
@@ -675,7 +490,7 @@ const fetchSkillsSnapshot = async (directory: string | null): Promise<SkillsSnap
         policy: parseSkillPolicyRead(data.skillPolicy),
       };
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
+      lastError = error;
       await sleep(200 * (attempt + 1));
     }
   }
@@ -698,13 +513,13 @@ export const useSkillsStore = create<SkillsStore>()(
   devtools(
     persist(
       (set, get) => ({
-        selectedSkillId: null,
+        selectedSkillName: null,
+        selectedSwitchOnlyId: null,
         skills: [],
         skillsByDirectory: {},
         availableSkills: [],
         availableSkillsByDirectory: {},
         policyByDirectory: {},
-        lastDecidedByDirectory: {},
         switchStatus: {},
         isLoading: false,
         skillDraft: null,
@@ -721,14 +536,17 @@ export const useSkillsStore = create<SkillsStore>()(
             availableSkills: [],
             availableSkillsByDirectory: {},
             policyByDirectory: {},
-            lastDecidedByDirectory: {},
             switchStatus: {},
             isLoading: false,
           });
         },
 
-        setSelectedSkill: (id: string | null) => {
-          set({ selectedSkillId: id });
+        setSelectedSkill: (name: string | null) => {
+          set({ selectedSkillName: name, selectedSwitchOnlyId: null });
+        },
+
+        selectSwitchOnlyId: (id: string) => {
+          set({ selectedSkillName: null, selectedSwitchOnlyId: id });
         },
 
         setSkillDraft: (draft: SkillDraft | null) => {
@@ -812,20 +630,19 @@ export const useSkillsStore = create<SkillsStore>()(
           }
           skillSwitchesInFlight.add(switchKey);
           const generation = skillsGeneration;
-          const setStatus = (status: SkillSwitchStatus | null) => set((state) => {
-            const switchStatus = { ...state.switchStatus };
-            if (status) switchStatus[switchKey] = status;
-            else delete switchStatus[switchKey];
-            return { switchStatus };
-          });
+          const setStatus = (status: SkillSwitchStatus) => set((state) => ({
+            switchStatus: { ...state.switchStatus, [switchKey]: status },
+          }));
           setStatus({ phase: 'pending', scope });
 
+          const headers = new Headers({ 'Content-Type': 'application/json' });
+          if (directory) headers.set('x-opencode-directory', directory);
           let result: SkillPolicyWriteResult;
           try {
             const response = await runtimeFetch('/api/config/skill-policy', {
               method: 'PUT',
               query: { directory },
-              headers: directoryHeaders(directory, true),
+              headers,
               body: JSON.stringify({ id, scope, enabled }),
             });
             result = parseSkillPolicyWrite(await response.json().catch(() => null), response.status);
@@ -875,18 +692,19 @@ export const useSkillsStore = create<SkillsStore>()(
           return result;
         },
 
-        getSkillDetail: async (skill: SkillRef, requestedDirectory?: string | null) => {
+        getSkillDetail: async (name: string, requestedDirectory?: string | null) => {
           try {
             const directory = resolveDirectory(requestedDirectory);
-            const response = await runtimeFetch(skillRoute(skill), skillRouteInit(skill, directory));
+            const queryParams = directory ? `?directory=${encodeURIComponent(directory)}` : '';
+            
+            const response = await runtimeFetch(`/api/config/skills/${encodeURIComponent(name)}${queryParams}`, {
+              headers: directory ? { 'x-opencode-directory': directory } : undefined,
+            });
             if (!response.ok) {
               return null;
             }
             
-            // An answer about another file must not fill the editor that
-            // saves back to this one.
-            const detail = await response.json() as SkillDetail;
-            return isDetailFor(skill, detail) ? detail : null;
+            return await response.json() as SkillDetail;
           } catch {
             return null;
           }
@@ -926,7 +744,7 @@ export const useSkillsStore = create<SkillsStore>()(
             invalidateSkillsLoadCache(directory);
 
             if (payload?.requiresManualRestart) {
-              upsertSkillLocal(set, { id: config.name, name: config.name }, config, directory);
+              upsertSkillLocal(set, get, config.name, config, directory);
               return true;
             }
 
@@ -949,23 +767,27 @@ export const useSkillsStore = create<SkillsStore>()(
           }
         },
 
-        updateSkill: async (skill: SkillRef, config: Partial<SkillConfig>, requestedDirectory?: string | null) => {
+        updateSkill: async (name: string, config: Partial<SkillConfig>, requestedDirectory?: string | null) => {
           try {
             const skillConfig: Record<string, unknown> = {};
 
             if (config.description !== undefined) skillConfig.description = config.description;
             if (config.instructions !== undefined) skillConfig.instructions = config.instructions;
             if (config.supportingFiles !== undefined) skillConfig.supportingFiles = config.supportingFiles;
+            if (config.targetPath !== undefined) skillConfig.targetPath = config.targetPath;
             if (config.disableModelInvocation !== undefined) skillConfig.disableModelInvocation = config.disableModelInvocation;
-            // The file the skill was listed at, which the server checks
-            // against the selected skill before it writes.
-            if (skill.path && skill.path !== BUILT_IN_SKILL_LOCATION) skillConfig.targetPath = skill.path;
 
             const directory = resolveDirectory(requestedDirectory);
-            const response = await runtimeFetch(skillRoute(skill), skillRouteInit(skill, directory, {
+            const queryParams = directory ? `?directory=${encodeURIComponent(directory)}` : '';
+
+            const response = await runtimeFetch(`/api/config/skills/${encodeURIComponent(name)}${queryParams}`, {
               method: 'PATCH',
-              body: JSON.stringify(skillConfig),
-            }));
+              headers: {
+                'Content-Type': 'application/json',
+                ...(directory ? { 'x-opencode-directory': directory } : {}),
+              },
+              body: JSON.stringify(skillConfig)
+            });
 
             const payload = await response.json().catch(() => null);
             if (!response.ok) {
@@ -976,7 +798,7 @@ export const useSkillsStore = create<SkillsStore>()(
             invalidateSkillsLoadCache(directory);
 
             if (payload?.requiresManualRestart) {
-              upsertSkillLocal(set, skill, config, directory);
+              upsertSkillLocal(set, get, name, config, directory);
               return true;
             }
 
@@ -999,49 +821,62 @@ export const useSkillsStore = create<SkillsStore>()(
           }
         },
 
-        renameSkill: async (skill: SkillTarget, newName: string, requestedDirectory?: string | null) => {
+        renameSkill: async (name: string, newName: string, requestedDirectory?: string | null) => {
           try {
             const directory = resolveDirectory(requestedDirectory);
-            const response = await runtimeFetch(skillRoute(skill), skillRouteInit(skill, directory, {
+            const queryParams = directory ? `?directory=${encodeURIComponent(directory)}` : '';
+
+            const response = await runtimeFetch(`/api/config/skills/${encodeURIComponent(name)}${queryParams}`, {
               method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(directory ? { 'x-opencode-directory': directory } : {}),
+              },
               body: JSON.stringify({ renameTo: newName }),
-            }));
+            });
 
             const payload = await response.json().catch(() => null);
-            if (!response.ok) return { ok: false };
+            if (!response.ok) {
+              const message = payload?.error || 'Failed to rename skill';
+              throw new Error(message);
+            }
+
+            const needsReload = payload?.requiresReload ?? false;
             invalidateSkillsLoadCache(directory);
-
-            // The folder takes the new name, so that is the new id unless the
-            // server says otherwise.
-            const answer = renameAnswerSchema.safeParse(payload);
-            const result: SkillRenameResult = {
-              ok: true,
-              id: (answer.success ? answer.data.id : undefined) ?? newName,
-              oldRuleCleanupFailed: (answer.success ? answer.data.switches?.oldRuleCleanupFailed : undefined) ?? [],
-            };
-
-            // The rename is done; refreshing the list is best effort and the
-            // next load shows the skill if this one fails.
-            if (payload?.requiresReload) {
+            if (needsReload) {
               await refreshSkillsAfterOpenCodeRestart({
                 message: payload?.message,
                 delayMs: payload?.reloadDelayMs,
-              }).catch(() => undefined);
-              return result;
+              });
+              return true;
             }
-            if (await get().loadSkills(directory)) {
+
+            const loaded = await get().loadSkills(directory);
+            if (loaded) {
               emitConfigChange("skills", { source: CONFIG_EVENT_SOURCE });
             }
-            return result;
+            return loaded;
           } catch {
-            return { ok: false };
+            return false;
           }
         },
 
-        deleteSkill: async (skill: SkillTarget, requestedDirectory?: string | null, location?: SkillLocation) => {
+        deleteSkill: async (name: string, requestedDirectory?: string | null, location?: { scope: SkillScope; source: SkillSource }) => {
           try {
             const directory = resolveDirectory(requestedDirectory);
-            const response = await runtimeFetch(skillRoute(skill), skillRouteInit(skill, directory, { method: 'DELETE' }, location));
+            const params = new URLSearchParams();
+            if (directory) params.set('directory', directory);
+            if (location) {
+              params.set('scope', location.scope);
+              params.set('source', location.source);
+            }
+            const query = params.toString();
+            const queryParams = query ? `?${query}` : '';
+
+            const response = await runtimeFetch(`/api/config/skills/${encodeURIComponent(name)}${queryParams}`, {
+              method: 'DELETE',
+              headers: directory ? { 'x-opencode-directory': directory } : undefined,
+            });
 
             const payload = await response.json().catch(() => null);
             if (!response.ok) {
@@ -1052,7 +887,7 @@ export const useSkillsStore = create<SkillsStore>()(
             invalidateSkillsLoadCache(directory);
 
             if (payload?.requiresManualRestart) {
-              removeSkillLocal(set, skill.id, directory);
+              removeSkillLocal(set, name, directory);
               return true;
             }
 
@@ -1070,13 +905,8 @@ export const useSkillsStore = create<SkillsStore>()(
               emitConfigChange("skills", { source: CONFIG_EVENT_SOURCE });
             }
 
-            // Delete removes the file OpenCode loads; a lower-priority copy of
-            // the same id can remain and then shows up in the refreshed list.
-            // The selection stays on the id while the list still has it.
-            const idStillListed = loaded
-              && selectSkillsForDirectory(get(), directory).some((entry) => entry.id === skill.id);
-            if (get().selectedSkillId === skill.id && !idStillListed) {
-              set({ selectedSkillId: null });
+            if (get().selectedSkillName === name) {
+              set({ selectedSkillName: null });
             }
 
             return loaded;
@@ -1085,16 +915,18 @@ export const useSkillsStore = create<SkillsStore>()(
           }
         },
 
-        getSkillById: (id: string, requestedDirectory?: string | null) => {
-          return selectSkillsForDirectory(get(), requestedDirectory).find((skill) => skill.id === id);
+        getSkillByName: (name: string, requestedDirectory?: string | null) => {
+          return selectSkillsForDirectory(get(), requestedDirectory).find((skill) => skill.name === name);
         },
 
-        readSupportingFile: async (skill: SkillTarget, filePath: string, requestedDirectory?: string | null) => {
+        readSupportingFile: async (skillName: string, filePath: string, requestedDirectory?: string | null) => {
           try {
             const directory = resolveDirectory(requestedDirectory);
+            const queryParams = directory ? `&directory=${encodeURIComponent(directory)}` : '';
+            
             const response = await runtimeFetch(
-              skillRoute(skill, supportingFilePath(filePath)),
-              skillRouteInit(skill, directory),
+              `/api/config/skills/${encodeURIComponent(skillName)}/files/${encodeURIComponent(filePath)}?${queryParams.slice(1)}`,
+              { headers: directory ? { 'x-opencode-directory': directory } : undefined },
             );
             if (!response.ok) {
               return null;
@@ -1107,12 +939,21 @@ export const useSkillsStore = create<SkillsStore>()(
           }
         },
 
-        writeSupportingFile: async (skill: SkillTarget, filePath: string, content: string, requestedDirectory?: string | null) => {
+        writeSupportingFile: async (skillName: string, filePath: string, content: string, requestedDirectory?: string | null) => {
           try {
             const directory = resolveDirectory(requestedDirectory);
+            const queryParams = directory ? `?directory=${encodeURIComponent(directory)}` : '';
+            
             const response = await runtimeFetch(
-              skillRoute(skill, supportingFilePath(filePath)),
-              skillRouteInit(skill, directory, { method: 'PUT', body: JSON.stringify({ content }) }),
+              `/api/config/skills/${encodeURIComponent(skillName)}/files/${encodeURIComponent(filePath)}${queryParams}`,
+              {
+                method: 'PUT',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(directory ? { 'x-opencode-directory': directory } : {}),
+                },
+                body: JSON.stringify({ content })
+              }
             );
             
             return response.ok;
@@ -1121,12 +962,17 @@ export const useSkillsStore = create<SkillsStore>()(
           }
         },
 
-        deleteSupportingFile: async (skill: SkillTarget, filePath: string, requestedDirectory?: string | null) => {
+        deleteSupportingFile: async (skillName: string, filePath: string, requestedDirectory?: string | null) => {
           try {
             const directory = resolveDirectory(requestedDirectory);
+            const queryParams = directory ? `?directory=${encodeURIComponent(directory)}` : '';
+            
             const response = await runtimeFetch(
-              skillRoute(skill, supportingFilePath(filePath)),
-              skillRouteInit(skill, directory, { method: 'DELETE' }),
+              `/api/config/skills/${encodeURIComponent(skillName)}/files/${encodeURIComponent(filePath)}${queryParams}`,
+              {
+                method: 'DELETE',
+                headers: directory ? { 'x-opencode-directory': directory } : undefined,
+              }
             );
             
             return response.ok;
@@ -1139,7 +985,7 @@ export const useSkillsStore = create<SkillsStore>()(
         name: "skills-store",
         storage: createDeferredSafeJSONStorage(),
         partialize: (state) => ({
-          selectedSkillId: state.selectedSkillId,
+          selectedSkillName: state.selectedSkillName,
         }),
       },
     ),

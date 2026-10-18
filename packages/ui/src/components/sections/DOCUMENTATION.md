@@ -179,9 +179,12 @@ The Skills page reads the server's own `skillPolicy` instead (see
 `stores/DOCUMENTATION.md`). A skill's id is its `SKILL.md` folder name, not its
 display name, and one switch covers every source copy of that id. The sidebar
 marks a row "Off" when a switch decides it and "Blocked" when a rule the
-switches did not write does, shows the id beside display names two skills
-share, and lists switched-off ids OpenCode no longer lists (a built-in, say)
-under their own heading so they can be switched back on.
+switches did not write does. Every id the policy state has but no row
+carries is listed under "Other skill IDs": a second id behind a display name
+another row shows, or a switched-off id OpenCode no longer lists (a built-in,
+say). Selecting one opens only its switches, through `selectedSwitchOnlyId`,
+which is kept apart from the name selection so an id that equals another
+skill's name never opens that skill.
 `skills/SkillSwitchesSection.tsx` shows one switch per scope (all projects, and
 this project when the directory has its own config file), each showing only
 the switch's own rule in that file, plus a status line from
@@ -190,14 +193,6 @@ file decides when a foreign or wildcard rule does. A switch stays put until the
 server answers; a failed save shows its reason, and a saved but unconfirmed one
 says so with a "Check again" button. The model-invocation checkbox is a
 separate setting in the skill file itself.
-
-Renaming a skill keeps a switch's "off" under the new id (the server carries
-the rule). `useSkillsStore.renameSkill` answers `{ ok, id, oldRuleCleanupFailed }`
-from the server's answer alone, so a list that fails to reload afterwards does
-not report a done rename as failed. `skills/renameFeedback.ts` shows the usual
-success toast and selects the new id; when the server could not remove the old
-id's rule (`switches.oldRuleCleanupFailed`), a warning toast beside it names the
-files that still hold it. Only a refused rename shows the error.
 
 ## Entity shapes: OpenCode 2 only
 

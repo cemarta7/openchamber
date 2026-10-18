@@ -30,6 +30,7 @@ import type {
   SessionRevert,
   SessionStatus as SessionStatusWire,
   SessionStructuredError,
+  SkillInfo,
   TokenUsageInfo,
 } from "@opencode/client"
 
@@ -46,6 +47,7 @@ import type {
  */
 export type Agent = Omit<AgentInfo, "name"> & { name: string; displayName: string }
 export type Command = CommandInfo
+export type Skill = SkillInfo
 export type Provider = ProviderInfo
 export type Model = ModelInfo
 export type McpServerStatus = McpServer

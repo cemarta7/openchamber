@@ -67,9 +67,7 @@ const {
   selectAvailableSkillsForDirectory,
   skillSwitchKey,
   useSkillsStore,
-  withoutSwitchedOffQueuedSkills,
 } = await import('./useSkillsStore');
-const { buildSkillMentionInstruction } = await import('@/lib/skillMentionInstruction');
 
 describe('useSkillsStore directory resolution', () => {
   beforeEach(() => {
@@ -90,7 +88,7 @@ describe('useSkillsStore directory resolution', () => {
     invalidateSkillsLoadCache(activeProjectPath);
     invalidateSkillsLoadCache('/workspace/other-project');
     useSkillsStore.setState({
-      selectedSkillId: null,
+      selectedSkillName: null,
       skills: [],
       skillsByDirectory: {},
       isLoading: false,
@@ -217,12 +215,12 @@ describe('useSkillsStore directory resolution', () => {
       });
     };
 
-    const renamed = await useSkillsStore.getState().renameSkill({ id: 'old-skill', name: 'old-skill' }, 'new-skill');
-    expect(renamed).toEqual({ ok: true, id: 'new-skill', oldRuleCleanupFailed: [] });
+    const renamed = await useSkillsStore.getState().renameSkill('old-skill', 'new-skill');
+    expect(renamed).toBe(true);
 
     const renameCall = runtimeFetchCalls.find((call) => String(call.url).includes('/api/config/skills/old-skill'));
     expect(renameCall).toBeTruthy();
-    expect(renameCall?.init?.query).toEqual({ id: 'old-skill', directory: activeProjectPath });
+    expect(renameCall?.url).toContain(`directory=${encodeURIComponent(activeProjectPath)}`);
 
     const headers = new Headers(renameCall?.init?.headers);
     expect(headers.get('content-type')).toBe('application/json');
@@ -298,10 +296,9 @@ const jsonResponse = (json: string) => new Response(json, {
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Two OpenCode ids whose frontmatter shares the display name `deploy`.
 const deployWeb = {
   id: 'deploy-web',
-  name: 'deploy',
+  name: 'deploy-web',
   path: `${activeProjectPath}/.agents/skills/deploy-web/SKILL.md`,
   scope: 'project',
   source: 'agents',
@@ -310,166 +307,13 @@ const deployWeb = {
 };
 const deployApi = {
   id: 'deploy-api',
-  name: 'deploy',
+  name: 'deploy-api',
   path: '/shared/skills/deploy-api/SKILL.md',
   scope: 'user',
   source: 'opencode',
   renamable: false,
   sources: { md: { description: 'API' } },
 };
-
-describe('useSkillsStore skill identity', () => {
-  beforeEach(() => {
-    runtimeFetchCalls = [];
-    getDirectoryImpl = () => undefined;
-    runtimeFetchImpl = async () => jsonResponse(JSON.stringify({ skills: [deployWeb, deployApi] }));
-    invalidateSkillsLoadCache(activeProjectPath);
-    useSkillsStore.setState({
-      selectedSkillId: null,
-      skills: [],
-      skillsByDirectory: {},
-      isLoading: false,
-      skillDraft: null,
-    });
-  });
-
-  test('two ids sharing a display name stay two rows through full and partial loads', async () => {
-    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
-    expect(useSkillsStore.getState().skills.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
-
-    // OpenCode's list failed and the disk scan found only one of them. The
-    // other id is not on a managed root, so it is carried over, not dropped
-    // because its display name matches.
-    runtimeFetchImpl = async () => jsonResponse(JSON.stringify({ skills: [deployWeb], openCodeSkillsUnavailable: true }));
-    invalidateSkillsLoadCache();
-    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
-    expect(useSkillsStore.getState().skills.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
-    expect(useSkillsStore.getState().getSkillById('deploy-api')?.path).toBe(deployApi.path);
-  });
-
-  test('an entry without an id keeps the id its folder gives it', async () => {
-    runtimeFetchImpl = async () => jsonResponse(JSON.stringify({
-      skills: [{ name: 'Display Name', path: `${activeProjectPath}/.opencode/skills/folder-id/SKILL.md` }],
-    }));
-    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
-    expect(useSkillsStore.getState().skills.map((skill) => [skill.id, skill.name])).toEqual([['folder-id', 'Display Name']]);
-  });
-
-  test('source copies of one id stay one row, the .agents copy winning', async () => {
-    runtimeFetchImpl = async () => jsonResponse(JSON.stringify({
-      skills: [
-        { id: 'dup', name: 'dup', path: `${activeProjectPath}/.claude/skills/dup/SKILL.md` },
-        { id: 'dup', name: 'dup', path: `${activeProjectPath}/.agents/skills/dup/SKILL.md` },
-      ],
-      externalSkills: { claudeDisabled: false, allDisabled: false },
-    }));
-    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
-    const skills = useSkillsStore.getState().skills;
-    expect(skills).toHaveLength(1);
-    expect(skills[0]?.path).toContain('/.agents/');
-  });
-
-  test('each of two ids sharing a display name is read and changed through its own id', async () => {
-    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
-    // A server that honours the `id` selector answers for exactly that skill.
-    const byId = new Map([[deployWeb.id, deployWeb], [deployApi.id, deployApi]]);
-    const isListCall = (url: string) => url.startsWith('/api/config/skills?');
-    runtimeFetchImpl = async (url, init) => {
-      if (isListCall(url)) return jsonResponse(JSON.stringify({ skills: [deployWeb, deployApi] }));
-      const query = init?.query instanceof URLSearchParams ? null : init?.query;
-      const target = byId.get(String(query?.id));
-      if (!target) return new Response(null, { status: 404 });
-      if (url.includes('/files/')) return jsonResponse(JSON.stringify({ content: `notes of ${target.id}` }));
-      if (init?.method) return jsonResponse(JSON.stringify({ success: true, requiresReload: false }));
-      return jsonResponse(JSON.stringify({
-        name: target.name,
-        sources: { md: { exists: true, path: target.path, dir: null, fields: [], supportingFiles: [] } },
-      }));
-    };
-    const store = useSkillsStore.getState();
-
-    for (const listed of [deployWeb, deployApi]) {
-      const skill = store.getSkillById(listed.id);
-      if (!skill) throw new Error(`${listed.id} not loaded`);
-      runtimeFetchCalls = [];
-
-      expect((await store.getSkillDetail(skill))?.sources.md.path).toBe(listed.path);
-      expect(await store.readSupportingFile(skill, 'notes.md')).toBe(`notes of ${listed.id}`);
-      expect(await store.writeSupportingFile(skill, 'notes.md', 'text')).toBe(true);
-      expect(await store.deleteSupportingFile(skill, 'notes.md')).toBe(true);
-      expect(await store.updateSkill(skill, { description: 'Edited' })).toBe(true);
-      expect((await store.renameSkill(skill, `${listed.id}-renamed`)).ok).toBe(true);
-      expect(await store.deleteSkill(skill)).toBe(true);
-
-      // Every call keeps the display name in the path and selects by id.
-      const skillCalls = runtimeFetchCalls.filter((call) => !isListCall(call.url));
-      expect(skillCalls).toHaveLength(7);
-      for (const call of skillCalls) {
-        expect(call.url.startsWith('/api/config/skills/deploy')).toBe(true);
-        expect(call.init?.query).toEqual({ id: listed.id, directory: activeProjectPath });
-      }
-      const patch = skillCalls.find((call) => call.init?.method === 'PATCH' && String(call.init.body).includes('description'));
-      expect(JSON.parse(String(patch?.init?.body)).targetPath).toBe(listed.path);
-    }
-  });
-
-  test('deleting the selected skill clears the selection', async () => {
-    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
-    runtimeFetchImpl = async (_url, init) => jsonResponse(JSON.stringify(init?.method
-      ? { success: true, requiresReload: false }
-      : { skills: [deployWeb] }));
-    useSkillsStore.getState().setSelectedSkill(deployApi.id);
-    expect(await useSkillsStore.getState().deleteSkill(deployApi)).toBe(true);
-    expect(useSkillsStore.getState().selectedSkillId).toBe(null);
-  });
-
-  test('a located delete names the scope and source beside the id', async () => {
-    runtimeFetchImpl = async (_url, init) => jsonResponse(JSON.stringify(init?.method
-      ? { success: true, requiresReload: false }
-      : { skills: [deployWeb] }));
-    runtimeFetchCalls.length = 0;
-
-    expect(await useSkillsStore.getState().deleteSkill(deployApi, undefined, { scope: 'user', source: 'opencode' })).toBe(true);
-
-    const call = runtimeFetchCalls.find((entry) => entry.init?.method === 'DELETE');
-    expect(call?.init?.query).toEqual({ id: deployApi.id, directory: activeProjectPath, scope: 'user', source: 'opencode' });
-  });
-
-  test('a lower-priority copy of a deleted id comes back from the refreshed list', async () => {
-    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
-    // Delete removed the effective `.agents` copy; the `.claude` copy of the
-    // same id is what OpenCode loads now.
-    const remainingCopy = { ...deployWeb, path: `${activeProjectPath}/.claude/skills/deploy-web/SKILL.md`, source: 'claude' };
-    runtimeFetchImpl = async (_url, init) => jsonResponse(JSON.stringify(init?.method
-      ? { success: true, requiresReload: false }
-      : { skills: [remainingCopy, deployApi] }));
-    useSkillsStore.getState().setSelectedSkill(deployWeb.id);
-
-    expect(await useSkillsStore.getState().deleteSkill(deployWeb)).toBe(true);
-    expect(useSkillsStore.getState().getSkillById(deployWeb.id)?.path).toBe(remainingCopy.path);
-    expect(useSkillsStore.getState().selectedSkillId).toBe(deployWeb.id);
-  });
-
-  test('a detail answer for another file is dropped', async () => {
-    const skill = {
-      id: 'folder-id',
-      name: 'display',
-      path: `${activeProjectPath}/.opencode/skills/folder-id/SKILL.md`,
-    };
-    runtimeFetchImpl = async () => jsonResponse(JSON.stringify({ skills: [skill] }));
-    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
-
-    const detailFor = (path: string) => jsonResponse(JSON.stringify({
-      name: 'display',
-      sources: { md: { exists: true, path, dir: null, fields: [], supportingFiles: [] } },
-    }));
-    runtimeFetchImpl = async () => detailFor(`${activeProjectPath}/.opencode/skills/display/SKILL.md`);
-    expect(await useSkillsStore.getState().getSkillDetail(skill)).toBe(null);
-
-    runtimeFetchImpl = async () => detailFor(skill.path);
-    expect((await useSkillsStore.getState().getSkillDetail(skill))?.sources.md.path).toBe(skill.path);
-  });
-});
 
 const enabledEntry: SkillPolicyEntry = {
   disabledIn: { global: false, project: false },
@@ -511,7 +355,15 @@ describe('useSkillsStore availability and switches', () => {
     getDirectoryImpl = () => undefined;
     runtimeFetchImpl = async () => jsonResponse(listWithPolicy(policyState({ 'deploy-web': enabledEntry, 'deploy-api': offGlobally })));
     useSkillsStore.getState().resetForRuntimeSwitch();
-    useSkillsStore.setState({ selectedSkillId: null, skillDraft: null });
+    useSkillsStore.setState({ selectedSkillName: null, skillDraft: null });
+  });
+
+  test('a switch-only id and a skill name are never selected together', () => {
+    useSkillsStore.getState().setSelectedSkill('deploy-web');
+    useSkillsStore.getState().selectSwitchOnlyId('deploy-web');
+    expect(useSkillsStore.getState()).toMatchObject({ selectedSkillName: null, selectedSwitchOnlyId: 'deploy-web' });
+    useSkillsStore.getState().setSelectedSkill('deploy-api');
+    expect(useSkillsStore.getState()).toMatchObject({ selectedSkillName: 'deploy-api', selectedSwitchOnlyId: null });
   });
 
   test('a switched-off skill stays installed and leaves the available list', async () => {
@@ -546,40 +398,6 @@ describe('useSkillsStore availability and switches', () => {
     expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
   });
 
-  test('queued delivery keeps a skill last seen off through an unknown read; Settings and the composer show unknown', async () => {
-    const web = { id: 'deploy-web', name: 'deploy-web' };
-    const api = { id: 'deploy-api', name: 'deploy-api' };
-    const queued = [{ kind: 'instruction' as const, text: buildSkillMentionInstruction(['deploy-web', 'deploy-api']) ?? '', skills: [web, api] }];
-    const webOnly = [{ kind: 'instruction', text: buildSkillMentionInstruction(['deploy-web']), skills: [web] }];
-    const reload = async (skills: Record<string, SkillPolicyEntry>, directory?: string) => {
-      runtimeFetchImpl = async () => jsonResponse(listWithPolicy(policyState(skills)));
-      invalidateSkillsLoadCache(directory);
-      expect(await useSkillsStore.getState().loadSkills(directory)).toBe(true);
-    };
-    const unknownEntry: SkillPolicyEntry = { disabledIn: { global: null, project: null }, effective: 'unknown', decidedBy: null };
-    const other = '/workspace/other';
-
-    expect(await useSkillsStore.getState().loadSkills()).toBe(true);
-    expect(withoutSwitchedOffQueuedSkills(queued, activeProjectPath)).toEqual(webOnly);
-
-    await reload({ 'deploy-web': enabledEntry, 'deploy-api': unknownEntry });
-    expect(useSkillsStore.getState().policyByDirectory[activeProjectPath]?.state?.skills.get('deploy-api')?.effective).toBe('unknown');
-    expect(useSkillsStore.getState().availableSkills.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
-    expect(withoutSwitchedOffQueuedSkills(queued, activeProjectPath)).toEqual(webOnly);
-
-    // Another directory has its own history: unknown there names the skill.
-    await reload({ 'deploy-web': enabledEntry, 'deploy-api': unknownEntry }, other);
-    expect(withoutSwitchedOffQueuedSkills(queued, other)).toEqual(queued);
-
-    await reload({ 'deploy-web': enabledEntry, 'deploy-api': enabledEntry });
-    expect(withoutSwitchedOffQueuedSkills(queued, activeProjectPath)).toEqual(queued);
-    await reload({ 'deploy-web': enabledEntry, 'deploy-api': unknownEntry });
-    expect(withoutSwitchedOffQueuedSkills(queued, activeProjectPath)).toEqual(queued);
-
-    useSkillsStore.getState().resetForRuntimeSwitch();
-    expect(useSkillsStore.getState().lastDecidedByDirectory).toEqual({});
-  });
-
   test('a skill id that names an Object.prototype key survives the JSON answer', async () => {
     const skill = (id: string) => ({ ...deployWeb, id, name: id, path: `${activeProjectPath}/.agents/skills/${id}/SKILL.md` });
     runtimeFetchImpl = async () => jsonResponse(JSON.stringify({
@@ -594,10 +412,6 @@ describe('useSkillsStore availability and switches', () => {
     expect(policy?.skills.get('__proto__')?.effective).toBe('disabled');
     expect(policy?.skills.get('toString')).toBeUndefined();
     expect(state.availableSkills.map((entry) => entry.id)).toEqual(['constructor', 'toString']);
-    const queued = [{ kind: 'instruction' as const, text: '', skills: [{ id: '__proto__', name: '__proto__' }, { id: 'toString', name: 'toString' }] }];
-    expect(withoutSwitchedOffQueuedSkills(queued, activeProjectPath)).toEqual([
-      { kind: 'instruction', text: buildSkillMentionInstruction(['toString']), skills: [{ id: 'toString', name: 'toString' }] },
-    ]);
   });
 
   test('a read started before a switch write cannot bring back the old state', async () => {
@@ -709,48 +523,5 @@ describe('useSkillsStore availability and switches', () => {
     expect(state.skillsByDirectory[activeProjectPath]?.map((skill) => skill.id)).toEqual(['deploy-web', 'deploy-api']);
     expect(state.skills).toEqual([]);
     expect(state.availableSkills).toEqual([]);
-  });
-});
-
-describe('useSkillsStore rename result', () => {
-  const target = { id: 'old-skill', name: 'old-skill' };
-
-  beforeEach(() => {
-    runtimeFetchCalls = [];
-    currentProjectPath = activeProjectPath;
-    useSkillsStore.getState().resetForRuntimeSwitch();
-  });
-
-  test('a rename that could not remove the old switch rule is done, and names the file', async () => {
-    runtimeFetchImpl = async (_url, init) => jsonResponse(JSON.stringify(init?.method === 'PATCH'
-      ? {
-        success: true,
-        name: 'new-skill',
-        id: 'new-skill',
-        switches: {
-          carried: [{ scope: 'global', path: '/config/opencode.json' }],
-          oldRuleRemoved: [],
-          oldRuleKept: [],
-          oldRuleCleanupFailed: [{ scope: 'global', path: '/config/opencode.json', error: 'EACCES: permission denied' }],
-        },
-      }
-      : { skills: [] }));
-    expect(await useSkillsStore.getState().renameSkill(target, 'new-skill')).toEqual({
-      ok: true,
-      id: 'new-skill',
-      oldRuleCleanupFailed: [{ scope: 'global', path: '/config/opencode.json' }],
-    });
-  });
-
-  test('a refused rename is a failure', async () => {
-    runtimeFetchImpl = async () => new Response(JSON.stringify({ error: 'Skill new-skill already exists' }), { status: 500 });
-    expect(await useSkillsStore.getState().renameSkill(target, 'new-skill')).toEqual({ ok: false });
-  });
-
-  test('a list that fails to reload after a done rename does not turn it into a failure', async () => {
-    runtimeFetchImpl = async (_url, init) => (init?.method === 'PATCH'
-      ? jsonResponse(JSON.stringify({ success: true, id: 'new-skill', switches: null }))
-      : new Response('boom', { status: 500 }));
-    expect(await useSkillsStore.getState().renameSkill(target, 'new-skill')).toEqual({ ok: true, id: 'new-skill', oldRuleCleanupFailed: [] });
   });
 });

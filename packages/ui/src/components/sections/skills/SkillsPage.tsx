@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { CodeMirrorEditor } from '@/components/ui/CodeMirrorEditor';
 import { toast } from '@/components/ui';
 import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
-import { selectSkillPolicyForDirectory, selectSkillsForDirectory, useSkillsStore, type SkillConfig, type SkillScope, type SupportingFile, type PendingFile } from '@/stores/useSkillsStore';
+import { selectSkillsForDirectory, useSkillsStore, type SkillConfig, type SkillScope, type SupportingFile, type PendingFile } from '@/stores/useSkillsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
@@ -122,8 +122,8 @@ const SkillsInstalledPage: React.FC = () => {
   const { t } = useI18n();
   const { currentTheme } = useThemeSystem();
   const {
-    selectedSkillId,
-    getSkillById,
+    selectedSkillName,
+    getSkillByName,
     getSkillDetail,
     createSkill,
     updateSkill,
@@ -131,8 +131,8 @@ const SkillsInstalledPage: React.FC = () => {
     setSkillDraft,
     setSelectedSkill,
   } = useSkillsStore(useShallow((s) => ({
-    selectedSkillId: s.selectedSkillId,
-    getSkillById: s.getSkillById,
+    selectedSkillName: s.selectedSkillName,
+    getSkillByName: s.getSkillByName,
     getSkillDetail: s.getSkillDetail,
     createSkill: s.createSkill,
     updateSkill: s.updateSkill,
@@ -145,17 +145,10 @@ const SkillsInstalledPage: React.FC = () => {
   // stays where it is.
   const settingsDirectory = useSettingsDirectory();
   const skills = useSkillsStore((state) => selectSkillsForDirectory(state, settingsDirectory));
-  const selectedSkill = selectedSkillId ? getSkillById(selectedSkillId, settingsDirectory) : null;
-  // A draft is selected by its name; once created, its folder (the id) has that name.
-  const isNewSkill = Boolean(skillDraft && skillDraft.name === selectedSkillId && !selectedSkill);
-  const policyView = useSkillsStore((state) => selectSkillPolicyForDirectory(state, settingsDirectory));
-  // An id OpenCode no longer lists while it is switched off keeps a page with
-  // its switches, also for the moment after it is switched back on and before
-  // the list shows it again.
-  const isUnlistedSwitchedOff = Boolean(
-    selectedSkillId && !selectedSkill && policyView?.state?.skills.get(selectedSkillId),
-  );
-  const hasStaleSelection = Boolean(selectedSkillId && !selectedSkill && !skillDraft && !isUnlistedSwitchedOff);
+  const selectedSkill = selectedSkillName ? getSkillByName(selectedSkillName, settingsDirectory) : null;
+  const isNewSkill = Boolean(skillDraft && skillDraft.name === selectedSkillName && !selectedSkill);
+  const selectedSwitchOnlyId = useSkillsStore((state) => state.selectedSwitchOnlyId);
+  const hasStaleSelection = Boolean(selectedSkillName && !selectedSkill && !skillDraft);
   const isReadOnlySkill = selectedSkill?.path === '<built-in>';
 
   React.useEffect(() => {
@@ -230,7 +223,7 @@ const SkillsInstalledPage: React.FC = () => {
     }
   }, [t]);
 
-  const skillEditorKey = JSON.stringify([settingsDirectory, selectedSkillId, selectedSkill?.path, isNewSkill]);
+  const skillEditorKey = JSON.stringify([settingsDirectory, selectedSkillName, selectedSkill?.path, isNewSkill]);
   const hydratedSkill = React.useRef<string | null>(null);
   const currentEditor = React.useRef({ key: skillEditorKey, markdown: skillMarkdown, disableModelInvocation });
   currentEditor.current = { key: skillEditorKey, markdown: skillMarkdown, disableModelInvocation };
@@ -272,10 +265,10 @@ const SkillsInstalledPage: React.FC = () => {
         setOriginalDisableModelInvocation(false);
         setSupportingFiles([]);
         setPendingFiles(skillDraft.pendingFiles || []);
-      } else if (selectedSkill) {
+      } else if (selectedSkillName && selectedSkill) {
         setIsLoading(hydratedSkill.current !== skillEditorKey);
         try {
-          const detail = await getSkillDetail(selectedSkill, settingsDirectory);
+          const detail = await getSkillDetail(selectedSkillName, settingsDirectory);
           if (!cancelled && currentEditor.current.key === skillEditorKey && detail) {
             const md = detail.sources.md;
             const nextDescription = md.description || '';
@@ -297,7 +290,7 @@ const SkillsInstalledPage: React.FC = () => {
 
     void loadSkillDetails();
     return () => { cancelled = true; };
-  }, [selectedSkill, isNewSkill, settingsDirectory, skills, skillDraft, getSkillDetail, skillEditorKey]);
+  }, [selectedSkill, isNewSkill, selectedSkillName, settingsDirectory, skills, skillDraft, getSkillDetail, skillEditorKey]);
 
   const editorFontSize = useUIStore((state) => state.editorFontSize);
 
@@ -355,7 +348,8 @@ const SkillsInstalledPage: React.FC = () => {
   // An existing skill writes itself; a new one is only created once the user
   // confirms it, so an abandoned draft never reaches disk.
   const save = React.useCallback(async (): Promise<AutosaveResult> => {
-    if (isNewSkill || isReadOnlySkill || !selectedSkill) return AUTOSAVE_UNCHANGED;
+    const skillName = selectedSkillName?.trim();
+    if (isNewSkill || isReadOnlySkill || !skillName) return AUTOSAVE_UNCHANGED;
     if (
       description === originalDescription
       && instructions === originalInstructions
@@ -367,10 +361,11 @@ const SkillsInstalledPage: React.FC = () => {
       return autosaveFailed(t('settings.skills.page.toast.descriptionRequired'));
     }
 
-    const success = await updateSkill(selectedSkill, {
-      name: selectedSkill.name,
+    const success = await updateSkill(skillName, {
+      name: skillName,
       description: description.trim(),
       instructions: instructions.trim() || undefined,
+      targetPath: selectedSkill?.path,
       disableModelInvocation,
     }, settingsDirectory);
     if (!success) {
@@ -394,7 +389,8 @@ const SkillsInstalledPage: React.FC = () => {
     originalDescription,
     originalInstructions,
     originalDisableModelInvocation,
-    selectedSkill,
+    selectedSkill?.path,
+    selectedSkillName,
     settingsDirectory,
     skillEditorKey,
     t,
@@ -479,14 +475,14 @@ const SkillsInstalledPage: React.FC = () => {
       return;
     }
     
-    if (!selectedSkill) return;
+    if (!selectedSkillName) return;
     
     setIsLoadingFile(true);
     setIsFileDialogOpen(true);
     
     try {
       const { readSupportingFile } = useSkillsStore.getState();
-      const content = await readSupportingFile(selectedSkill, filePath, settingsDirectory);
+      const content = await readSupportingFile(selectedSkillName, filePath, settingsDirectory);
       setNewFileContent(content || '');
       setOriginalFileContent(content || '');
     } catch {
@@ -526,19 +522,19 @@ const SkillsInstalledPage: React.FC = () => {
       return;
     }
 
-    if (!selectedSkill) {
+    if (!selectedSkillName) {
       toast.error(t('settings.skills.page.toast.noSkillSelected'));
       return;
     }
 
     const { writeSupportingFile } = useSkillsStore.getState();
-    const success = await writeSupportingFile(selectedSkill, filePath, newFileContent, settingsDirectory);
+    const success = await writeSupportingFile(selectedSkillName, filePath, newFileContent, settingsDirectory);
     
     if (success) {
       toast.success(isEditing ? t('settings.skills.page.toast.fileUpdated', { path: filePath }) : t('settings.skills.page.toast.fileCreated', { path: filePath }));
       setIsFileDialogOpen(false);
       setEditingFilePath(null);
-      const detail = await getSkillDetail(selectedSkill, settingsDirectory);
+      const detail = await getSkillDetail(selectedSkillName, settingsDirectory);
       if (detail) {
         setSupportingFiles(detail.sources.md.supportingFiles || []);
       }
@@ -554,7 +550,7 @@ const SkillsInstalledPage: React.FC = () => {
       return;
     }
 
-    if (!selectedSkill) {
+    if (!selectedSkillName) {
       return;
     }
 
@@ -562,17 +558,17 @@ const SkillsInstalledPage: React.FC = () => {
   };
 
   const handleConfirmDeleteFile = async () => {
-    if (!deleteFilePath || !selectedSkill) {
+    if (!deleteFilePath || !selectedSkillName) {
       return;
     }
 
     setIsDeletingFile(true);
     const { deleteSupportingFile } = useSkillsStore.getState();
-    const success = await deleteSupportingFile(selectedSkill, deleteFilePath, settingsDirectory);
+    const success = await deleteSupportingFile(selectedSkillName, deleteFilePath, settingsDirectory);
 
     if (success) {
       toast.success(t('settings.skills.page.toast.fileDeleted', { path: deleteFilePath }));
-      const detail = await getSkillDetail(selectedSkill, settingsDirectory);
+      const detail = await getSkillDetail(selectedSkillName, settingsDirectory);
       if (detail) {
         setSupportingFiles(detail.sources.md.supportingFiles || []);
       }
@@ -584,7 +580,19 @@ const SkillsInstalledPage: React.FC = () => {
     setIsDeletingFile(false);
   };
 
-  if ((!selectedSkillId && !skillDraft) || hasStaleSelection) {
+  // An id without a row of its own: only its switches, never another skill's page.
+  if (selectedSwitchOnlyId) {
+    return (
+      <SettingsPageLayout
+        title={selectedSwitchOnlyId}
+        description={t('settings.skills.switches.unlisted.description')}
+      >
+        <SkillSwitchesSection id={selectedSwitchOnlyId} name={selectedSwitchOnlyId} directory={settingsDirectory} divider={false} />
+      </SettingsPageLayout>
+    );
+  }
+
+  if ((!selectedSkillName && !skillDraft) || hasStaleSelection) {
     return (
       <div className="flex h-full items-center justify-center px-4">
         <div className="text-center text-muted-foreground">
@@ -593,17 +601,6 @@ const SkillsInstalledPage: React.FC = () => {
           <p className="typography-meta mt-1 opacity-75">{t('settings.skills.page.empty.description')}</p>
         </div>
       </div>
-    );
-  }
-
-  if (isUnlistedSwitchedOff && selectedSkillId) {
-    return (
-      <SettingsPageLayout
-        title={selectedSkillId}
-        description={t('settings.skills.switches.unlisted.description')}
-      >
-        <SkillSwitchesSection id={selectedSkillId} name={selectedSkillId} directory={settingsDirectory} divider={false} />
-      </SettingsPageLayout>
     );
   }
 
@@ -620,7 +617,7 @@ const SkillsInstalledPage: React.FC = () => {
   return (
     <>
       <SettingsPageLayout
-        title={isNewSkill ? t('settings.skills.page.title.newSkill') : selectedSkill?.name}
+        title={isNewSkill ? t('settings.skills.page.title.newSkill') : selectedSkillName}
         description={selectedSkill
           ? t('settings.skills.page.subtitle.skillLocation', {
               location: locationLabelText(locationValueFrom(selectedSkill.scope, selectedSkill.source)),

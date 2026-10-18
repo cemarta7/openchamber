@@ -19,6 +19,7 @@ import type { AttachedFile, SessionWorktreeAttachment } from "@/stores/types/ses
 import type { PermissionMode } from "@/stores/utils/permissionAutoAccept"
 import type { WorktreeMetadata } from "@/types/worktree"
 import { opencodeClient, type SkillMentions } from "@/lib/opencode/client"
+import { buildSkillMentionInstruction } from "@/lib/skillMentionInstruction"
 import { runtimeFetch } from "@/lib/runtime-fetch"
 import { useConfigStore } from "@/stores/useConfigStore"
 import { runAfterOpenCodeStartup } from "./opencode-startup-gate"
@@ -30,8 +31,7 @@ import { isDirectoryUnknown, useDirectoryStore } from "@/stores/useDirectoryStor
 import { useSessionFoldersStore } from "@/stores/useSessionFoldersStore"
 import { useSessionTabsStore } from "@/stores/useSessionTabsStore"
 import { selectCommandsForDirectory, useCommandsStore } from "@/stores/useCommandsStore"
-import { selectAvailableSkillsForDirectory, skillFallbackInstruction, useSkillsStore } from "@/stores/useSkillsStore"
-import { resolveSkillToken } from "@/stores/skillAvailability"
+import { selectAvailableSkillsForDirectory, useSkillsStore } from "@/stores/useSkillsStore"
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
 import { markPendingUserSendAnimation } from "@/lib/userSendAnimation"
 import { prepareUserMessageResume } from "./user-message-resume"
@@ -209,7 +209,7 @@ export async function routeMessage(params: {
   // The command route takes no skill attachments, so the skills named in a
   // command's arguments are named in an instruction as before.
   const skillInstructionContext = (): Array<{ text: string }> => {
-    const text = params.skills?.skills.length ? params.skills.instructionFor(params.skills.skills) : null
+    const text = params.skills?.names.length ? params.skills.instructionFor(params.skills.names) : null
     return text ? [{ text }] : []
   }
   const contextFiles = (params.additionalParts ?? []).flatMap((part) => part.files ?? [])
@@ -237,9 +237,8 @@ export async function routeMessage(params: {
     // them as prompt attachments rather than commands.
     let matchedCommand = selectCommandsForDirectory(useCommandsStore.getState(), requestDirectory)
       .find((c) => c.name === cmdName)
-    // Only a skill agents can use, named by a unique display name or its id:
-    // a switched-off skill or a name two skills share matches nothing here.
-    let matchedSkill = resolveSkillToken(selectAvailableSkillsForDirectory(useSkillsStore.getState(), requestDirectory), cmdName)
+    let matchedSkill = selectAvailableSkillsForDirectory(useSkillsStore.getState(), requestDirectory)
+      .find((s) => s.name === cmdName)
 
     // The command list is no longer pre-warmed at bootstrap (listing it
     // initializes the directory's whole MCP fleet), so a name known to neither
@@ -261,7 +260,8 @@ export async function routeMessage(params: {
         if (!skillsLoaded) {
           throw new Error(`Could not load skills to resolve /${cmdName}`)
         }
-        matchedSkill = resolveSkillToken(selectAvailableSkillsForDirectory(useSkillsStore.getState(), requestDirectory), cmdName)
+        matchedSkill = selectAvailableSkillsForDirectory(useSkillsStore.getState(), requestDirectory)
+          .find((s) => s.name === cmdName)
       }
     }
 
@@ -298,12 +298,11 @@ export async function routeMessage(params: {
     }
 
     if (matchedSkill) {
-      const invoked = { id: matchedSkill.id, name: cmdName }
       skills = {
-        skills: [invoked, ...(params.skills?.skills ?? []).filter((skill) => skill.id !== invoked.id)],
+        names: [...new Set([matchedSkill.name, ...(params.skills?.names ?? [])])],
         // Callers without a composer (multi-run) pass no builder; the skill
         // still has to be named when it cannot be attached.
-        instructionFor: params.skills?.instructionFor ?? skillFallbackInstruction(requestDirectory),
+        instructionFor: params.skills?.instructionFor ?? buildSkillMentionInstruction,
       }
     }
   }

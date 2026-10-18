@@ -38,8 +38,7 @@ export interface OutgoingMessage {
     /**
      * Skills the composer text names inline, deduped in order of appearance.
      * The send attaches them to the prompt (see `SkillMentions`); queued
-     * messages carry the instruction they were queued with, which delivery
-     * checks again (`withoutSwitchedOffQueuedSkills`).
+     * messages already carry the instruction they were queued with.
      */
     skillNames: string[];
     /** True when there is nothing worth sending. */
@@ -192,12 +191,9 @@ export function buildOutgoingMessage(
  * a queued message takes this context with it, so whoever delivers it later
  * sends exactly what the composer would have.
  */
-/** The skill instruction a queued message carries, with the skills it names. */
-export type QueuedSkillInstruction = { text: string; skills: Array<{ id: string; name: string }> };
-
 export function buildComposerContext(
     input: ComposerContextInput,
-    skillInstruction: QueuedSkillInstruction | null,
+    skillInstruction: string | null,
 ): QueuedContextPart[] {
     const context: QueuedContextPart[] = [];
     // An attached item is context only: no instructions guess what the user
@@ -250,7 +246,7 @@ export function buildComposerContext(
     }
 
     if (skillInstruction) {
-        context.push({ kind: 'instruction', text: skillInstruction.text, skills: skillInstruction.skills });
+        context.push({ kind: 'instruction', text: skillInstruction });
     }
 
     return context;

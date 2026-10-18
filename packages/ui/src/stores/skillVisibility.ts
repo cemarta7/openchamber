@@ -15,11 +15,9 @@
  * - `OPENCODE_DISABLE_EXTERNAL_SKILLS` drops `.claude` and `.agents` entirely;
  * - `OPENCODE_DISABLE_CLAUDE_CODE` (broad) or `..._CLAUDE_CODE_SKILLS`
  *   (specific) drops `.claude` only — `.agents` is always scanned;
- * - skills are deduplicated by id (the `SKILL.md` folder), last scan winning,
- *   and `.agents` is scanned after `.claude`, so `.agents` wins a collision.
- *   This matters here because `.claude/skills` entries are commonly symlinks
- *   back into `.agents/skills`. Two ids that share a display name are two
- *   skills and both stay.
+ * - names are deduplicated, last scan winning, and `.agents` is scanned after
+ *   `.claude`, so `.agents` wins a collision. This matters here because
+ *   `.claude/skills` entries are commonly symlinks back into `.agents/skills`.
  */
 
 type ExternalSkillFlags = {
@@ -29,7 +27,7 @@ type ExternalSkillFlags = {
   allDisabled: boolean;
 };
 
-type SkillLike = { id: string; path: string };
+type SkillLike = { name: string; path: string };
 
 const CLAUDE_ROOT = /(^|\/)\.claude\//;
 const AGENTS_ROOT = /(^|\/)\.agents\//;
@@ -62,19 +60,19 @@ export const filterSkillsByRuntimeFlags = <T extends SkillLike>(
     return true;
   });
 
-  // Deduplicate by id, preferring `.agents` — the same order OpenCode's
+  // Deduplicate by name, preferring `.agents` — the same order OpenCode's
   // last-write-wins scan produces.
-  const byId = new Map<string, T>();
+  const byName = new Map<string, T>();
   for (const skill of allowed) {
-    const existing = byId.get(skill.id);
+    const existing = byName.get(skill.name);
     if (!existing) {
-      byId.set(skill.id, skill);
+      byName.set(skill.name, skill);
       continue;
     }
     if (resolveSkillRoot(existing.path) === 'claude' && resolveSkillRoot(skill.path) === 'agents') {
-      byId.set(skill.id, skill);
+      byName.set(skill.name, skill);
     }
   }
 
-  return [...byId.values()];
+  return [...byName.values()];
 };

@@ -326,8 +326,7 @@ export const SkillsCatalogPage: React.FC<SkillsCatalogPageProps> = ({ mode, onMo
     for (const item of uninstallItems) {
       const directory = item.installed?.scope === 'project' ? settingsDirectory : null;
       const success = (item.installed?.scope !== 'project' || Boolean(directory))
-        // A catalog install lands in a folder named `skillName`: the skill's id.
-        && await deleteSkill({ id: item.skillName, name: item.frontmatterName ?? item.skillName }, directory);
+        && await deleteSkill(item.skillName, directory);
       if (success) {
         refreshedSources.add(item.sourceId);
         setSelectedSkillKeys((current) => {

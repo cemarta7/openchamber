@@ -1,13 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import {
   filterAvailableSkills,
-  knownSkillTokens,
   parseSkillPolicyRead,
   parseSkillPolicyWrite,
-  resolveSkillMentions,
-  resolveSkillToken,
-  skillTokenFor,
-  unlistedSwitchedOffIds,
+  switchOnlyIds,
   type SkillPolicyEntry,
   type SkillPolicyState,
 } from './skillAvailability';
@@ -45,45 +41,6 @@ describe('filterAvailableSkills', () => {
   });
 });
 
-describe('skill tokens', () => {
-  test('a shared display name names no skill; each id names its own', () => {
-    const skills = [web, api, audit];
-    expect(resolveSkillToken(skills, 'deploy')).toBeNull();
-    expect(resolveSkillToken(skills, 'deploy-api')).toBe(api);
-    expect(resolveSkillToken(skills, 'audit')).toBe(audit);
-    expect(resolveSkillToken(skills, 'code-audit')).toBe(audit);
-  });
-
-  test('an id names its own skill even when another skill shows it as its name', () => {
-    const named = { id: 'other-folder', name: 'review' };
-    const folder = { id: 'review', name: 'Review helper' };
-    expect(resolveSkillToken([named, folder], 'review')).toBe(folder);
-    // Each skill still gets a token that names it.
-    expect(skillTokenFor([named, folder], named)).toBe('other-folder');
-    expect(skillTokenFor([named, folder], folder)).toBe('review');
-  });
-
-  test('a display name that cannot be typed as one token is inserted as the id', () => {
-    const alpha = { id: 'alpha-skill', name: 'Alpha Display' };
-    expect(skillTokenFor([alpha, audit], alpha)).toBe('alpha-skill');
-    expect([...knownSkillTokens([alpha])]).toEqual(['alpha-skill']);
-  });
-
-  test('the picker inserts the id where the name is shared', () => {
-    const skills = [web, api, audit];
-    expect(skillTokenFor(skills, api)).toBe('deploy-api');
-    expect(skillTokenFor(skills, audit)).toBe('audit');
-    expect([...knownSkillTokens(skills)].sort()).toEqual(['audit', 'code-audit', 'deploy-api', 'deploy-web']);
-  });
-
-  test('mentions resolve once each, in order, leaving out shared names', () => {
-    expect(resolveSkillMentions([web, api, audit], ['audit', 'deploy', 'deploy-api', 'code-audit'])).toEqual([
-      { id: 'code-audit', name: 'audit' },
-      { id: 'deploy-api', name: 'deploy-api' },
-    ]);
-  });
-});
-
 describe('policy parsing', () => {
   test('an error and an unknown shape are not a state', () => {
     expect(parseSkillPolicyRead({ error: 'boom' })).toEqual({ kind: 'error', message: 'boom' });
@@ -98,13 +55,15 @@ describe('policy parsing', () => {
   });
 });
 
-describe('unlistedSwitchedOffIds', () => {
-  test('lists switched-off ids the inventory lacks', () => {
+describe('switchOnlyIds', () => {
+  test('lists every id the policy has that no row carries, on or off', () => {
     const policy = state({
       'deploy-web': entry('disabled', { global: true, project: false }),
       'built-in-review': entry('disabled', { global: null, project: true }),
-      'foreign-only': { ...entry('disabled'), decidedBy: { path: '/x.json', resource: 'skill:*', effect: 'deny', scope: 'other', owned: false } },
+      // A second id behind a display name another row shows.
+      'deploy-api': entry('enabled'),
     });
-    expect(unlistedSwitchedOffIds([web], policy)).toEqual(['built-in-review']);
+    expect(switchOnlyIds([web], policy)).toEqual(['built-in-review', 'deploy-api']);
+    expect(switchOnlyIds([web], null)).toEqual([]);
   });
 });

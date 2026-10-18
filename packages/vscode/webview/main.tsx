@@ -884,17 +884,12 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     const filePath = decodeURIComponent(skillsFilesMatch[2]);
     const verb = method;
     const body = await extractJsonBody(input, init, method);
-    // `?id=` selects the skill by OpenCode id; the host reads it as `skillId`.
-    const skillId = url.searchParams.get('id') ?? undefined;
-    const directory = getRequestDirectoryHint(url, input, init);
     try {
-      const data = await sendBridgeMessage('api:config/skills/files', {
-        method: verb,
-        name,
-        filePath,
-        content: body.content,
-        directory,
-        skillId,
+      const data = await sendBridgeMessage('api:config/skills/files', { 
+        method: verb, 
+        name, 
+        filePath, 
+        content: body.content 
       });
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
@@ -968,13 +963,8 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     const name = decodeURIComponent(encodedName);
     const verb = method;
     const body = await extractJsonBody(input, init, method);
-    const skillId = url.searchParams.get('id') ?? undefined;
-    // The located delete's `scope` and `source`; the host validates them.
-    const scope = url.searchParams.get('scope') ?? undefined;
-    const source = url.searchParams.get('source') ?? undefined;
-    const directory = getRequestDirectoryHint(url, input, init);
     try {
-      const data = await sendBridgeMessage('api:config/skills', { method: verb, name, body, directory, skillId, scope, source });
+      const data = await sendBridgeMessage('api:config/skills', { method: verb, name, body });
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

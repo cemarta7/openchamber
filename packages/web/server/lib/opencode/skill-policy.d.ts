@@ -44,26 +44,6 @@ export type SkillPolicyWriteResult = {
   policy: SkillPolicyState;
 };
 
-export type SkillPolicyScopeFile = { scope: SkillPolicyScope; path: string };
-
-export type SkillRenameCarry = {
-  owning: SkillPolicyScopeFile[];
-  carried: SkillPolicyScopeFile[];
-  undo: () => Promise<Array<SkillPolicyScopeFile & { error: string }>>;
-  finish: () => Promise<{
-    removed: SkillPolicyScopeFile[];
-    kept: SkillPolicyScopeFile[];
-    failed: Array<SkillPolicyScopeFile & { error: string }>;
-  }>;
-};
-
-export type SkillRenameSwitches = {
-  carried: SkillPolicyScopeFile[];
-  oldRuleRemoved: SkillPolicyScopeFile[];
-  oldRuleKept: SkillPolicyScopeFile[];
-  oldRuleCleanupFailed: Array<SkillPolicyScopeFile & { error: string }>;
-};
-
 export type SkillPolicyService = {
   readState: (input: {
     directory: string | null;
@@ -77,12 +57,6 @@ export type SkillPolicyService = {
     enabled: JsonValue | undefined;
     openCode: SkillPolicyOpenCodeReader;
   }) => Promise<SkillPolicyWriteResult>;
-  carryForRename: (input: {
-    directory: string | null;
-    oldId: string;
-    newId: string;
-    keepOldRules: boolean;
-  }) => Promise<SkillRenameCarry>;
 };
 
 export function skillPolicyLocation(version: string | null | undefined): SkillPolicyLocation | null;
@@ -90,6 +64,14 @@ export function isValidSkillPolicyId(id: JsonValue | undefined): id is string;
 export function skillIdFromPath(skillPath: string | null | undefined): string | null;
 export function listOwnedSkillDenies(config: JsonObject, location?: SkillPolicyLocation | null): string[];
 export function setSkillDisabled(config: JsonObject, id: string, disabled: boolean, location: SkillPolicyLocation): boolean;
+export function editSkillSwitchText(
+  text: string,
+  before: JsonObject,
+  desired: JsonObject,
+  id: string,
+  disabled: boolean,
+  location: SkillPolicyLocation,
+): string | null;
 export function findDecidingSkillStatement(
   entries: SkillPolicyConfigEntry[],
   id: string,
@@ -99,7 +81,6 @@ export function findDecidingSkillStatement(
 export function createSkillPolicyService<Config>(dependencies: {
   resolveTargets: (directory: string | null) => { global: string; project: string | null };
   readConfigFile: (filePath: string) => Config;
-  writeConfig: (config: Config, filePath: string) => void;
   samePath?: (left: string, right: string) => boolean;
   sleep?: (ms: number) => Promise<void>;
   confirmAttempts?: number;
@@ -113,14 +94,3 @@ export function handleSkillPolicyWrite(input: {
   openCode: SkillPolicyOpenCodeReader;
   listInstalledSkillIds: (directory: string | null) => Promise<Set<string>>;
 }): Promise<{ status: number; body: JsonObject }>;
-
-export function carryOwnedSkillDeny(config: JsonObject, oldId: string, newId: string): string[][];
-
-export function renameSkillKeepingSwitches(input: {
-  service: SkillPolicyService;
-  directory: string | null;
-  listSkillFiles: (directory: string | null) => Promise<Array<{ id?: string | null; path: string }>>;
-  rename: (
-    beforeMove: (paths: { oldPath: string; newPath: string }) => Promise<{ undo: () => Promise<void> } | null>,
-  ) => Promise<string | null>;
-}): Promise<{ newPath: string | null; switches: SkillRenameSwitches | null }>;

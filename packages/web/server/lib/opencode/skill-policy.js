@@ -28,12 +28,15 @@
  * a restriction the switch did not create stays in force and is reported
  * through `decidedBy` instead of being overridden with an allow.
  *
- * This module is pure apart from the injected file and OpenCode readers, so
- * the web server and the VS Code extension host share one implementation.
+ * This module is pure apart from the file system and the injected config and
+ * OpenCode readers, so the web server and the VS Code extension host share one
+ * implementation.
  */
 import fs from 'fs';
 import path from 'path';
+import { applyEdits, createScanner, findNodeAtLocation, modify, parse as parseJsonc, parseTree, SyntaxKind } from 'jsonc-parser';
 import { isBoolean, isPlainObject, isString } from '../shared/guards.js';
+import { writeFileAtomic } from './atomic-write.js';
 
 /** Scopes a switch can write. */
 const SKILL_POLICY_SCOPES = Object.freeze(['global', 'project']);
@@ -256,42 +259,119 @@ export function setSkillDisabled(config, id, disabled, location) {
   return changed;
 }
 
-/**
- * Rename support: next to every switch-owned deny for `oldId`, append the
- * switch's deny for `newId` in the same array, so the new rule has the format
- * (and so the OpenCode versions) the old one was written for. An array that
- * already holds the switch's deny for `newId` is left alone. User-written
- * rules are never read as owned and never copied. Returns the key paths it
- * appended to, in place.
- */
-export function carryOwnedSkillDeny(config, oldId, newId) {
-  if (!isPlainObject(config) || !isValidSkillPolicyId(oldId) || !isValidSkillPolicyId(newId)) return [];
-  const appended = [];
-  for (const keyPath of [EXPERIMENTAL_PATH, TOP_LEVEL_PATH]) {
-    const list = readPath(config, keyPath);
-    if (!Array.isArray(list) || !list.some((statement) => isOwnedStatement(statement, oldId))) continue;
-    if (list.some((statement) => isOwnedStatement(statement, newId))) continue;
-    list.push(ownedStatement(newId));
-    appended.push(keyPath);
-  }
-  return appended;
-}
+// Key order does not matter when a written file is compared with the config it should hold.
+const canonicalJson = (value) => JSON.stringify(value, (_key, entry) => (isPlainObject(entry)
+  ? Object.fromEntries(Object.keys(entry).sort().map((key) => [key, entry[key]]))
+  : entry));
 
-// Undo of `carryOwnedSkillDeny`: drop the last switch-owned deny for `id` from
-// each array it appended to. The arrays stay, as in `setSkillDisabled`.
-const removeCarriedDeny = (config, id, keyPaths) => {
-  let changed = false;
-  for (const keyPath of keyPaths) {
-    const parent = keyPath.length === 2 ? readPath(config, [keyPath[0]]) : config;
-    const key = keyPath.at(-1);
-    if (!isPlainObject(parent) || !Array.isArray(parent[key])) continue;
-    const index = parent[key].findLastIndex((statement) => isOwnedStatement(statement, id));
-    if (index === -1) continue;
-    parent[key].splice(index, 1);
-    changed = true;
+// The offset of the first comma token in [start, end), comments skipped; -1 when none.
+const commaBetween = (text, start, end) => {
+  const scanner = createScanner(text, false);
+  scanner.setPosition(start);
+  for (let token = scanner.scan(); token !== SyntaxKind.EOF && scanner.getTokenOffset() < end; token = scanner.scan()) {
+    if (token === SyntaxKind.CommaToken) return scanner.getTokenOffset();
   }
-  return changed;
+  return -1;
 };
+
+const lineStartOf = (text, offset) => text.lastIndexOf('\n', offset - 1) + 1;
+
+const isBlank = (value) => value.trim() === '';
+
+// Appends `value` to the list node as one item. On a list whose `]` has its
+// own line the item gets a line of its own, indented like the last item, so a
+// comment after the last item stays on that item's line.
+const appendItemEdits = (text, list, value, eol) => {
+  const last = list.children.at(-1);
+  const close = list.offset + list.length - 1;
+  const lastEnd = last.offset + last.length;
+  const trailingComma = commaBetween(text, lastEnd, close) !== -1;
+  const edits = trailingComma ? [] : [{ offset: lastEnd, length: 0, content: ',' }];
+  const closeLine = lineStartOf(text, close);
+  if (!isBlank(text.slice(closeLine, close))) {
+    edits.push({ offset: close, length: 0, content: `${trailingComma ? '' : ' '}${JSON.stringify(value)}` });
+    return edits;
+  }
+  const lastLine = lineStartOf(text, last.offset);
+  const indent = text.slice(lastLine, last.offset).match(/^[ \t]*/)[0];
+  const item = JSON.stringify(value, null, 2).split('\n').join(`${eol}${indent}`);
+  edits.push({ offset: closeLine, length: 0, content: `${indent}${item}${trailingComma ? ',' : ''}${eol}` });
+  return edits;
+};
+
+// Removes one list item and one separator comma next to it; comments around
+// it stay. The item's line goes too when nothing else is left on it.
+const removeItemEdits = (text, list, index) => {
+  const item = list.children[index];
+  const end = item.offset + item.length;
+  const next = list.children[index + 1];
+  const after = commaBetween(text, end, next ? next.offset : list.offset + list.length - 1);
+  let start = item.offset;
+  let stop = after === -1 ? end : after + 1;
+  const edits = [];
+  if (after === -1 && index > 0) {
+    const previous = list.children[index - 1];
+    const before = commaBetween(text, previous.offset + previous.length, item.offset);
+    if (before !== -1) edits.push({ offset: before, length: 1, content: '' });
+  }
+  const lineStart = lineStartOf(text, start);
+  const lineEnd = text.indexOf('\n', stop);
+  if (isBlank(text.slice(lineStart, start)) && lineEnd !== -1 && isBlank(text.slice(stop, lineEnd))) {
+    start = lineStart;
+    stop = lineEnd + 1;
+  }
+  edits.push({ offset: start, length: stop - start, content: '' });
+  return edits;
+};
+
+/**
+ * `setSkillDisabled` as edits to the file's own text, so the user's rules and
+ * comments stay where they are, inside the policy list too: off appends the
+ * marked deny to the version's list (creating the list when it is missing),
+ * on removes each marked deny for `id` as one list item. `before` is the
+ * file's config before the change and `desired` after it. Answers null when
+ * the edits do not parse back to `desired`; the caller then writes nothing.
+ */
+export function editSkillSwitchText(fileText, before, desired, id, disabled, location) {
+  // A byte order mark is set aside for the offsets and put back as it was.
+  const bom = fileText.charCodeAt(0) === 0xfeff ? fileText[0] : '';
+  const text = fileText.slice(bom.length);
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const listAt = (source, keyPath) => {
+    const node = findNodeAtLocation(parseTree(source, [], { allowTrailingComma: true }), keyPath);
+    return node?.type === 'array' ? node : null;
+  };
+  let edited = text;
+  if (disabled) {
+    const keyPath = writePath(location);
+    const list = listAt(edited, keyPath);
+    if (list?.children?.length) {
+      edited = applyEdits(edited, appendItemEdits(edited, list, ownedStatement(id), eol));
+    } else if (list) {
+      // An empty list: the item goes right after `[`, so a comment inside stays.
+      edited = applyEdits(edited, [{ offset: list.offset + 1, length: 0, content: JSON.stringify(ownedStatement(id)) }]);
+    } else {
+      edited = applyEdits(edited, modify(edited, keyPath, [ownedStatement(id)], {
+        formattingOptions: { tabSize: 2, insertSpaces: true, eol },
+      }));
+    }
+  } else {
+    for (const keyPath of enforcedPaths(location)) {
+      const values = readPath(before, keyPath);
+      if (!Array.isArray(values)) continue;
+      // From the end, so the items still to remove keep their index.
+      for (let index = values.length - 1; index >= 0; index -= 1) {
+        if (!isOwnedStatement(values[index], id)) continue;
+        const list = listAt(edited, keyPath);
+        if (!list?.children?.[index]) return null;
+        edited = applyEdits(edited, removeItemEdits(edited, list, index));
+      }
+    }
+  }
+  const errors = [];
+  const parsed = parseJsonc(edited, errors, { allowTrailingComma: true });
+  return errors.length === 0 && isPlainObject(parsed) && canonicalJson(parsed) === canonicalJson(desired) ? `${bom}${edited}` : null;
+}
 
 const isDocument = (entry) => isPlainObject(entry) && entry.type === 'document' && isPlainObject(entry.info);
 
@@ -379,7 +459,6 @@ const statusError = (status, code, message) => Object.assign(new Error(message),
  * @param {(directory: string | null) => { global: string, project: string | null }} dependencies.resolveTargets
  *   The config file each scope writes; project is `null` without a directory.
  * @param {(filePath: string) => object} dependencies.readConfigFile throws on invalid JSONC
- * @param {(config: object, filePath: string) => void} dependencies.writeConfig comment-preserving writer
  * @param {(left: string, right: string) => boolean} [dependencies.samePath]
  * @param {(ms: number) => Promise<void>} [dependencies.sleep]
  * @param {number} [dependencies.confirmAttempts] OpenCode reads after a write before reporting it unconfirmed
@@ -388,7 +467,6 @@ const statusError = (status, code, message) => Object.assign(new Error(message),
 export function createSkillPolicyService({
   resolveTargets,
   readConfigFile,
-  writeConfig,
   samePath = defaultSamePath,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   confirmAttempts = 8,
@@ -412,6 +490,42 @@ export function createSkillPolicyService({
       scopes.project = { path: targets.project, error: null };
     }
     return scopes;
+  };
+
+  const readText = (filePath) => (fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : null);
+
+  // What a file's text holds as config: a missing, empty or comment-only file
+  // holds none, as `readConfigFile` reads it.
+  const configOfText = (text) => {
+    if (text === null) return {};
+    const content = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+    return parseJsonc(content, [], { allowTrailingComma: true }) ?? {};
+  };
+
+  const conflict = () => statusError(409, 'conflict', 'The config file changed while the switch was saved; nothing was written. Try again.');
+
+  // Writes the switch into the text `text` was read as. Only the switch's own
+  // list items change; a missing or empty file gets the config written whole.
+  // Text the edit cannot carry, or a file that changed since `text` was read,
+  // writes nothing: the file is never rewritten from an older read. The backup
+  // matches the one the shared writer keeps.
+  const writeSwitch = (filePath, text, before, config, id, disabled, location) => {
+    const empty = text === null || text.trim() === '';
+    const next = empty
+      ? JSON.stringify(config, null, 2)
+      : editSkillSwitchText(text, before, config, id, disabled, location);
+    if (next === null) {
+      throw statusError(409, 'invalid_config', 'The switch could not be written without rewriting the rest of the config file; nothing was written.');
+    }
+    if (readText(filePath) !== text) throw conflict();
+    try {
+      if (text !== null) fs.copyFileSync(filePath, `${filePath}.openchamber.backup`);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      writeFileAtomic(filePath, next);
+    } catch (error) {
+      console.error(`Failed to write config file: ${filePath}`, error);
+      throw new Error('Failed to write OpenCode configuration');
+    }
   };
 
   // Each scope's parsed file; an unreadable one is `null` with its error on the scope.
@@ -497,19 +611,25 @@ export function createSkillPolicyService({
     if (!target) throw statusError(409, 'scope_unavailable', 'This directory has no separate project config');
 
     const { config: written, changed } = await serialize(() => {
+      // The text first: the change is made to what this text holds, and is
+      // written only while the file still holds this text.
+      let text;
       let config;
       try {
+        text = readText(target.path);
         config = readConfigFile(target.path);
       } catch (error) {
         throw statusError(409, error?.code === 'INVALID_JSONC' ? 'invalid_config' : 'read_failed', errorMessage(error));
       }
+      if (canonicalJson(configOfText(text)) !== canonicalJson(config)) throw conflict();
+      const before = structuredClone(config);
       let didChange;
       try {
         didChange = setSkillDisabled(config, id, !enabled, location);
       } catch (error) {
         throw statusError(409, 'invalid_config', errorMessage(error));
       }
-      if (didChange) writeConfig(config, target.path);
+      if (didChange) writeSwitch(target.path, text, before, config, id, !enabled, location);
       return { config, changed: didChange };
     });
 
@@ -537,157 +657,7 @@ export function createSkillPolicyService({
     };
   };
 
-  /**
-   * Keep a renamed skill off where a switch turned it off (#3075 decision):
-   * the switch-owned deny for `oldId` is carried to `newId` in this
-   * directory's scope files, the global one and the project one. No other
-   * project's config is opened, and user-written rules stay as they are.
-   *
-   * Called before the folder moves. Every scope file is read first; one that
-   * cannot be read stops the rename (409) before anything is written, since
-   * it may hold a switch's deny the rename would otherwise lose. Then the new
-   * deny is written next to the old one before the folder moves. OpenCode
-   * applies both through its own file watchers, which run asynchronously, so
-   * the order of the writes is not a guarantee of what OpenCode loads first:
-   * for a short time it may list the new id before it applies the deny. A
-   * failed write restores the files already written and stops the rename.
-   *
-   * Answers a handle: `owning` lists the scope files holding the old id's
- * switch rule, `carried` the ones the new rule was written to (a file that
- * already had the new id's switch rule is in `owning` only). `undo()` takes
- * the carried rules out again (the folder
-   * did not move); `finish()` removes the old id's switch-owned deny once the
-   * folder moved, unless `keepOldRules` (another copy of the old id is still
-   * installed and must stay off). Both report what they could not do instead
-   * of throwing.
-   */
-  const carryForRename = async ({ directory, oldId, newId, keepOldRules }) => {
-    if (!isValidSkillPolicyId(oldId) || !isValidSkillPolicyId(newId) || oldId === newId) {
-      return { owning: [], carried: [], undo: async () => [], finish: async () => ({ removed: [], kept: [], failed: [] }) };
-    }
-    const scopes = readScopes(directory);
-    const targets = SKILL_POLICY_SCOPES.flatMap((scope) => (scopes[scope] ? [{ scope, path: scopes[scope].path }] : []));
-
-    const owning = [];
-    for (const target of targets) {
-      let config;
-      try {
-        config = readConfigFile(target.path);
-      } catch (error) {
-        throw statusError(409, 'invalid_config', `The skill was not renamed: ${errorMessage(error)}`);
-      }
-      if (listOwnedSkillDenies(config).includes(oldId)) owning.push(target);
-    }
-
-    const carried = [];
-    const restore = () => serialize(() => {
-      const failed = [];
-      for (const entry of carried.splice(0).reverse()) {
-        try {
-          const config = readConfigFile(entry.path);
-          if (removeCarriedDeny(config, newId, entry.appended)) writeConfig(config, entry.path);
-        } catch (error) {
-          failed.push({ scope: entry.scope, path: entry.path, error: errorMessage(error) });
-        }
-      }
-      return failed;
-    });
-
-    try {
-      await serialize(() => {
-        for (const target of owning) {
-          const config = readConfigFile(target.path);
-          const appended = carryOwnedSkillDeny(config, oldId, newId);
-          if (appended.length === 0) continue;
-          writeConfig(config, target.path);
-          carried.push({ ...target, appended });
-        }
-      });
-    } catch (error) {
-      const failedRestore = await restore();
-      const leftover = failedRestore.length > 0 ? ` Restoring ${failedRestore.map((entry) => entry.path).join(', ')} also failed.` : '';
-      throw statusError(500, 'write_failed', `The skill was not renamed: its switch could not be kept off (${errorMessage(error)}).${leftover}`);
-    }
-
-    const carriedScopes = carried.map(({ scope, path: filePath }) => ({ scope, path: filePath }));
-    return {
-      owning: owning.map(({ scope, path: filePath }) => ({ scope, path: filePath })),
-      carried: carriedScopes,
-      undo: restore,
-      finish: () => serialize(() => {
-        const outcome = { removed: [], kept: [], failed: [] };
-        for (const target of owning) {
-          if (keepOldRules) {
-            outcome.kept.push(target);
-            continue;
-          }
-          try {
-            const config = readConfigFile(target.path);
-            if (setSkillDisabled(config, oldId, false, SKILL_POLICY_LOCATION.TOP_LEVEL)) writeConfig(config, target.path);
-            outcome.removed.push(target);
-          } catch (error) {
-            outcome.failed.push({ ...target, error: errorMessage(error) });
-          }
-        }
-        return outcome;
-      }),
-    };
-  };
-
-  return { readState, setEnabled, carryForRename };
-}
-
-/**
- * A skill rename that keeps the skill off where a switch turned it off. Both
- * runtimes call it around their own rename:
- * `rename(beforeMove)` runs the rename with the `beforeMove({ oldPath,
- * newPath })` hook it is handed, and `listSkillFiles(directory)` lists every
- * skill file on disk with its id (copies included), which decides whether
- * the old id's switch rule must stay for another copy.
- *
- * Resolves to `{ newPath, switches }`. `switches` is null when there was no
- * switch rule to carry (or the id did not change), else `{ carried,
- * oldRuleRemoved, oldRuleKept, oldRuleCleanupFailed }`, each a list of
- * `{ scope, path }` (`error` on a failed cleanup). A rename that fails throws;
- * the carried rules are taken out again when the folder did not move, and a
- * restore that failed is named in the error message.
- */
-export async function renameSkillKeepingSwitches({ service, directory, listSkillFiles, rename }) {
-  let carry = null;
-  let undoFailed = [];
-  const beforeMove = async ({ oldPath, newPath }) => {
-    const oldId = skillIdFromPath(oldPath);
-    const newId = skillIdFromPath(newPath);
-    if (!oldId || !newId || oldId === newId) return null;
-    const resolvedOld = path.resolve(oldPath);
-    const keepOldRules = (await listSkillFiles(directory))
-      .some((skill) => skill?.id === oldId && isString(skill.path) && path.resolve(skill.path) !== resolvedOld);
-    carry = await service.carryForRename({ directory, oldId, newId, keepOldRules });
-    return { undo: async () => { undoFailed = await carry.undo(); } };
-  };
-
-  let newPath;
-  try {
-    newPath = await rename(beforeMove);
-  } catch (error) {
-    if (undoFailed.length > 0 && error instanceof Error) {
-      error.message = `${error.message} The switch rules added for the new name could not be removed from ${undoFailed.map((entry) => entry.path).join(', ')}.`;
-    }
-    throw error;
-  }
-  if (!carry || carry.owning.length === 0) {
-    return { newPath, switches: null };
-  }
-  const outcome = await carry.finish();
-  return {
-    newPath,
-    switches: {
-      carried: carry.carried,
-      oldRuleRemoved: outcome.removed,
-      oldRuleKept: outcome.kept,
-      oldRuleCleanupFailed: outcome.failed,
-    },
-  };
+  return { readState, setEnabled };
 }
 
 /**
