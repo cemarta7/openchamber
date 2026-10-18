@@ -360,26 +360,15 @@ Bridge surface (`bridge-config-runtime.ts`), matching the web routes:
 - `api:config/warming` — `PUT /api/config/warming`; `{ enabled }` turns session
   warming on (`true`, keeping a hand-tuned object) or off (removes the key),
   written with the shared `writeWarmingEnabled` to the same file.
-- `api:config/skills` — the `GET` list adds `skillPolicy` and a skill `id` on
-  every entry, as the web route does, with the same `switchId` and the same id
-  inventory (OpenCode's list and every skill file `discoverSkills(dir, { ids })`
-  finds). The switch targets come from `getConfigPaths` without reading the files,
-  so an unreadable project file is that scope's error only. The webview sends the request's directory
-  (query or `x-opencode-directory`) for the list only, and the host reads that
-  directory, falling back to its working directory, so the policy state matches
-  the directory the switches write for. Other skill calls keep the host's
-  working directory.
-- `api:config/skill-policy` — `PUT /api/config/skill-policy`; payload
-  `{ body: { id, scope, enabled }, directory }`. The webview route
-  (`webview/main.tsx`) sends the request directory and answers the status and
-  body the host returns as `{ status, body }`. The host checks that `directory`
-  exists and is a directory, needs it for the `project` scope, and otherwise runs
-  the web server's `handleSkillPolicyWrite` with `skillPolicyService` from
-  `opencodeConfig.ts` and the OpenCode reader `createOpenCodePolicyReader` from
-  `bridge-settings-runtime.ts` (`GET /api/info`, `GET /api/config` with the
-  directory header). Semantics and the response contract are in
-  `packages/web/server/lib/opencode/DOCUMENTATION.md`, "Per-skill switches". A
-  malformed payload answers 400 `invalid_request`.
+- `api:config/skills` and `api:config/skill-policy` — the per-skill switches run
+  the web server's `skill-policy.js`, so semantics and the answer are the web
+  route's ("Per-skill switches" in `packages/web/server/lib/opencode/DOCUMENTATION.md`).
+  The host keeps its own config paths and `readConfigFile` (`opencodeConfig.ts`)
+  and its own OpenCode reader (`createOpenCodePolicyReader`), which rejects when
+  OpenCode cannot be read so a failure never reads as "no policies". The list and
+  the switch use the directory the webview names, so the policy state matches the
+  directory the switches write for; other skill calls keep the host's working
+  directory.
 
 ## Session archive and metadata
 

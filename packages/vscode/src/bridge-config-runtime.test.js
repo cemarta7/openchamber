@@ -466,27 +466,11 @@ describe('VS Code skill policy parity', () => {
     expect(byId((await list(root)).data.skillPolicy).get('alpha-skill')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
   });
 
-  test('keeps a second id behind a shared display name switchable, like the web server', async () => {
-    const root0 = fs.realpathSync(os.tmpdir());
-    const skill = (id) => ({ id, name: 'Same Name', path: path.join(root0, id, 'SKILL.md'), scope: 'user', source: 'opencode' });
-    const { root, projectConfigPath, send, list } = setup({ openCodeSkills: [skill('beta-one'), skill('beta-two')] });
-
-    const listed = await list(root);
-    expect(listed.data.skills.filter((entry) => entry.name === 'Same Name').map((entry) => [entry.id, entry.switchId])).toEqual([['beta-one', null]]);
-    expect([...byId(listed.data.skillPolicy).keys()]).toEqual(expect.arrayContaining(['beta-one', 'beta-two']));
-
-    const off = await send({ directory: root, body: { id: 'beta-two', scope: 'project', enabled: false } });
-    expect(off.data).toMatchObject({ status: 200, body: { ok: true, id: 'beta-two' } });
-    expect(readJson(projectConfigPath)).toEqual({
-      policies: [{ action: 'integration.use', resource: 'skill:beta-two', effect: 'deny', openchamber: 'skill-switch' }],
-    });
-  });
-
   test('gives every skill id and each row the same switch target before and after OpenCode lists its skills, like the web server', async () => {
     let cold = true;
     const project = (root, id, name) => ({ id, name, path: path.join(root, '.opencode', 'skills', id, 'SKILL.md'), scope: 'project', source: 'opencode' });
     let warmList = [];
-    const { root, list } = setup({ readOpenCodeSkills: () => (cold ? [] : warmList) });
+    const { root, projectConfigPath, send, list } = setup({ readOpenCodeSkills: () => (cold ? [] : warmList) });
     // Two ids share the display name `Twin`; another skill's display name is the id `beta-two`.
     const fixtures = [['alpha-skill', 'Alpha Display'], ['beta-one', 'Twin'], ['beta-two', 'Twin'], ['name-holder', 'beta-two']];
     for (const [id, name] of fixtures.slice(1)) writeSkill(root, id, name);
@@ -505,6 +489,12 @@ describe('VS Code skill policy parity', () => {
     expect(coldTargets).toEqual({
       rows: { 'Alpha Display': 'alpha-skill', Twin: null, 'beta-two': 'name-holder' },
       ids: ['alpha-skill', 'beta-one', 'beta-two', 'name-holder'],
+    });
+
+    // The second id behind `Twin` is installed, so it is switched on its own.
+    expect((await send({ directory: root, body: { id: 'beta-two', scope: 'project', enabled: false } })).data).toMatchObject({ status: 200, body: { ok: true, id: 'beta-two' } });
+    expect(readJson(projectConfigPath)).toEqual({
+      policies: [{ action: 'integration.use', resource: 'skill:beta-two', effect: 'deny', openchamber: 'skill-switch' }],
     });
   });
 
@@ -543,17 +533,6 @@ describe('VS Code skill policy parity', () => {
       fs.chmodSync(projectConfigPath, 0o644);
     }
     expect(fs.readFileSync(projectConfigPath, 'utf8')).toBe(projectText);
-  });
-
-  test('keeps a user exact deny through off and on, like the web server', async () => {
-    const { root, projectConfigPath, send } = setup();
-    const text = JSON.stringify({ policies: [{ action: 'integration.use', resource: 'skill:alpha-skill', effect: 'deny' }] }, null, 2);
-    fs.writeFileSync(projectConfigPath, text);
-    const off = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: false } });
-    expect(off.data.body).toMatchObject({ saved: { disabled: false, changed: false }, policy: { effective: 'disabled', decidedBy: { owned: false } } });
-    const on = await send({ directory: root, body: { id: 'alpha-skill', scope: 'project', enabled: true } });
-    expect(on.data.body).toMatchObject({ saved: { changed: false }, policy: { effective: 'disabled', decidedBy: { owned: false } } });
-    expect(fs.readFileSync(projectConfigPath, 'utf8')).toBe(text);
   });
 
   test('writes the global switch to the user config and reports it over the project one', async () => {

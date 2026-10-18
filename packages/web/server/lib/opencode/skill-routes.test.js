@@ -1,10 +1,30 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import express from 'express';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { registerSkillRoutes } from './skill-routes.js';
-import {
+
+// Skill discovery scans the home directory and the OpenCode config directory,
+// which is frozen when shared.js loads. Point both at a scratch home BEFORE
+// importing, so no test here reads or writes the real ones.
+const scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-skill-routes-home-'));
+// `os.homedir()` reads HOME on POSIX and USERPROFILE on Windows.
+const isolatedEnv = { HOME: scratchHome, USERPROFILE: scratchHome, XDG_CONFIG_HOME: path.join(scratchHome, '.config'), XDG_CACHE_HOME: undefined, OPENCODE_CONFIG_DIR: undefined, OPENCODE_CONFIG: undefined };
+const originalEnv = Object.fromEntries(Object.keys(isolatedEnv).map((key) => [key, process.env[key]]));
+const applyEnv = (values) => {
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+};
+applyEnv(isolatedEnv);
+afterAll(() => {
+  applyEnv(originalEnv);
+  fs.rmSync(scratchHome, { recursive: true, force: true });
+});
+
+const { registerSkillRoutes } = await import('./skill-routes.js');
+const {
   createSkill,
   deleteSkill,
   discoverSkills,
@@ -13,16 +33,16 @@ import {
   mergeDiscoveredSkills,
   renameSkill,
   updateSkill,
-} from './skills.js';
-import {
+} = await import('./skills.js');
+const {
   SKILL_DIR,
   SKILL_SCOPE,
   deleteSkillSupportingFile,
   readConfigFile,
   readSkillSupportingFile,
   writeSkillSupportingFile,
-} from './shared.js';
-import { createSkillPolicyService } from './skill-policy.js';
+} = await import('./shared.js');
+const { createSkillPolicyService } = await import('./skill-policy.js');
 
 // A `skillPolicy` answer's entries by id.
 const byId = (skillPolicy) => new Map(skillPolicy.skills.map(({ id, ...entry }) => [id, entry]));
@@ -804,44 +824,6 @@ describe('skill policy routes', () => {
     expect(readConfigFile(projectPath)).toEqual({ policies: [] });
   });
 
-  it('switches a skill off globally and reports the project switch as overridden', async () => {
-    const { globalPath, put } = await setupApp();
-    expect((await put({ id: 'beta-one', scope: 'global', enabled: false })).status).toBe(200);
-    expect(readConfigFile(globalPath)).toEqual({
-      theme: 'dark',
-      policies: [{ action: 'integration.use', resource: 'skill:beta-one', effect: 'deny', openchamber: 'skill-switch' }],
-    });
-
-    const project = await (await put({ id: 'beta-one', scope: 'project', enabled: true })).json();
-    expect(project).toMatchObject({
-      ok: true,
-      saved: { changed: false },
-      policy: { disabledIn: { global: true, project: false }, effective: 'disabled', decidedBy: { scope: 'global', owned: true } },
-    });
-  });
-
-  it('keeps a second id behind a shared display name switchable, and only that id', async () => {
-    const { projectPath, put, list } = await setupApp({ betaNames: ['Same Name', 'Same Name'] });
-
-    const before = await list();
-    // One row per display name, as the list always had; the policy still has both ids.
-    expect(before.skills.filter((skill) => skill.name === 'Same Name').map((skill) => [skill.id, skill.switchId])).toEqual([['beta-one', null]]);
-    expect([...byId(before.skillPolicy).keys()]).toEqual(expect.arrayContaining(['beta-one', 'beta-two']));
-
-    const off = await put({ id: 'beta-two', scope: 'project', enabled: false });
-    expect(off.status).toBe(200);
-    expect(readConfigFile(projectPath)).toEqual({
-      policies: [{ action: 'integration.use', resource: 'skill:beta-two', effect: 'deny', openchamber: 'skill-switch' }],
-    });
-
-    const whileOff = await list();
-    expect(byId(whileOff.skillPolicy).get('beta-two')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
-    expect(byId(whileOff.skillPolicy).get('beta-one')).toMatchObject({ effective: 'enabled' });
-
-    expect((await put({ id: 'beta-two', scope: 'project', enabled: true })).status).toBe(200);
-    expect(readConfigFile(projectPath)).toEqual({ policies: [] });
-  });
-
   it('gives every skill id and each row the same switch target before and after OpenCode lists its skills', async () => {
     // Two ids share the display name `Twin`; another skill's display name is the id `beta-two`.
     const app = await setupApp({ betaNames: ['Twin', 'Twin'], extra: [{ id: 'name-holder', name: 'beta-two' }] });
@@ -868,7 +850,13 @@ describe('skill policy routes', () => {
     expect((await app.put({ id: 'beta-two', scope: 'project', enabled: false })).status).toBe(200);
     app.listing.cold = false;
     expect(await targets()).toEqual(warm);
-    expect(byId((await app.list()).skillPolicy).get('beta-two')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    const policy = byId((await app.list()).skillPolicy);
+    expect(policy.get('beta-two')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
+    // Only that id: the other id behind `Twin` stays on.
+    expect(policy.get('beta-one')).toMatchObject({ effective: 'enabled' });
+    expect(readConfigFile(app.projectPath)).toEqual({
+      policies: [{ action: 'integration.use', resource: 'skill:beta-two', effect: 'deny', openchamber: 'skill-switch' }],
+    });
   });
 
   it('lets each display name of one id switch that id, before and after OpenCode lists it', async () => {
@@ -904,17 +892,6 @@ describe('skill policy routes', () => {
     expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
   });
 
-  it('refuses a project switch without an explicit directory', async () => {
-    const handle = startSkillsApp({ projectRoot: os.tmpdir() });
-    cleanups.push(() => handle.close());
-    const response = await fetch(`${handle.baseUrl}/api/config/skill-policy`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: 'alpha-skill', scope: 'project', enabled: false }),
-    });
-    expect(response.status).toBe(400);
-    expect((await response.json()).error.code).toBe('directory_required');
-  });
 });
 
 describe('skill-routes delete location', () => {

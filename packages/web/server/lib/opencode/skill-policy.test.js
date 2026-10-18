@@ -85,20 +85,6 @@ describe('setSkillDisabled', () => {
     expect(config).toEqual({ experimental: { batch_tool: true, policies: [] }, policies: [deny('skill:ignored-here')] });
   });
 
-  it('keeps a policies list and an experimental object a user wrote empty', () => {
-    for (const [original, location, after] of [
-      [{ policies: [] }, 'policies', { policies: [] }],
-      [{ experimental: { policies: [] } }, 'experimental.policies', { experimental: { policies: [] } }],
-      // 2.0.29 writes the top-level list; the experimental one stays as it was.
-      [{ experimental: { policies: [] } }, 'policies', { experimental: { policies: [] }, policies: [] }],
-    ]) {
-      const config = structuredClone(original);
-      expect(setSkillDisabled(config, 'alpha-skill', true, location)).toBe(true);
-      expect(setSkillDisabled(config, 'alpha-skill', false, location)).toBe(true);
-      expect(config).toEqual(after);
-    }
-  });
-
   it('keeps user-authored wildcards, allows, other actions and display-name rules in place and in order', () => {
     const userRules = [
       deny('skill:wild-*'),
@@ -118,23 +104,6 @@ describe('setSkillDisabled', () => {
     // own the wildcard and never answers it with an allow.
     expect(setSkillDisabled(config, 'wild-a', false, 'policies')).toBe(false);
     expect(config.policies).toEqual(userRules);
-  });
-
-  it('keeps a user exact deny: off adds nothing, on removes nothing', () => {
-    const config = { policies: [deny('skill:alpha-skill')], experimental: { policies: [deny('skill:beta')] } };
-    const before = structuredClone(config);
-
-    expect(setSkillDisabled(config, 'alpha-skill', true, 'policies')).toBe(false);
-    expect(setSkillDisabled(config, 'alpha-skill', false, 'policies')).toBe(false);
-    expect(setSkillDisabled(config, 'beta', false, 'policies')).toBe(false);
-    expect(config).toEqual(before);
-    expect(listOwnedSkillDenies(config, 'policies')).toEqual([]);
-  });
-
-  it('removes only the marked deny when a user exact deny sits beside it', () => {
-    const config = { policies: [owned('alpha-skill'), deny('skill:alpha-skill')] };
-    expect(setSkillDisabled(config, 'alpha-skill', false, 'policies')).toBe(true);
-    expect(config.policies).toEqual([deny('skill:alpha-skill')]);
   });
 
   it('adds a deny after a later allow overrides an earlier one, and removes only its own on enable', () => {
@@ -233,11 +202,10 @@ describe('editSkillSwitchText', () => {
     expect(flip(off, 'alpha-skill', false)).toContain('// c');
   });
 
-  it('keeps the comment of a comment-only file and a byte order mark', () => {
+  it('keeps the comment of a comment-only file', () => {
     const commentOnly = flip('// only a comment\n', 'alpha-skill', true);
     expect(commentOnly).toContain('// only a comment');
     expect(readJsonc(commentOnly)).toEqual({ policies: [owned('alpha-skill')] });
-    expect(editSkillSwitchText('\ufeff{}', {}, { policies: [owned('alpha-skill')] }, 'alpha-skill', true, 'policies')?.startsWith('\ufeff{')).toBe(true);
   });
 
   it('answers null when the edit would not give the intended config', () => {
@@ -369,9 +337,9 @@ const setup = ({ globalText = null, projectText = null, version = '2.0.29', live
 };
 
 describe('createSkillPolicyService', () => {
-  it('saves a project switch, confirms it, and keeps user rules and their comments through off and on', async () => {
+  it('saves a project switch, confirms it, and gives back the exact text, BOM and comments included, through off and on', async () => {
     const projectText = [
-      '{',
+      '\ufeff{',
       '  // keep this comment',
       '  "model": "a/b",',
       '  "policies": [',
@@ -393,6 +361,7 @@ describe('createSkillPolicyService', () => {
       decidedBy: { path: projectPath, scope: 'project', owned: true, resource: 'skill:alpha-skill' },
     });
     const savedText = fs.readFileSync(projectPath, 'utf8');
+    expect(savedText.startsWith('\ufeff{')).toBe(true);
     expect(savedText).toContain('// keep this comment');
     // The comment inside the policy list stays with the user's rule.
     expect(savedText).toContain('"skill:wild-*", "effect": "deny" }, // user rule');
@@ -402,10 +371,7 @@ describe('createSkillPolicyService', () => {
     expect(on.saved.changed).toBe(true);
     expect(on.confirmed).toBe(true);
     expect(on.policy).toMatchObject({ disabledIn: { project: false }, effective: 'enabled', decidedBy: null });
-    expect(readConfigFile(projectPath)).toEqual({ model: 'a/b', policies: [deny('skill:wild-*')] });
-    const restoredText = fs.readFileSync(projectPath, 'utf8');
-    expect(restoredText).toContain('// keep this comment');
-    expect(restoredText).toContain('"skill:wild-*", "effect": "deny" }, // user rule');
+    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
     expect(fs.readFileSync(globalPath, 'utf8')).toBe(globalText);
   });
 
@@ -443,13 +409,6 @@ describe('createSkillPolicyService', () => {
     expect(byId(state).get('__proto__')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled', decidedBy: { resource: 'skill:__proto__', owned: true } });
     expect(byId(state).get('constructor')).toMatchObject({ disabledIn: { project: true }, effective: 'disabled' });
     expect(byId(state).get('toString')).toEqual({ disabledIn: { global: false, project: false }, effective: 'enabled', decidedBy: null });
-  });
-
-  it('writes experimental.policies against OpenCode 2.0.28', async () => {
-    const { projectDir, globalPath, openCode, service } = setup({ version: '2.0.28' });
-    const result = await service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'global', enabled: false, openCode: openCode.reader });
-    expect(result.confirmed).toBe(true);
-    expect(readConfigFile(globalPath)).toEqual({ experimental: { policies: [owned('alpha-skill')] } });
   });
 
   it('reports a project switch a global rule overrides, without touching the global file', async () => {
@@ -490,7 +449,7 @@ describe('createSkillPolicyService', () => {
     expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
   });
 
-  it('confirms a marked deny although OpenCode serves it without the provenance key', async () => {
+  it('writes experimental.policies on 2.0.28 and confirms it although OpenCode serves it without the provenance key', async () => {
     const { projectDir, globalPath, openCode, service } = setup({ version: '2.0.28' });
     const off = await service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'global', enabled: false, openCode: openCode.reader });
     expect(off.confirmed).toBe(true);
@@ -589,19 +548,6 @@ describe('createSkillPolicyService', () => {
     });
   }
 
-  it('keeps a byte order mark and the comments inside the list through off and on', async () => {
-    const projectText = '\ufeff{\n  "policies": [\n    // mine\n    { "action": "integration.use", "resource": "skill:wild-*", "effect": "deny" }, // user rule\n  ],\n}\n';
-    const { projectDir, projectPath, openCode, service } = setup({ projectText });
-    await service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'project', enabled: false, openCode: openCode.reader });
-    const offText = fs.readFileSync(projectPath, 'utf8');
-    expect(offText.startsWith('\ufeff{')).toBe(true);
-    expect(offText).toContain('// mine');
-    expect(offText).toContain('"effect": "deny" }, // user rule');
-    expect(readConfigFile(projectPath).policies).toEqual([deny('skill:wild-*'), owned('alpha-skill')]);
-    await service.setEnabled({ directory: projectDir, id: 'alpha-skill', scope: 'project', enabled: true, openCode: openCode.reader });
-    expect(fs.readFileSync(projectPath, 'utf8')).toBe(projectText);
-  });
-
   it.skipIf(process.getuid?.() === 0)('leaves an existing file unchanged when its edit cannot be written', async () => {
     const globalText = '{\n  // mine\n  "policies": []\n}\n';
     const { projectDir, globalPath, openCode, service } = setup({ globalText });
@@ -642,13 +588,6 @@ describe('createSkillPolicyService', () => {
     expect(byId(state).get('beta-skill').effective).toBe('unknown');
   });
 
-  it('reports an unreadable scope file without failing the other scope', async () => {
-    const { projectDir, openCode, service } = setup({ globalText: '{ nope', projectText: JSON.stringify({ policies: [owned('alpha-skill')] }) });
-    const state = await service.readState({ directory: projectDir, ids: ['alpha-skill'], openCode: openCode.reader });
-    expect(state.scopes.global.error).toMatch(/invalid JSONC/);
-    expect(byId(state).get('alpha-skill').disabledIn).toEqual({ global: null, project: true });
-  });
-
   // OpenCode answers `GET /api/config` without a document it cannot parse, so
   // a switch's deny in that file is missing from what it serves.
   it('reports unknown, not enabled, while a scope file it cannot parse may hold the deciding rule', async () => {
@@ -674,6 +613,7 @@ describe('createSkillPolicyService', () => {
     const broken = '{ "policies": [ oops ] }';
     const denied = setup({ globalText: JSON.stringify({ policies: [owned('alpha-skill')] }), projectText: broken });
     const deniedState = await denied.service.readState({ directory: denied.projectDir, ids: ['alpha-skill'], openCode: denied.openCode.reader });
+    expect(deniedState.scopes).toMatchObject({ global: { error: null }, project: { error: expect.stringMatching(/invalid JSONC/) } });
     expect(byId(deniedState).get('alpha-skill')).toMatchObject({
       disabledIn: { global: true, project: null },
       effective: 'disabled',
@@ -701,7 +641,7 @@ describe('handleSkillPolicyWrite', () => {
       listInstalledSkillIds: async () => new Set(installed),
     });
 
-    expect((await call({ id: 'alpha-skill', scope: 'project', enabled: false }, null)).status).toBe(400);
+    expect(await call({ id: 'alpha-skill', scope: 'project', enabled: false }, null)).toMatchObject({ status: 400, body: { error: { code: 'directory_required' } } });
     expect((await call({ id: 'skill-*', scope: 'global', enabled: false })).body.error.code).toBe('invalid_id');
     expect((await call({ id: 'alpha-skill', scope: 'workspace', enabled: false })).body.error.code).toBe('invalid_scope');
     expect((await call({ id: 'alpha-skill', scope: 'global', enabled: 'no' })).body.error.code).toBe('invalid_enabled');

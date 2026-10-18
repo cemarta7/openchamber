@@ -304,9 +304,10 @@ const jsonResponse = (json: string) => new Response(json, {
   headers: { 'Content-Type': 'application/json' },
 });
 
+// The display names differ from the folder ids: the policy keys on the id.
 const deployWeb = {
   id: 'deploy-web',
-  name: 'deploy-web',
+  name: 'Deploy Web',
   path: `${activeProjectPath}/.agents/skills/deploy-web/SKILL.md`,
   scope: 'project',
   source: 'agents',
@@ -315,7 +316,7 @@ const deployWeb = {
 };
 const deployApi = {
   id: 'deploy-api',
-  name: 'deploy-api',
+  name: 'Deploy API',
   path: '/shared/skills/deploy-api/SKILL.md',
   scope: 'user',
   source: 'opencode',

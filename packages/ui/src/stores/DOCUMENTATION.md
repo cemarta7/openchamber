@@ -655,42 +655,27 @@ the chat, the session list and the file tree.
 Failure is still not empty: a failed load restores that directory's previous
 list rather than clearing it.
 
-Each skill carries OpenCode's skill `id`, the folder of `SKILL.md`, which the
-frontmatter `name` can differ from. The per-skill switches and the policy state
-key on it; selection and the skill routes keep using the display name. A
-row's switch names its `switchId` (null when several installed ids share its
-display name; see `packages/web/server/lib/opencode/DOCUMENTATION.md`). An id
-with no row of its own (`switchOnlyIds`) is selected through
-`selectedSwitchOnlyId`, which is not persisted and clears, and is cleared by,
-`selectedSkillName`.
+The per-skill switches and the policy state key on OpenCode's skill `id`;
+selection and the skill routes keep the display name. An id without a row
+switch is selected through `selectedSwitchOnlyId`, which is kept apart from
+`selectedSkillName` so an id that equals another skill's name never opens that
+skill.
 
-`skillsByDirectory` is the installed inventory: it still holds a skill a policy
-switches off, which Settings lists with its switches. `availableSkillsByDirectory`
-(and its ambient mirror `availableSkills`) is that list minus the skills the
-directory's `skillPolicy` reports `effective: 'disabled'`, derived in
-`commitDirectory` whenever either changes; the composer, the `$` picker, draft
-starters, `/name` routing and the work-status count read it. Only the policy
-says "off" (`stores/skillAvailability.ts`): an `unknown` state, a skill the
+`skillsByDirectory` is the installed inventory and still holds switched-off
+skills. `availableSkillsByDirectory` (and its ambient mirror `availableSkills`)
+leaves out only skills the directory's policy reports `effective: 'disabled'`;
+everything agents are offered or sent reads it. An `unknown` state, a skill the
 policy does not mention, a cold empty OpenCode list or a failed read keeps a
-skill available. `policyByDirectory` keeps the last state read; a failed policy
-read keeps that state and records the error beside it. A state's `skills` is a
-`Map` by id, read from the server's list, so an id such as `__proto__` is kept.
+skill available. A failed policy read keeps the last state and records the
+error beside it.
 
-`setSkillEnabled` writes one scope's switch through `PUT
-/api/config/skill-policy` for an explicit directory, the Settings one, which can
-differ from the app's. One write per skill and directory runs at a time
-(`switchStatus` holds `pending`). Nothing changes before the answer: a failed
-write leaves the shown policy as it was and records `failed` with the server's
-message; a success replaces the skill's policy with the one the server answers,
-and `confirmed: false` records `unconfirmed` until the next fresh policy read
-for that directory. Only a confirmed write re-reads the lists.
-
-Every switch write and every `invalidateSkillsLoadCache` bumps a per-directory
-revision. A load records the revision when its read starts and reads again
-instead of committing when it changed meanwhile, so an answer started before a
-write never lands over it. A global switch bumps every directory read so far.
-The ambient mirrors follow the directory the app is on when a load commits, not
-when it started.
+`setSkillEnabled` changes nothing before the server answers, runs one write per
+skill and directory at a time, and records a failed or unconfirmed write in
+`switchStatus`. Every switch write and every `invalidateSkillsLoadCache` bumps a
+per-directory revision, and a load whose revision changed while it was in flight
+reads again instead of committing, so a read started before a write never lands
+over it. The ambient mirrors follow the directory the app is on when a load
+commits.
 
 ## Selector Rules
 

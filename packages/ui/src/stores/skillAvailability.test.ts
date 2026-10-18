@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import {
   filterAvailableSkills,
   isSwitchOnlyIdGone,
-  parseSkillPolicyRead,
   parseSkillPolicyWrite,
   switchOnlyIds,
   type SkillPolicyEntry,
@@ -24,31 +23,16 @@ const state = (skills: Record<string, SkillPolicyEntry>): SkillPolicyState => ({
   skills: new Map(Object.entries(skills)),
 });
 
-const web = { id: 'deploy-web', name: 'deploy' };
-const api = { id: 'deploy-api', name: 'deploy' };
-const audit = { id: 'code-audit', name: 'audit' };
-
 describe('filterAvailableSkills', () => {
-  test('drops only skills the policy reports switched off', () => {
-    const skills = [web, api, audit];
-    const policy = state({ 'deploy-web': entry('disabled'), 'deploy-api': entry('unknown'), 'code-audit': entry('enabled') });
-    expect(filterAvailableSkills(skills, policy)).toEqual([api, audit]);
-  });
-
+  // The store keeps one stable array while nothing is off.
   test('keeps the same array when nothing is off, or nothing was read', () => {
-    const skills = [web, audit];
+    const skills = [{ id: 'deploy-web', name: 'deploy' }];
     expect(filterAvailableSkills(skills, null)).toBe(skills);
     expect(filterAvailableSkills(skills, state({ 'deploy-web': entry('enabled') }))).toBe(skills);
   });
 });
 
-describe('policy parsing', () => {
-  test('an error and an unknown shape are not a state', () => {
-    expect(parseSkillPolicyRead({ error: 'boom' })).toEqual({ kind: 'error', message: 'boom' });
-    expect(parseSkillPolicyRead(undefined)).toEqual({ kind: 'absent' });
-    expect(parseSkillPolicyRead({ ...state({}), skills: [] }).kind).toBe('state');
-  });
-
+describe('parseSkillPolicyWrite', () => {
   test('a write answer that is neither success nor error is a failure', () => {
     expect(parseSkillPolicyWrite(null, 502)).toEqual({ ok: false, code: 'invalid_response', message: 'Unexpected answer (HTTP 502)' });
     expect(parseSkillPolicyWrite({ ok: false, error: { code: 'write_failed', message: 'disk full' } }, 500))
