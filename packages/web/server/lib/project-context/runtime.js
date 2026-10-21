@@ -84,8 +84,7 @@ const sanitizeNotes = (value, now) => {
 
     const createdAt = Number.isFinite(entry.createdAt) && entry.createdAt >= 0 ? entry.createdAt : now;
     const origin = sanitizeNoteOrigin(entry.origin);
-    const planId = asNonEmptyString(entry.planId);
-    result.push({
+    result.push(withLinks({
       id,
       body,
       createdAt,
@@ -93,8 +92,7 @@ const sanitizeNotes = (value, now) => {
       source: NOTE_SOURCES.has(entry.source) ? entry.source : 'manual',
       pinned: entry.pinned === true,
       ...(origin ? { origin } : {}),
-      ...(planId ? { planId } : {}),
-    });
+    }, { planId: asNonEmptyString(entry.planId) }));
   }
 
   return result.sort((a, b) => b.createdAt - a.createdAt);
@@ -111,18 +109,15 @@ const sanitizeTodos = (value, now) => {
     const text = clampLength(asNonEmptyString(entry.text) || '', PROJECT_TODO_TEXT_MAX_LENGTH);
     if (!id || !text || seen.has(id)) continue;
     seen.add(id);
-    const planId = asNonEmptyString(entry.planId);
     const dependsOn = Array.isArray(entry.dependsOn)
-      ? [...new Set(entry.dependsOn.map(asNonEmptyString).filter(Boolean))].slice(0, PROJECT_TODO_MAX_ITEMS)
+      ? [...new Set(entry.dependsOn.map(asNonEmptyString).filter(Boolean))]
       : [];
-    result.push({
+    result.push(withLinks({
       id,
       text,
       completed: entry.completed === true,
       createdAt: Number.isFinite(entry.createdAt) && entry.createdAt >= 0 ? entry.createdAt : now,
-      ...(planId ? { planId } : {}),
-      ...(dependsOn.length ? { dependsOn } : {}),
-    });
+    }, { planId: asNonEmptyString(entry.planId), dependsOn }));
   }
   return result;
 };
@@ -277,7 +272,8 @@ const withLinks = (record, { planId, dependsOn }) => {
  * Refuses a todo list that deletes a todo another one depended on before the
  * write, or that holds a new dependency on a missing todo, a dependency across
  * plans or outside any plan, or a cycle. A dependency already stored on a todo
- * that is gone stays: only new references must exist.
+ * that is gone stays while its todo keeps its plan: only new references must
+ * exist.
  */
 const assertTodoGraph = (previous, next) => {
   const nextById = new Map(next.map((todo) => [todo.id, todo]));
@@ -292,11 +288,13 @@ const assertTodoGraph = (previous, next) => {
     for (const dependencyId of todo.dependsOn ?? []) {
       if (dependencyId === todo.id) throw mutationError('A todo cannot depend on itself', 400);
       const dependency = nextById.get(dependencyId);
-      if (!dependency) {
-        if (previousById.get(todo.id)?.dependsOn?.includes(dependencyId)) continue;
+      const before = previousById.get(todo.id);
+      if (!dependency && !before?.dependsOn?.includes(dependencyId)) {
         throw mutationError(`Dependency ${dependencyId} not found`, 400);
       }
-      if (!todo.planId || dependency.planId !== todo.planId) {
+      // A stored edge to a vanished todo stays only while its todo keeps its plan.
+      const dependencyPlanId = dependency ? dependency.planId : before.planId;
+      if (!todo.planId || dependencyPlanId !== todo.planId) {
         throw mutationError('A dependency must link two todos of the same plan', 400);
       }
     }

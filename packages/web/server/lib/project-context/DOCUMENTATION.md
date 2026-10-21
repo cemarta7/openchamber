@@ -113,7 +113,9 @@ Every todo write validates the full candidate list under the project lock:
   the first edge and fails.
 - A new `planId` must name a plan in this owner, and a new dependency an
   existing todo (`400`). A stored reference whose shared plan file or todo
-  vanished outside the API stays as it is; nothing repairs it.
+  vanished outside the API stays as it is; nothing repairs it. A todo that
+  keeps a dependency on a vanished todo also keeps its plan until that
+  dependency is removed.
 - A todo that another todo depends on before the write cannot be deleted
   (`409`), by the item route or the whole-list write, even when the same
   request removes the dependent todo or its edge. The caller removes the
