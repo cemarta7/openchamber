@@ -37,7 +37,17 @@ other.
   and makes small edits, such as ticking a step, with its own file tools, and
   `save` creates or replaces one whole. `expected` guards a replacement only:
   a save that carries it without an `id` is a 400, never a silently ignored
-  conflict check. The actions answer `403` while
+  conflict check. Notes and todos carry `planId`, todos `dependsOn`, with
+  the storage rules of `../project-context/DOCUMENTATION.md`: an update may
+  send only those fields, an omitted one keeps its value, `null` and `[]`
+  clear. `list` narrows notes, todos and plans to one `planId`; `ready: true`
+  keeps only unfinished todos whose dependencies all exist and are completed,
+  judged on the whole stored list before the plan filter. Readiness is never
+  stored. A plan save with `sessionId` sets or replaces (`null` clears) the
+  existing plan's session link; it carries no markdown, and a call with
+  both, or without an `id`, is refused before anything is written. That
+  input names the plan's session and never a note's origin. A field the
+  tool declares for another kind is a 400. The actions answer `403` while
   `agentKnowledgeToolEnabled` is `false`. `show` checks the plan exists and
   sends `openchamber:plan-open-request` to every connected window, like
   `file.open`; every layout opens the plan the way a click in the Project

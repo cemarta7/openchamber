@@ -183,6 +183,10 @@ const KNOWLEDGE_PARAMETER_PROPERTIES = {
   id: { type: 'string', description: 'From list or save; omit on save to create' },
   body: { type: 'string', description: 'Note at most 3000 characters, todo 1000, plan (whole markdown) 200000' },
   completed: { type: 'boolean', description: 'Todo state; false reopens it' },
+  planId: { type: ['string', 'null'], description: 'The plan a note or todo belongs to; null unlinks, omission keeps it. On list: only that plan and its notes and todos' },
+  dependsOn: { type: 'array', items: { type: 'string' }, description: 'Todo ids of the same plan to complete first; [] clears, omission keeps them. Remove a dependency before deleting its todo' },
+  ready: { type: 'boolean', description: 'On list: only unfinished todos whose dependencies are all completed' },
+  sessionId: { type: ['string', 'null'], description: 'Existing plan, saved without body: the session linked to it; null clears. Links only, starts nothing' },
   expected: { type: 'string', description: "The text as you last read it; the save fails if it changed since. Then refresh (knowledge.list for a note's body, your file tools for a plan) and retry with the same id and the fresh text" },
 };
 
@@ -247,8 +251,9 @@ const WEB_TOOL_DESCRIPTION = "OpenChamber's browser panel, to check your work by
 
 const MEMORY_TOOL_DESCRIPTION = "Memory that persists across sessions. One fact per entry. Save what code and docs do not show: a decision and its reason, a rejected alternative, a deliberate \"leave this as it is\", the user's corrections and preferences, a hard-won pointer. Never one-off task state, secrets or credentials, or what the user asked you not to keep; what the user explicitly asks you to remember, save. Put project conventions in project scope.";
 
-const KNOWLEDGE_TOOL_DESCRIPTION = "The project's Notes, Todos and Plans, shown in OpenChamber's Project knowledge panel and shared by its sessions. One action per call; list returns everything. "
+const KNOWLEDGE_TOOL_DESCRIPTION = "The project's Notes, Todos and Plans, shown in OpenChamber's Project knowledge panel and shared by its sessions. One action per call; list returns everything unless planId or ready narrows it. "
   + "Notes: short facts the user wants at hand; your own learnings go to memory. Todos: the user's backlog; add one when asked or when you stop with work left, never for the steps of your current task. "
+  + "A note or todo may belong to a plan (planId), and a todo may depend on other todos of that plan (dependsOn); list with ready for the todos that can start. "
   + "Plans: markdown files. list gives their paths; read and edit them with your file tools, save creates or replaces one whole. A plan starts with a # title, then a ## Steps heading with one - [ ] item per coarse step, then the detail. A plan written for the user: save, show, wait for their comments; they send it to a session. Implementing one: tick each step (- [x]) as you finish it and change nothing else unless asked; never drop a constraint. "
   + "Replacing a note or plan: pass expected. If the save fails on it, refresh and retry the save with the same id.";
 
