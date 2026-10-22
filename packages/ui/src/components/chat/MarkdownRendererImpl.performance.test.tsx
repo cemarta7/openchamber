@@ -365,13 +365,15 @@ afterAll(() => {
 describe('MarkdownRenderer DOM mount performance contract', () => {
   test('skips email and numeric suffix probes while preserving file references', async () => {
     const rejected = [
-      'user@gmail.com', '@someone.ts', '@scope/package.json', 'src/user@host.ts',
+      'user@gmail.com', '@someone.ts',
       'gpt-5.4', '93.00', '3.49s', 'v1.2.3', '3.1.4', 'ls.1',
       'https://example.com/file.ts',
     ];
     const accepted = [
       '.env', '.config.json', './src/entry.ts', '../src/parent.ts', '/repo/absolute.ts',
       'path with spaces/file name.ts', 'file.test.ts', 'my-file.tar.gz', 'a-b.c',
+      // A slash makes an `@` part of a path: scoped packages and pnpm stores.
+      '@scope/package.json', 'node_modules/@types/node/index.d.ts',
       'shader.frag2', 'component.d-ts', 'README',
       // These remain ambiguous with filenames that have letter-leading extensions.
       '150.ms', 'accounts.google.com', 'client.messages.create', 'datetime.utcnow',

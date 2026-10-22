@@ -890,6 +890,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
+    id: 'git.github-enterprise-connect',
+    page: 'integrations',
+    titleKey: 'settings.github.enterprise.instance.customLabel',
+    descriptionKey: 'settings.github.enterprise.instance.customInfo',
+    keywords: ['github', 'enterprise', 'ghe', 'instance', 'connect', 'add account', 'pat', 'token', 'gh cli'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
     id: 'routing.token',
     page: 'routing',
     titleKey: 'settings.routing.token.label',

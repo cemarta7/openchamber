@@ -18,6 +18,7 @@ import {
 import { resolveNpmRegistryRequest } from '../../web/server/lib/opencode/npm-registry-config.js';
 import { writeFileAtomic } from '../../web/server/lib/opencode/atomic-write.js';
 import { toLoadablePluginSpec } from '../../web/server/lib/opencode/loadable-plugin-spec.js';
+import { isGitSpec } from '../../web/server/lib/opencode/plugin-spec.js';
 import {
   toAgentEntity,
   fromAgentEntity,
@@ -105,7 +106,7 @@ export type Snippet = {
 };
 
 export type PluginScope = 'user' | 'project';
-type PluginParsedKind = 'npm' | 'path';
+type PluginParsedKind = 'npm' | 'path' | 'git';
 
 export type PluginEntry = {
   id: string;
@@ -131,7 +132,8 @@ export type PluginRegistryResult =
   | { kind: 'npm-network'; spec: string; error: string }
   | { kind: 'path-ok'; spec: string; absolutePath: string }
   | { kind: 'path-missing'; spec: string; absolutePath: string }
-  | { kind: 'path-unreadable'; spec: string; absolutePath: string };
+  | { kind: 'path-unreadable'; spec: string; absolutePath: string }
+  | { kind: 'git-ok'; spec: string };
 
 export type ConfigSources = {
   /** `legacy` marks a file OpenCode still decodes through its v1 path. */
@@ -1188,6 +1190,13 @@ const serializePluginEntry = (entry: { spec?: unknown; options?: unknown }): str
 const isPluginPathSpec = (spec: string): boolean =>
   spec.startsWith('/') || spec.startsWith('./') || spec.startsWith('../') || spec.startsWith('~') || path.win32.isAbsolute(spec);
 
+/** How a spec loads, by the server's rule (`plugin-spec.js`): a path, a Git package, or npm. */
+const pluginParsedKind = (spec: string): PluginParsedKind => {
+  if (isPluginPathSpec(spec)) return 'path';
+  if (isGitSpec(spec)) return 'git';
+  return 'npm';
+};
+
 const parsePluginPathSpec = (spec: string, workingDirectory?: string | null): { absolutePath: string } => {
   if (spec === '~') return { absolutePath: path.resolve(os.homedir()) };
   if (spec.startsWith('~/')) return { absolutePath: path.resolve(os.homedir(), spec.slice(2)) };
@@ -1343,7 +1352,7 @@ export const listPluginEntries = (workingDirectory?: string): PluginEntry[] => {
         spec: item.entry.package,
         scope: source.scope,
         kind: 'config',
-        parsedKind: isPluginPathSpec(item.entry.package) ? 'path' : 'npm',
+        parsedKind: pluginParsedKind(item.entry.package),
       };
       if (item.entry.options) entry.options = item.entry.options;
       entries.push(entry);
@@ -1534,7 +1543,7 @@ export const queryPluginRegistry = async (
   const npmJobs = new Map<string, string[]>();
   const malformedSpecs = new Set<string>();
   for (const spec of uniqueSpecs) {
-    if (isPluginPathSpec(spec)) continue;
+    if (pluginParsedKind(spec) !== 'npm') continue;
     const parsed = parsePluginNpmSpec(spec);
     if ('malformed' in parsed) {
       malformedSpecs.add(spec);
@@ -1552,6 +1561,12 @@ export const queryPluginRegistry = async (
   for (const spec of uniqueSpecs) {
     if (malformedSpecs.has(spec)) {
       results.push({ kind: 'npm-malformed', spec, error: 'Spec syntax is malformed' });
+      continue;
+    }
+
+    // A Git package never reaches the npm registry; OpenCode resolves it itself.
+    if (pluginParsedKind(spec) === 'git') {
+      results.push({ kind: 'git-ok', spec });
       continue;
     }
 

@@ -13,7 +13,8 @@ the UI is on a different machine.
   (`packages/ui/src/components/chat/markdown/inlineMarkdownImages.ts`).
 - `POST /api/openchamber/sessions/:sessionId/markdown-image-grants` prepares the
   local images of a message part in one request, with no count limit; the
-  32 KB body limit bounds how many paths fit. The server fetches the assistant
+  256 KB body limit bounds how many paths fit, enough for a page of several
+  hundred images. The server fetches the assistant
   message once and verifies every exact image source before reading files.
 - Authorization recognizes the same common inline and reference-style image
   destinations collected by the UI, including balanced parentheses, while

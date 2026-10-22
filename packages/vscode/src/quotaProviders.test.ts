@@ -1036,6 +1036,25 @@ describe('Claude quota provider (VS Code parity)', () => {
     assert.equal(result.usage?.windows.extra_usage?.valueLabel, '$25.00 / $100.00');
   });
 
+  test('reports an expired token without asking Anthropic', async () => {
+    configureOpenCodeCredentials({
+      list: async () => [{ ...oauth('anthropic'), value: { type: 'oauth', methodID: 'test', access: 'expired-token', refresh: 'expired-refresh', expires: Date.now() - 60_000 } }],
+    });
+    let requested = false;
+    stubFetchReturning(async () => {
+      requested = true;
+      return mockResponse({});
+    });
+    try {
+      const result = await fetchQuotaForProvider('claude');
+      assert.equal(result.ok, false);
+      assert.equal(result.error, 'Claude session expired. Open Claude Code to sign in again.');
+      assert.equal(requested, false);
+    } finally {
+      configureOpenCodeCredentials({ list: async () => baseCredentialList() });
+    }
+  });
+
   test('keeps serving the last good values while Anthropic rate limits', async () => {
     const responses = [
       mockResponse({ five_hour: { utilization: 12, resets_at: '2026-08-20T12:00:00Z' } }),

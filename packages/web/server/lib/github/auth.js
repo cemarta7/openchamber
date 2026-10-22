@@ -194,7 +194,38 @@ function migrateLegacy(value) {
   return { version: AUTH_VERSION, instances: { 'github.com': instance } };
 }
 
+const serializeCredential = (credential) => {
+  const stored = {
+    credentialId: credential.credentialId,
+    revision: credential.revision,
+    providerUserId: credential.providerUserId,
+    accessToken: credential.accessToken,
+    scope: credential.scope,
+    tokenType: credential.tokenType,
+    createdAt: credential.createdAt,
+    user: credential.user,
+    source: credential.source,
+    status: credential.status,
+  };
+  if (credential.status === 'invalid') stored.invalidReason = credential.invalidReason;
+  return stored;
+};
+
+// Earlier releases read only the flat version 2 shape, so a file that holds
+// nothing beyond github.com accounts is written that way; version 3 appears
+// once another host, or a gh switch the flat shape cannot hold, is stored.
+const fitsVersionTwo = (state) => Object.keys(state.instances).every((host) => host === 'github.com')
+  && !state.instances['github.com']?.cliDisabled && !state.instances['github.com']?.cliActive;
+
 function serializeState(state) {
+  if (fitsVersionTwo(state)) {
+    const instance = state.instances['github.com'];
+    return {
+      version: 2,
+      activeCredentialId: instance?.activeCredentialId ?? null,
+      credentials: (instance?.credentials ?? []).map(serializeCredential),
+    };
+  }
   const instances = {};
   for (const [host, instance] of Object.entries(state.instances)) {
     instances[host] = {

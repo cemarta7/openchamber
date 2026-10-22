@@ -72,9 +72,10 @@
    re-laying the row out: the text they cover fades away under them. The
    masked element sits --oc-actions-inset from its nearest @container's start
    edge; the actions reach --oc-actions-reserve in from that container's end
-   edge. */
+   edge. Both are rem at the default density: the buttons and offsets they
+   describe are spacing tokens, so they also scale with --padding-scale. */
 @utility oc-actions-mask {
-  --oc-actions-edge: calc(100cqw - var(--oc-actions-inset, 0px) - var(--oc-actions-reserve, 0px));
+  --oc-actions-edge: calc(100cqw - (var(--oc-actions-inset, 0px) + var(--oc-actions-reserve, 0px)) * var(--padding-scale, 1));
   mask-image: linear-gradient(var(--oc-to-inline-end), #000 calc(var(--oc-actions-edge) - 0.875rem), transparent calc(var(--oc-actions-edge) - 0.125rem));
 
   /* A title whose own direction differs from the interface (dir="auto") starts
@@ -83,7 +84,7 @@
   &:where(:root[dir="rtl"] *):dir(ltr),
   &:where(:root:not([dir="rtl"]) *):dir(rtl) {
     mask-image: none;
-    padding-inline-start: var(--oc-actions-reserve, 0px);
+    padding-inline-start: calc(var(--oc-actions-reserve, 0px) * var(--padding-scale, 1));
   }
 }
 
@@ -363,7 +364,9 @@ button,
   color: color-mix(in srgb, var(--syntax-comment) 85%, var(--syntax-foreground) 15%);
 }
 
-:root.vscode-runtime [data-chat-input="true"] .cm-placeholder {
+/* The composer draws its placeholder as a pseudo-element of the empty line
+   (editor/theme.ts); in VS Code it takes the editor's placeholder colour. */
+:root.vscode-runtime [data-chat-input="true"] .cm-content.cm-composer-empty .cm-line::before {
   color: var(--vscode-input-placeholderForeground, var(--muted-foreground));
 }
 

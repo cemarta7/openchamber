@@ -63,7 +63,7 @@ describe('source-control auth storage', () => {
     await expect(store.readInstance(secondOrigin)).resolves.toMatchObject({ activeAccountId: second.id });
   });
 
-  it('migrates a version 2 GitLab-only file to version 3 with an empty GitHub section', async () => {
+  it('reads a version 2 GitLab-only file without rewriting it, and moves to version 3 with the first GitHub Enterprise credential', async () => {
     const { directory, filePath, store } = await makeStore();
     const origin = 'https://gitlab.example.com';
     await fs.writeFile(filePath, JSON.stringify({
@@ -79,11 +79,15 @@ describe('source-control auth storage', () => {
     }), 'utf8');
 
     await expect(store.readInstance(origin)).resolves.toMatchObject({ activeAccountId: 'cred-1' });
+    // Earlier releases read only version 2, so the file stays as it was.
+    expect(JSON.parse(await fs.readFile(filePath, 'utf8'))).toMatchObject({ version: 2 });
+
+    await store.github.setAccount('ghe.example.com', { accessToken: 'github-pat', user: { id: 42, login: 'ghe-user' }, source: 'pat', scope: 'repo' });
     expect(JSON.parse(await fs.readFile(filePath, 'utf8'))).toMatchObject({
       version: 3,
       providers: {
         gitlab: { instances: { [origin]: { activeCredentialId: 'cred-1' } } },
-        github: { instances: {} },
+        github: { instances: { 'ghe.example.com': expect.objectContaining({ activeCredentialId: expect.any(String) }) } },
       },
     });
   });

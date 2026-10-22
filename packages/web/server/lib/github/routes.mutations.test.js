@@ -238,6 +238,19 @@ describe('canonical GitHub mutations', () => {
     });
   });
 
+  it('refuses a created pull request whose base repository lives on another host', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 1, login: 'actor' } });
+    const foreign = pullRequest();
+    foreign.base = { ...foreign.base, repo: { ...foreign.base.repo, html_url: 'https://gitlab.com/acme/app' } };
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(foreign)));
+    const { app, store } = makeApp();
+
+    const response = await request(app).post('/api/source-control/github/pr/create')
+      .send({ ...context(account.accountId), title: 'Title' });
+    expect(response.status).not.toBe(200);
+    expect(store.records.get('request-one')?.result?.number).toBeUndefined();
+  });
+
   it('records the created pull request number and names it in replayed receipts', async () => {
     const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 1, login: 'actor' } });
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(pullRequest())));

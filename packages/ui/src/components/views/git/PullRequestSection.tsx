@@ -583,12 +583,19 @@ export const PullRequestSection: React.FC<{
     const startedAt = Date.now();
     try {
       await refresh({ force: true });
+      // The sidebar's badge for this PR reads the server's followed item, which
+      // a status refresh does not touch; ask the server to re-read it too, as
+      // the preview's refresh does. Runtimes without the route just skip it.
+      if (pr && status?.repo && statusIdentity) {
+        const item = { owner: status.repo.owner, repo: status.repo.repo, number: pr.number };
+        await sourceControl.refreshProviderReads(statusIdentity, { item }).catch(() => undefined);
+      }
     } finally {
       const remaining = PR_MANUAL_REFRESH_MIN_SPIN_MS - (Date.now() - startedAt);
       if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
       if (manualRefreshMountedRef.current) setIsManualRefreshing(false);
     }
-  }, [isManualRefreshing, refresh]);
+  }, [isManualRefreshing, pr, refresh, sourceControl, status?.repo, statusIdentity]);
 
   React.useEffect(() => {
     if (!readContext || !prStatusKey) return;

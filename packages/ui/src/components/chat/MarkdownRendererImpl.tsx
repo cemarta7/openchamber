@@ -204,7 +204,9 @@ const hasFileExtension = (path: string, purpose: FileReferencePurpose): boolean 
 };
 
 const isLikelyFilePathValue = (path: string, purpose: FileReferencePurpose = 'probe'): boolean => {
-  if (!path || path.startsWith('--') || path.includes('://') || (purpose === 'probe' && path.includes('@'))) {
+  // An `@` without a slash is an email or a handle; with one it is usually a
+  // scoped package or pnpm path (`node_modules/@types/node/index.d.ts`).
+  if (!path || path.startsWith('--') || path.includes('://') || (purpose === 'probe' && path.includes('@') && !path.includes('/'))) {
     return false;
   }
 

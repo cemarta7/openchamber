@@ -1665,6 +1665,18 @@ const fetchClaudeQuota = async (): Promise<ProviderResult> => {
     claudeCachedUsage = null;
     claudeCooldownUntil = 0;
   }
+  // An expired token answers 429, not 401, and would park the provider on
+  // "Rate limited" until the token changes. A zero or missing expiry is unknown.
+  const expiresAt = normalizeTimestamp(entry?.expires);
+  if (expiresAt !== null && expiresAt > 0 && expiresAt <= Date.now()) {
+    return buildResult({
+      providerId: 'claude',
+      providerName: 'Claude',
+      ok: false,
+      configured: true,
+      error: 'Claude session expired. Open Claude Code to sign in again.',
+    });
+  }
   if (Date.now() < claudeCooldownUntil) return buildClaudeRateLimitResult();
 
   try {

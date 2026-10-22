@@ -718,6 +718,43 @@ describe('GET /api/source-control/github/pr/status with remotes on two hosts', (
     expect(fetch.mock.calls.every(([url]) => String(url).startsWith('https://github.example.com/'))).toBe(true);
   });
 
+  it('follows the bound context, as the client sends it, to the enterprise host', async () => {
+    // The real client names no `remote`: the binding's primaryRemote and its
+    // enterprise PAT account decide, and origin's same-named github.com repo
+    // must never be asked.
+    const { setGitHubAuthForHost, removeGitHubAuthAccountForHost } = await import('./auth.js');
+    const credential = await setGitHubAuthForHost('github.example.com', {
+      accessToken: 'ghe-pat', user: { id: 42, login: 'ghe-user' }, source: 'pat',
+    });
+    const fetch = vi.fn(async (url) => {
+      const endpoint = new URL(url);
+      if (endpoint.pathname === '/api/v3/repos/example/project') return response({ full_name: 'example/project', fork: false });
+      if (endpoint.pathname.startsWith('/api/v3/repos/example/project/pulls')) return response([]);
+      return response({});
+    });
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const res = await request(app).get('/api/source-control/github/pr/status')
+        .query({
+          ...readContext(project),
+          instance: 'github.example.com',
+          accountId: credential.credentialId,
+          primaryRemote: 'upstream',
+          branch: 'feature',
+          force: 'true',
+        })
+        .expect(200);
+      expect(res.body).toMatchObject({ connected: true });
+      expect(res.body.repo).toMatchObject({ host: 'github.example.com', owner: 'example', repo: 'project' });
+      expect(fetch).toHaveBeenCalled();
+      expect(fetch.mock.calls.every(([url]) => String(url).startsWith('https://github.example.com/'))).toBe(true);
+      // It ran as the bound PAT account, not the host's gh login.
+      expect(fetch.mock.calls.every(([, init]) => new Headers(init?.headers).get('authorization') === 'token ghe-pat')).toBe(true);
+    } finally {
+      await removeGitHubAuthAccountForHost('github.example.com', credential.credentialId);
+    }
+  });
+
   it('keeps github.com scope for an origin remote on the same checkout', async () => {
     const fetch = vi.fn(async () => response({ data: { repository: { issueOrPullRequest: null } } }));
     vi.stubGlobal('fetch', fetch);
@@ -1048,6 +1085,19 @@ describe('POST /api/source-control/github/auth/token (GitHub Enterprise PAT)', (
 
     expect(res.body).toEqual({ error: 'Personal access tokens are only accepted for a GitHub Enterprise instance' });
     // The token was never sent: no verification call reached GitHub with it.
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('refuses an instance that is no plain host before sending the token anywhere', async () => {
+    const fetch = vi.fn(async () => response({ id: 42, login: 'ghe-user' }));
+    vi.stubGlobal('fetch', fetch);
+
+    for (const instance of ['attacker@github.example.com', 'github.example.com/path', 'github.example.com:8443']) {
+      await request(app).post('/api/source-control/github/auth/token')
+        .query({ instance })
+        .send({ token: 'ghe-pat' })
+        .expect(400);
+    }
     expect(fetch).not.toHaveBeenCalled();
   });
 

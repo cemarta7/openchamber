@@ -209,10 +209,6 @@ export const WorkStatusContextSection: React.FC<Props> = ({ sessionId, directory
   ], [linkedGitLabChanges, linkedGitLabIssueItems, linkedIssueItems, linkedLinearItems, linkedPullLinks]);
   useTrackedItems(trackedItems);
   const linkedPullVisuals = useTrackedPullVisualSummaries(linkedPullLinks);
-  const linkedPrSummaries = React.useMemo(
-    () => linkedPullVisuals.filter((summary): summary is PrVisualSummary => summary !== null),
-    [linkedPullVisuals],
-  );
   const linkedIssueStates = useTrackedIssueStates(linkedIssueItems);
   const linkedLinearStates = useTrackedLinearStates(linkedLinearItems);
   const gitlabChangeSummaries = useTrackedPullVisualSummaries(linkedGitLabChanges);
@@ -234,15 +230,15 @@ export const WorkStatusContextSection: React.FC<Props> = ({ sessionId, directory
       const label = getPrStatusLabel(summary, t);
       return { color: `var(--pr-${summary.visualState})`, text: label ? `${reference} · ${label}` : reference };
     };
-    for (const summary of linkedPrSummaries) {
-      const link = linkedPrs.find((candidate) => (
-        candidate.owner.toLowerCase() === summary.repo?.owner?.toLowerCase()
-          && candidate.repo.toLowerCase() === summary.repo?.repo?.toLowerCase()
-          && candidate.number === summary.number
-      ));
-      const key = `${link?.instance ? `${link.instance}:` : ''}${summary.repo?.owner ?? ''}/${summary.repo?.repo ?? ''}#${summary.number}`;
+    // A summary belongs to the link at its own index: the same owner/repo#number
+    // can be linked from github.com and from an enterprise host in one session,
+    // and only the position tells those two apart.
+    linkedPullVisuals.forEach((summary, index) => {
+      const link = linkedPrs[index];
+      if (!summary || !link) return;
+      const key = `${link.instance ? `${link.instance}:` : ''}${summary.repo?.owner ?? ''}/${summary.repo?.repo ?? ''}#${summary.number}`;
       looks.set(key.toLowerCase(), changeLook(summary, `#${summary.number}`));
-    }
+    });
     linkedIssueRefs.forEach((ref, index) => {
       const state = linkedIssueStates[index];
       if (!state) return;
@@ -290,7 +286,7 @@ export const WorkStatusContextSection: React.FC<Props> = ({ sessionId, directory
       looks.set(ref.key, { color: look.color, text: `#${ref.number} · ${t(look.statusKey)}` });
     });
     return looks;
-  }, [branchPrSummary, gitlabChangeSummaries, gitlabIssueStates, linkedGitLabChanges, linkedGitLabIssues, linkedIssueRefs, linkedIssueStates, linkedLinearIdentifiers, linkedLinearStates, linkedPrSummaries, linkedPrs, t]);
+  }, [branchPrSummary, gitlabChangeSummaries, gitlabIssueStates, linkedGitLabChanges, linkedGitLabIssues, linkedIssueRefs, linkedIssueStates, linkedLinearIdentifiers, linkedLinearStates, linkedPrs, linkedPullVisuals, t]);
   const openTrackerItem = useOpenTrackerItem();
   // Connected servers only. A disabled server contributes nothing to the
   // context, so counting it here contradicts the MCP section right above,

@@ -140,8 +140,10 @@ function parseVersionTwo(value) {
 // Version 2 held only GitLab (`providers.gitlab.instances`, keyed by origin).
 // Version 3 adds `providers.github.instances` (keyed by host) to this same
 // server token store, so a GitHub Enterprise instance's personal access tokens
-// live in the file GitLab already uses; an existing version 2 file migrates to
-// version 3 on its first read, keeping GitLab data and secrets untouched.
+// live in the file GitLab already uses. A version 2 file is read into the
+// version 3 shape in memory but stays version 2 on disk until a GitHub
+// Enterprise credential is stored: earlier releases read only version 2, so
+// a user who never added an enterprise host can still go back to one.
 function parseVersionThree(value) {
   if (!isPlainObject(value) || !exactKeys(value, ['version', 'providers']) || value.version !== AUTH_VERSION || !isPlainObject(value.providers)
     || !exactKeys(value.providers, ['gitlab', 'github'])) throw invalidState();
@@ -203,6 +205,7 @@ function serializeState(state) {
       cliActive: instance.cliActive,
     };
   }
+  if (Object.keys(githubInstances).length === 0) return { version: 2, providers: { gitlab: { instances } } };
   return { version: AUTH_VERSION, providers: { gitlab: { instances }, github: { instances: githubInstances } } };
 }
 
@@ -251,12 +254,10 @@ export function createSourceControlAuthStore({ filePath, fsImpl = fs, lockWaitMs
     let value;
     try { value = JSON.parse(encoded); }
     catch (error) { throw invalidState(error); }
-    // Version 2 was GitLab-only; it migrates into version 3 after validation, so
-    // an existing file keeps its GitLab data and secrets (`github` starts empty).
+    // Version 2 was GitLab-only; it is read into the version 3 shape after
+    // validation (`github` starts empty) without rewriting the file.
     if (value.version === 2) {
-      const migrated = { version: AUTH_VERSION, providers: { ...parseGitLabSection(value.providers), github: { instances: {} } } };
-      await writeState(migrated);
-      return migrated;
+      return { version: AUTH_VERSION, providers: { ...parseGitLabSection(value.providers), github: { instances: {} } } };
     }
     if (value.version !== AUTH_VERSION) throw invalidState();
     return parseVersionThree(value);
