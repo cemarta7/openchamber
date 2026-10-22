@@ -7,6 +7,7 @@ import { normalizePath } from '@/lib/pathNormalization';
 import { useRepositoryBindings } from '@/lib/source-control/repository-binding';
 import { repositoryLinkFromRemotes } from '@/lib/source-control/repositoryUrl';
 import { useGitStore, useIsGitRepo, useNestedRepos, type NestedRepoDiscovery } from '@/stores/useGitStore';
+import type { SourceBoardTab } from '@/stores/useSourceBoardStore';
 import { useSourceControlAuthStore } from '@/stores/useSourceControlAuthStore';
 import { normalizeContextPanelDirectoryKey } from '@/stores/useUIStore';
 
@@ -80,6 +81,34 @@ export const choiceForFocus = (choice: RepositoryChoice, focusPending: boolean):
 export const shouldRememberAll = (resolution: BoardRepository, storedAll: boolean | undefined, focusPending: boolean): boolean => (
     focusPending && resolution.all && storedAll !== true
 );
+
+/**
+ * Linear as the board sees it: not in this runtime, its status not read yet,
+ * connected, disconnected, or unknown because the read failed.
+ */
+export type BoardLinear = 'absent' | 'pending' | 'connected' | 'disconnected' | 'unknown';
+
+/**
+ * The tab the board shows, or null for its no-source or loading screen, which
+ * keeps the project pickers. Linear stays the user's choice while the runtime
+ * has it. Otherwise the repository tab when the project has one; until the
+ * folder says whether it holds a repository, Linear is not the answer, and
+ * without one the board turns to Linear on its own unless Linear is known to
+ * be disconnected: an unconnected Linear tab lists nothing. A failed status
+ * read is not taken for a disconnect, and the Linear tab keeps the project
+ * pickers for such a project, so it is never a dead end.
+ */
+export function resolveBoardTab(options: {
+    chosen: SourceBoardTab;
+    hasRepository: boolean;
+    repositoryStatus: BoardRepository['status'];
+    linear: BoardLinear;
+}): SourceBoardTab | null {
+    if (options.chosen === 'linear' && options.linear !== 'absent') return 'linear';
+    if (options.hasRepository) return 'repository';
+    if (options.repositoryStatus === 'pending' || options.linear === 'pending') return null;
+    return options.linear === 'connected' || options.linear === 'unknown' ? 'linear' : null;
+}
 
 /** A repository's path below the project's root, as the pickers name it. */
 export const repositoryLabel = (repository: string, root: string): string => {

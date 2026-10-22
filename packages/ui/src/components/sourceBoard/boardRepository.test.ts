@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { choiceForFocus, folderOfRepository, repositoryLabel, resolveBoardRepository, resolvePullLinkTarget, shouldRememberAll } from './boardRepository';
+import { choiceForFocus, folderOfRepository, repositoryLabel, resolveBoardRepository, resolveBoardTab, resolvePullLinkTarget, shouldRememberAll } from './boardRepository';
 import { repositoryUrlOfItemLink } from './openTrackerItem';
 
 const ROOT = '/work';
@@ -174,5 +174,36 @@ describe('repositoryUrlOfItemLink', () => {
     expect(repositoryUrlOfItemLink('https://github.com/Acme/API/pull/12/files')).toBe('https://github.com/acme/api');
     expect(repositoryUrlOfItemLink('https://gitlab.example.com/group/sub/repo/-/merge_requests/7')).toBe('https://gitlab.example.com/group/sub/repo');
     expect(repositoryUrlOfItemLink('#12')).toBeNull();
+  });
+});
+
+describe('resolveBoardTab', () => {
+  const tab = (overrides: Partial<Parameters<typeof resolveBoardTab>[0]>) => resolveBoardTab({
+    chosen: 'repository', hasRepository: false, repositoryStatus: 'ready', linear: 'disconnected', ...overrides,
+  });
+
+  test('shows the repository tab when the project has one', () => {
+    expect(tab({ hasRepository: true })).toBe('repository');
+    expect(tab({ hasRepository: true, linear: 'connected' })).toBe('repository');
+    expect(tab({ hasRepository: true, linear: 'pending' })).toBe('repository');
+  });
+
+  test('keeps Linear when the user chose it, connected or not', () => {
+    expect(tab({ chosen: 'linear', hasRepository: true })).toBe('linear');
+    expect(tab({ chosen: 'linear' })).toBe('linear');
+    expect(tab({ chosen: 'linear', linear: 'absent', hasRepository: true })).toBe('repository');
+  });
+
+  test('turns to Linear without a repository unless Linear is known to be disconnected', () => {
+    expect(tab({ linear: 'connected' })).toBe('linear');
+    expect(tab({ linear: 'unknown' })).toBe('linear');
+    expect(tab({})).toBeNull();
+    expect(tab({ linear: 'absent' })).toBeNull();
+    expect(tab({ repositoryStatus: 'failed' })).toBeNull();
+  });
+
+  test('waits for the folder search and for Linear status before choosing', () => {
+    expect(tab({ repositoryStatus: 'pending', linear: 'connected' })).toBeNull();
+    expect(tab({ linear: 'pending' })).toBeNull();
   });
 });

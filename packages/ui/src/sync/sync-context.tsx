@@ -77,7 +77,7 @@ import { useMessageQueueStore } from "@/stores/messageQueueStore"
 import { subscribeMessageQueueSync } from "./message-queue-sync"
 import { subscribeSessionWarmingSync } from "./session-warming-sync"
 import { subscribeSessionFoldersSync } from "./session-folders-sync"
-import { subscribeSpacePermissionModes } from "./permission-mode-sync"
+import { subscribePermissionPolicySync, subscribeSpacePermissionModes } from "./permission-mode-sync"
 import { spaceFoldersOfProject, subscribeSpaceCatalogs } from "./space-catalog-sync"
 import {
   processVSCodePermissionAutoAccept,
@@ -103,6 +103,8 @@ import {
   useGlobalSessionStatusStore,
 } from "./global-session-status"
 import { applyGlobalBlockingRequestEvents, applyWaitingPageEvent, useGlobalBlockingRequestsStore } from "./global-blocking-requests"
+import { requestHostTurnStarts } from "./host-session-status-seed"
+import { setHostTurnStartRequester } from "./session-activity-timing"
 import { applyBackgroundShellEvents, directoriesWithRunningShells, refreshBackgroundShells } from "./background-shells"
 import {
   CHAT_LOCATION_RELEASE_DELAY_MS,
@@ -176,6 +178,10 @@ type SyncSystem = SyncRuntime & {
 // Subagent sessions keep their parent's turn open in the status index; the
 // global sessions list knows every session's parent, children included.
 setSessionParentResolver((sessionId) => useGlobalSessionsStore.getState().entityById.get(sessionId)?.parentID)
+
+// A turn this page did not see begin counts from the host's record of its
+// start, read from the host's status map.
+setHostTurnStartRequester(requestHostTurnStarts)
 
 const SYNC_CONTEXT_GLOBAL_KEY = "__openchamber_sync_context__"
 const SYNC_RUNTIME_CONTEXT_GLOBAL_KEY = "__openchamber_sync_runtime_context__"
@@ -3072,6 +3078,10 @@ export function SyncProvider(props: {
     const unsubscribeSessionWarming = subscribeSessionWarmingSync(runtimeKey)
     const unsubscribeFolderEvents = subscribeSessionFoldersSync(runtimeKey)
     const unsubscribeSpaceModes = subscribeSpacePermissionModes(runtimeKey)
+    const unsubscribePermissionPolicy = subscribePermissionPolicySync(
+      runtimeKey,
+      (event) => handleEvent("global", event, childStores, routingIndex, runtimeKey),
+    )
     const unsubscribeSpaceCatalogs = subscribeSpaceCatalogs(runtimeKey)
     const resyncAfterStreamGap = (reason: SessionMaterializationReason) => {
       // Cached transcripts may have missed events too; each revalidates its
@@ -3210,6 +3220,7 @@ export function SyncProvider(props: {
       unsubscribeSessionWarming()
       unsubscribeFolderEvents()
       unsubscribeSpaceModes()
+      unsubscribePermissionPolicy()
       unsubscribeSpaceCatalogs()
     }
   }, [props.sdk, childStores, messageLoader, routingIndex, messageStreamTransport, runtimeKey, triggerDirectoryResync])

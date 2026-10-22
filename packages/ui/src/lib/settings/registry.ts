@@ -531,6 +531,7 @@ export const SETTINGS_REGISTRY = {
   smallModelOverride: field({ scope: 'profile', parse: parseNonEmptyString }),
   smallModelVariant: field({ scope: 'profile', parse: parseNonEmptyString }),
   walkthroughModelOverride: field({ scope: 'profile', parse: parseNonEmptyString }),
+  walkthroughModelVariant: field({ scope: 'profile', parse: parseNonEmptyString }),
   // Read by the server when a provider's usage limit is hit (lib/limit-failover).
   fallbackModel: field({ scope: 'profile', parse: parseNonEmptyString }),
   fallbackVariant: field({ scope: 'profile', parse: parseNonEmptyString }),

@@ -79,12 +79,12 @@ function useStickyDisplayValue<T>(value: T | null | undefined): T | null | undef
 // Assistant text goes to the clipboard as Markdown with its rendered HTML,
 // or as the plain text the reader sees when the user asked for that.
 const copyAssistantText = async (text: string) => {
-    const { renderMarkdownSync } = await import('./markdown/markdownCore');
-    const html = renderMarkdownSync(text);
+    const { renderMarkdownForExport } = await import('./markdown/renderMarkdownForExport');
+    const root = await renderMarkdownForExport(text, { purpose: 'copy' });
     const plainText = useUIStore.getState().copyMessagesAsPlainText
-        ? (await import('./markdown/selectionMarkdown')).renderedMarkdownHtmlToPlainText(html, document)
+        ? (await import('./markdown/selectionMarkdown')).serializeRenderedMarkdown(root, 'plain')
         : undefined;
-    return copyMarkdownToClipboard(text, html, { plainText });
+    return copyMarkdownToClipboard(text, root.innerHTML, { plainText });
 };
 
 const getMessageInfoProp = (info: unknown, key: string): unknown => {

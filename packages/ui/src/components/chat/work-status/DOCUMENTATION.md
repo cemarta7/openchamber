@@ -458,6 +458,16 @@ Selection rules live in `usageHeadline.ts` and are pinned by
   label, because showing an unmatched provider's quota would read as the active
   one.
 
+## Provider status line
+
+A provider with no windows shows its status (an error, "no rate limits") on its
+own row, at the row's end. The status sits inside the label, not in the row's
+`value`: a value never shrinks, so a long error such as an expired key with its
+fix ran past the panel edge and pushed the provider name out. The status keeps
+its full width while it fits, the name truncates first, and a status longer
+than the row less a stub of the name truncates too, with the full text in the
+row's tooltip.
+
 ## Actions
 
 Rows that name something the app can already show are buttons:

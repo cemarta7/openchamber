@@ -2,7 +2,7 @@ import * as React from 'react';
 
 import { pullReferenceFromChangeRequest } from '@/components/references/gitlabReferences';
 import { ReferencePreview } from '@/components/references/ReferencePreview';
-import { useGitHubReferenceDetail } from '@/components/references/referenceSources';
+import { forgetGitHubPullStatus, useGitHubReferenceDetail } from '@/components/references/referenceSources';
 import { IDLE_PULL_STATUS } from '@/components/references/useReferenceBrowser';
 import { SourceBoardActions, SourceBoardPullLinks } from '@/components/sourceBoard/SourceBoardActions';
 import { SourceBoardChecksDialog } from '@/components/sourceBoard/SourceBoardChecksDialog';
@@ -57,8 +57,9 @@ export const BranchPullRequestPreview: React.FC<{
     context: SourceControlReadContext;
     changeRequest: ChangeRequest;
     /** Asks the branch status again after a change. */
-    onChanged: () => void;
+    onChanged: () => Promise<void>;
 }> = ({ directory, context, changeRequest, onChanged }) => {
+    const { sourceControl } = useRuntimeAPIs();
     const rootDirectory = useEffectiveDirectory();
     const activeProjectId = useProjectsStore((state) => state.activeProjectId);
     const [revision, setRevision] = React.useState(0);
@@ -78,9 +79,18 @@ export const BranchPullRequestPreview: React.FC<{
     const refresh = React.useCallback(() => {
         refreshDetail();
         setRevision((value) => value + 1);
-        onChanged();
+        void onChanged();
     }, [onChanged, refreshDetail]);
     const threadActions = useThreadActions(reference, context, refresh);
+    // The header's refresh button, for a change made on the host's own site:
+    // the server forgets its short-lived answers about this PR first.
+    const refreshFromHost = async () => {
+        const pull = { owner: reference.sourceRepo.owner, repo: reference.sourceRepo.repo, number: reference.number };
+        await sourceControl.refreshProviderReads(context, { item: pull }).catch(() => undefined);
+        forgetGitHubPullStatus(pull);
+        setRevision((value) => value + 1);
+        await Promise.all([refreshDetail(), onChanged()]);
+    };
 
     const item = { source: 'github' as const, reference };
     const linksDirectory = rootDirectory ?? directory;
@@ -120,6 +130,7 @@ export const BranchPullRequestPreview: React.FC<{
                 )}
                 onOpenStackLayer={(layer) => { showTrackerItem(layer.url, directory); }}
                 onOpenChecks={() => setChecksOpen(true)}
+                onRefresh={refreshFromHost}
                 commentAttachments={{ onAttach: attachments.attachComment, onAttachAll: attachments.attachComments }}
                 threadActions={threadActions}
                 labelsControl={<SourceBoardLabels reference={reference} context={context} onChanged={refresh} />}

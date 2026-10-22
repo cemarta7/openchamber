@@ -95,9 +95,9 @@ Tracker then show one state for the same PR.
 - Desktop previews pin the item header above its divider and the action footer below the scroll region. The metadata grid, description and comments scroll together for repository and Linear items, a divider below the grid as on mobile. Mobile keeps the whole preview in one flow.
 - The preview shows the list item at once and asks for the rest of the item the highlight rests on (250 ms after it stops moving): GitHub comments, and a PR's size, review and newest commits, from `references/detail` with the same read context (a GitLab merge request's pipeline, commits and verdicts come with its detail, read with `includeTimeline`); a Linear issue's description and comments from `linear.issueGet`. Both land in value caches: going back to an item shows what was already read at once, without waiting out the 250 ms, and attaching a previewed Linear issue reuses the answer.
 - A PR's thread is its activity (`referenceTimeline.ts`): comments, review verdicts and commits by time, commits in a row grouped, so a review reads next to the commits it answered. Comments made at the same moment as a commit come first. Each commit names its author: the host account with its avatar on GitHub, the name git recorded on GitLab.
-- Descriptions and comments render with `allowRawHtml`, the Files preview's allowlist: GitHub's `<img>` screenshots, tables and `<details>` show, scripts, styles and author classes are dropped. An image with both `width` and `height` scales by its ratio. The Linear panel and the Git view's PR section render GitHub and Linear text the same way.
+- Descriptions and comments render with `allowRawHtml`, sharing the Files preview's Streamdown processing and restricted rehype policy in `chat/markdown/streamdownPlugins.ts`. GitHub screenshots, tables and disclosures show; scripts, author styles and application classes are excluded. Media components preserve safe image dimensions and aspect ratios. The Linear panel and the Git view's PR section use this same renderer.
 - Clicking a picture in the description or a comment opens the chat's image viewer (`useReferenceImagePreview.tsx`) with every loaded picture of the item, in page order, so the arrows step through them; a picture inside a link keeps opening its link. Escape closes the viewer alone, never the picker dialog under it. The viewer's chunk loads on the first click, and nothing runs while it is closed.
-- Clips draw as players: a Linear upload written as an image named `*.mp4` (or `.m4v`, `.mov`, `.webm`), a GitHub `user-attachments/assets` URL alone on its line, and a raw `<video>`. One the browser cannot load, such as a private repository's, becomes a link to it; one signed with the URL token first retries with a fresh token where it stopped (`chat/markdown/markdownVideo.ts`).
+- `chat/markdown/MarkdownMedia.tsx` owns video nodes: a Linear upload written as a video-named image, a GitHub `user-attachments/assets` URL alone on its line, or a safe raw `<video>`. Linked pictures retain their link behavior. Controls and load/error recovery belong to the video component; the Markdown body has no container-wide video fallback listener. Original source metadata stays separate from authenticated playback URLs.
 - GitLab writes an attachment as a project path, `/uploads/<secret>/<name>`, readable only by signed-in members. `gitlabUploads.ts` rewrites those paths in the displayed description and notes, outside code: a picture or clip to `GET /api/source-control/gitlab/uploads/:secret/:filename` with the preview's read context and the URL token, kept fresh while a GitLab item is shown; a link to any other file to the file on GitLab. The text attached for the agent keeps GitLab's path. That is why `ReferencePreview` takes the item's `directory`.
 - Attaching reads the full context the agent receives through the provider-neutral source-control reads (`issueGet` + `issueComments`, `changeRequestContext`) with the same read context: issue with all comments, PR context with the diff only when "Also send the diff" is checked for that PR, Linear issue with comments. Chips and context parts use the provider-neutral kinds `repository-issue` and `change-request` (with its provider). Each item resolves on its own; the ones that fail stay checked in the picker with the reason, the rest attach.
 - Linear sub-issues: a sub-issue's row names its parent above the title, a parent's row shows how many sub-issues are finished (`2/5`, or `20+` when the list counted only the first 20). The preview has a Parent row and, once the detail lands, a Sub-issues section. Clicking either previews that issue through `openItem`, kept like a pinned item while the list does not hold it; the picker and the board both pass `onOpenLinearIssue`. A parent or sub-issue comes without labels, so the preview takes labels and parent from its detail when it has one. The agent gets the parent and sub-issues with the issue's JSON.
@@ -166,7 +166,16 @@ preview's footer holds actions instead of what the agent gets.
   turn finishes.
 - The repository tab is the project's host only: GitHub or GitLab, whichever
   `useRepositoryHostProvider` names; a project with no supported remote shows
-  Linear alone.
+  Linear alone unless Linear is known to be disconnected, and then the
+  no-source note with the project pickers. The runtime always has a Linear API,
+  so "Linear is offered" is never the test: falling back to an unconnected
+  Linear left an empty Linear tab with no project picker, and the board
+  remembers its project, so nothing led back. Until Linear's status first
+  arrives the board shows a loading state; a failed status read is not a
+  disconnect, so it falls back to Linear, which keeps the project pickers.
+- On Linear the scope picker is the team picker. When the project offers no
+  repository tab, the project and repository pickers stay beside it: they are
+  the only way off Linear for that project.
 - The board reads one folder, `useBoardRepository` (`sourceBoard/boardRepository.ts`):
   the project's root when it is a git repository, as always. When the root is
   not one but repositories lie under it, the board reads one of them, or all of
@@ -274,15 +283,17 @@ preview's footer holds actions instead of what the agent gets.
   and resolved or reopened, as far as the host says this account may. GitLab
   merge requests can also start a thread from the reply box; GitHub threads
   start only from a line in a review, so GitHub has no such button.
-- The issue or PR preview, on the board and in a Tracker tab, has a refresh
-  button beside the host link (`onRefresh`). It reads the shown item alone
+- The issue or PR preview, on the board and in a Tracker tab, the checked-out
+  branch's own tab included, has a refresh button beside the host link
+  (`onRefresh`). It reads the shown item alone
   again: the server forgets its short-lived answers about that item
   (`sourceControl.refreshProviderReads(context, { item })`,
   `POST <provider>/read-cache/refresh?scope=item`) and reads that item's
   followed state now; the app forgets that PR's listed checks; then the
   item's detail is read again. Other items, lists and followed state are left
   alone, so a change made on the host's own site shows without waiting out
-  the cache and without a read of everything else.
+  the cache and without a read of everything else. The branch's tab also asks
+  the branch's PR status again, since it reads state, head and checks there.
 - The board's list has a refresh button of its own after the filter. It reads
   what is listed again (`{ lists: true }`, `scope=lists`; Linear's
   `linear.refreshListReads`), with the checks of the listed PRs, so an item
@@ -342,4 +353,3 @@ preview's footer holds actions instead of what the agent gets.
   the button says so. The PR comes from the branch status; on GitHub
   `#N` is also looked up for its labels and comment count, which the status
   does not carry.
-

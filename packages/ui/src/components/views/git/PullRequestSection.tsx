@@ -892,7 +892,7 @@ export const PullRequestSection: React.FC<{
           directory={directory}
           context={readContext}
           changeRequest={liveChangeRequest}
-          onChanged={() => void refresh({ force: true, silent: true, markInitialResolved: true })}
+          onChanged={() => refresh({ force: true, silent: true, markInitialResolved: true })}
         />
       </div>
     );

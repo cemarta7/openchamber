@@ -582,6 +582,9 @@
     "walkthroughModelOverride": {
       "scope": "profile"
     },
+    "walkthroughModelVariant": {
+      "scope": "profile"
+    },
     "fallbackModel": {
       "scope": "profile"
     },

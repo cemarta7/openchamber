@@ -4123,17 +4123,13 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
     connectFullscreenVirtualizer(node);
     setFullscreenCodeScroller(node);
   }, [connectFullscreenVirtualizer, setFullscreenCodeScroller]);
-  const [mdPreviewNode, setMdPreviewNode] = React.useState<HTMLDivElement | null>(null);
-  const [mdFullscreenPreviewNode, setMdFullscreenPreviewNode] = React.useState<HTMLDivElement | null>(null);
   const setMainMarkdownScroller = React.useCallback((node: HTMLDivElement | null) => {
     markdownPreviewRef.current = node;
     mdPreviewContainerRef.current = node;
-    setMdPreviewNode(node);
     setMainMarkdownScroll(node);
   }, [setMainMarkdownScroll]);
   const setFullscreenMarkdownScroller = React.useCallback((node: HTMLDivElement | null) => {
     mdFullscreenPreviewContainerRef.current = node;
-    setMdFullscreenPreviewNode(node);
     setFullscreenMarkdownScroll(node);
   }, [setFullscreenMarkdownScroll]);
   // A relative link in a rendered Markdown file opens that file here; on
@@ -4145,16 +4141,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
   }, [panelRoot]);
   const markdownLocalAssetsActive = isMarkdown && mdViewMode === 'preview' && !fileLoading;
   const markdownColorScheme = currentTheme.metadata.variant === 'light' ? 'light' : 'dark';
-  useMarkdownLocalAssets({
-    container: mdPreviewNode,
-    filePath: selectedFile?.path ?? null,
-    workspaceRoot: root || null,
-    onOpenFile: openLinkedFile,
-    enabled: markdownLocalAssetsActive,
-    colorScheme: markdownColorScheme,
-  });
-  useMarkdownLocalAssets({
-    container: mdFullscreenPreviewNode,
+  const markdownDocumentAssets = useMarkdownLocalAssets({
     filePath: selectedFile?.path ?? null,
     workspaceRoot: root || null,
     onOpenFile: openLinkedFile,
@@ -5280,6 +5267,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
                   <div style={previewFontStyle}>
                     <SimpleMarkdownRenderer
                       content={fileContent}
+                      documentAssets={markdownDocumentAssets}
                       className="typography-markdown-body"
                       frontmatter="properties"
                       enableFileReferences={false}
@@ -5596,6 +5584,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
                 <div style={previewFontStyle}>
                   <SimpleMarkdownRenderer
                     content={fileContent}
+                    documentAssets={markdownDocumentAssets}
                     className="typography-markdown-body"
                     frontmatter="properties"
                     enableFileReferences={false}

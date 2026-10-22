@@ -173,6 +173,19 @@ describe('OpenCode Go quota provider (VS Code parity)', () => {
       assert.equal(result.configured, true);
       assert.equal(result.error, 'No active OpenCode Go subscription on the selected Console account');
     });
+
+    test('names an expired key and the sign-in that replaces it', async () => {
+      stubFetchReturning(async () => mockResponse({ error: { type: 'authentication_error', code: 'api_key_expired' } }, { ok: false, status: 401 }));
+      const result = await fetchQuotaForProvider('opencode-go');
+      assert.equal(result.configured, true);
+      assert.equal(result.error, 'OpenCode Go key expired. Connect an OpenCode Console account on the OpenCode card in Providers.');
+    });
+  });
+
+  test('keeps a 401 without the expired-key code an authentication failure', async () => {
+    stubFetchReturning(async () => mockResponse({ error: { type: 'AuthError', message: 'Unauthorized' } }, { ok: false, status: 401 }));
+    const result = await fetchQuotaForProvider('opencode-go');
+    assert.equal(result.error, 'OpenCode Go authentication failed');
   });
 });
 
@@ -335,6 +348,18 @@ describe('OpenCode Go quota provider — Console OAuth (VS Code parity)', () => 
     assert.equal(result.usage!.windows.credits_balance, undefined);
     assert.equal(result.ok, true);
     assert.equal(result.usage!.windows['5h']!.usedPercent, 10);
+  });
+
+  test('reports the Console error when the fallback key has expired', async () => {
+    configureOpenCodeCredentials({ list: async () => [consoleOAuth(), key('opencode-go')] });
+    stubFetchReturning(async (url) => (url === 'https://opencode.ai/console/api/go/status'
+      ? mockResponse({ product: 'zen', access: { meters: {} } })
+      : mockResponse({ error: { code: 'api_key_expired' } }, { ok: false, status: 401 })));
+
+    const result = await fetchQuotaForProvider('opencode-go');
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'No active OpenCode Go subscription on the selected Console account');
   });
 });
 

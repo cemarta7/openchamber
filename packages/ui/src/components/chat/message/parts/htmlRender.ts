@@ -223,7 +223,7 @@ const KIT_CSS = '.oc-box{box-sizing:border-box;padding:16px;border-radius:var(--
     + '.oc-box .oc-box{background-color:color-mix(in srgb,var(--foreground) 6%,transparent)}'
     + '.oc-muted{color:var(--muted-foreground)}'
     + '.oc-num{font-variant-numeric:tabular-nums;text-align:end}'
-    // The chat's own Markdown table (chat/markdown/decorate.ts): a framed
+    // The chat's own Markdown table (chat/markdown/MarkdownTable.tsx): a framed
     // block that scrolls sideways when wider than the column, rows apart by
     // a hairline.
     + '.oc-table{overflow-x:auto;overscroll-behavior-x:none;border:1px solid color-mix(in srgb,var(--border) 80%,transparent);border-radius:calc(var(--oc-rem) * .5);background-color:var(--card)}'
