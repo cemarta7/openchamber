@@ -1163,12 +1163,19 @@ describe('plan links and todo dependencies', () => {
     expect((await linked.deletePlan(PROJECT_ID, planId)).deleted).toBe(true);
   });
 
-  test('stored links to a vanished plan or todo stay through unrelated writes', async () => {
+  test('stored links to a vanished plan or todos stay in full through unrelated writes', async () => {
+    // More vanished ids than the todo limit, so a cap on the list would cut them.
+    const missing = Array.from({ length: 501 }, (_, index) => `gone-${index}`);
     await writeJson(contextPath(), { version: 2, notes: [], plans: [], todos: [
-      { id: 'a', text: 'A', createdAt: 1, planId: 'shared:gone.md', dependsOn: ['deleted'] },
+      { id: 'real', text: 'Real', createdAt: 1, planId: 'shared:gone.md' },
+      { id: 'a', text: 'A', createdAt: 1, planId: 'shared:gone.md', dependsOn: missing },
     ] });
     const { todos } = await linked.updateTodo(PROJECT_ID, 'a', { text: 'edited' });
-    expect(todos[0]).toMatchObject({ text: 'edited', planId: 'shared:gone.md', dependsOn: ['deleted'] });
+    expect(todos[1]).toMatchObject({ text: 'edited', planId: 'shared:gone.md', dependsOn: missing });
+    await linked.updateTodo(PROJECT_ID, 'a', { dependsOn: [...missing, 'real'] });
+    await linked.saveTodos(PROJECT_ID, [{ id: 'real', text: 'Real' }, { id: 'a', text: 'A' }]);
+    const reloaded = createProjectContextRuntime({ fsPromises, path, projectsDirPath });
+    expect((await reloaded.readContext(PROJECT_ID)).todos[1]).toMatchObject({ planId: 'shared:gone.md', dependsOn: [...missing, 'real'] });
   });
 
   test('a todo with a dependency on a vanished todo keeps its plan until that dependency is cleared', async () => {
@@ -1179,21 +1186,6 @@ describe('plan links and todo dependencies', () => {
     await expectRefused(() => linked.saveTodos(PROJECT_ID, [{ id: 'b', text: 'B', planId: otherPlanId }]), 400);
     const { todos } = await linked.updateTodo(PROJECT_ID, 'b', { dependsOn: [], planId: otherPlanId });
     expect(todos[0]).toEqual({ id: 'b', text: 'B', completed: false, createdAt: 1, planId: otherPlanId });
-  });
-
-  test('dependency lists are stored in full, past the todo limit', async () => {
-    const missing = Array.from({ length: 501 }, (_, index) => `gone-${index}`);
-    const stored = await readJson(contextPath());
-    await writeJson(contextPath(), { ...stored, todos: [
-      { id: 'real', text: 'Real', createdAt: 1, planId },
-      { id: 'a', text: 'A', createdAt: 1, planId, dependsOn: missing },
-    ] });
-    await linked.updateTodo(PROJECT_ID, 'a', { text: 'edited' });
-    expect((await linked.readContext(PROJECT_ID)).todos[1].dependsOn).toEqual(missing);
-    await linked.updateTodo(PROJECT_ID, 'a', { dependsOn: [...missing, 'real'] });
-    await linked.saveTodos(PROJECT_ID, [{ id: 'real', text: 'Real' }, { id: 'a', text: 'A' }]);
-    const reloaded = createProjectContextRuntime({ fsPromises, path, projectsDirPath });
-    expect((await reloaded.readContext(PROJECT_ID)).todos[1].dependsOn).toEqual([...missing, 'real']);
   });
 
   test('a shared plan keeps its links when it becomes personal and refuses deletion while linked', async () => {

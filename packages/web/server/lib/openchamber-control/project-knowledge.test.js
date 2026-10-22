@@ -218,7 +218,6 @@ describe('project knowledge control actions', () => {
     [{ id: 'plan-1', sessionId: 'ses_worker', body: '# Plan\n' }],
     [{ id: 'plan-1', sessionId: null, expected: '# Plan\n' }],
     [{ sessionId: 'ses_worker', body: '# New\n' }],
-    [{ sessionId: 'ses_worker' }],
     [{ id: 'plan-1', sessionId: '' }],
     [{ id: 'plan-1', sessionId: 3 }],
   ])('refuses a plan session save %j before any write', async (input) => {

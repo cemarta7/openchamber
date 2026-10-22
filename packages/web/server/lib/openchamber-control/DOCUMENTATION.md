@@ -37,10 +37,9 @@ other.
   and makes small edits, such as ticking a step, with its own file tools, and
   `save` creates or replaces one whole. `expected` guards a replacement only:
   a save that carries it without an `id` is a 400, never a silently ignored
-  conflict check. Notes and todos carry `planId`, todos `dependsOn`, with
-  the storage rules of `../project-context/DOCUMENTATION.md`: an update may
-  send only those fields, an omitted one keeps its value, `null` and `[]`
-  clear. `list` narrows notes, todos and plans to one `planId`; `ready: true`
+  conflict check. Notes and todos carry `planId`, todos `dependsOn`, under
+  the storage rules of `../project-context/DOCUMENTATION.md`; an update may
+  send only those fields. `list` narrows notes, todos and plans to one `planId`; `ready: true`
   keeps only unfinished todos whose dependencies all exist and are completed,
   judged on the whole stored list before the plan filter. Readiness is never
   stored. A plan save with `sessionId` sets or replaces (`null` clears) the
