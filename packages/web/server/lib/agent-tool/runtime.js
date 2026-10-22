@@ -388,6 +388,24 @@ const booleanNormalizationBlock = (parameters) => {
 `;
 };
 
+/**
+ * `dependsOn` can arrive as a JSON string although the knowledge schema
+ * declares an array: a model that put it beside the action, where the schema
+ * gives it no type, sent `"[\"id\"]"`. It is parsed once and kept only as an
+ * array; any other value reaches the server's strict check unchanged. Only the
+ * tool that declares the field gets the block.
+ */
+const dependsOnRevivalBlock = (parameters) => {
+  if (!Object.hasOwn(parameters, 'dependsOn')) return '';
+  return String.raw`        if (typeof args.dependsOn === "string") {
+          try {
+            const revived = JSON.parse(args.dependsOn)
+            if (Array.isArray(revived)) args.dependsOn = revived
+          } catch {}
+        }
+`;
+};
+
 const multiActionSchema = (definitions) => ({
   property: { type: 'string', oneOf: definitions.map((entry) => ({ const: entry.action, description: entry.description })), description: 'OpenChamber action to perform' },
   required: ['action'],
@@ -442,6 +460,7 @@ const singleActionSchema = (definition) => ({
  */
 const createToolEntry = ({ name, description, definitions, parameters, codeMode, answers = false }) => {
   const normalizeBooleans = booleanNormalizationBlock(parameters);
+  const reviveDependsOn = dependsOnRevivalBlock(parameters);
   const actionSchema = definitions.length === 1 ? singleActionSchema(definitions[0]) : multiActionSchema(definitions);
   return String.raw`    tools.add({
       name: ${JSON.stringify(name)},
@@ -480,7 +499,7 @@ const createToolEntry = ({ name, description, definitions, parameters, codeMode,
             if (revived !== null && typeof revived === 'object' && !Array.isArray(revived)) args.link = revived
           } catch {}
         }
-${actionSchema.normalize}${normalizeBooleans}        const actionTitles = ${JSON.stringify(AGENT_TOOL_ACTION_TITLES)}
+${reviveDependsOn}${actionSchema.normalize}${normalizeBooleans}        const actionTitles = ${JSON.stringify(AGENT_TOOL_ACTION_TITLES)}
         const title = Object.hasOwn(actionTitles, args.action) ? actionTitles[args.action] : args.action
         const progress = (extra) => context.progress({
           ${name}: {

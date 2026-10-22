@@ -221,6 +221,19 @@ describe('managed agent tool runtime', () => {
       // generated tool; null and [] reach storage as clears, never as omissions.
       const one = (await call('save', { kind: 'todo', body: 'Step one', planId })).data.todo;
       const two = (await call('save', { kind: 'todo', body: 'Step two', planId, dependsOn: [one.id] })).data.todo;
+      // A model can send dependsOn as a JSON string, nested or beside the
+      // action as a recorded GLM call did. It is parsed once and kept only as an
+      // array; every other value reaches the strict server check unchanged.
+      expect((await call('save', { kind: 'todo', id: two.id, dependsOn: '[]' })).data.todo).not.toHaveProperty('dependsOn');
+      const flat = await tools.openchamber_knowledge.execute(
+        { action: 'knowledge.save', kind: 'todo', id: two.id, dependsOn: JSON.stringify([one.id]) },
+        { sessionID: 'ses_caller', progress: async () => {} },
+      );
+      expect(JSON.parse(flat.content).data.todo).toMatchObject({ dependsOn: [one.id] });
+      for (const dependsOn of ['[not json', JSON.stringify({ id: one.id }), one.id, '[1]']) {
+        expect(await call('save', { kind: 'todo', id: two.id, dependsOn }))
+          .toMatchObject({ ok: false, error: { message: 'dependsOn must be an array of todo ids' } });
+      }
       expect((await call('save', { kind: 'note', id: noteId, planId })).data.note)
         .toMatchObject({ body: 'Edited note', planId, origin: { sessionId: 'ses_caller' } });
       const readyInPlan = async () => (await call('list', { planId, ready: true })).data.todos.map((todo) => todo.text);
