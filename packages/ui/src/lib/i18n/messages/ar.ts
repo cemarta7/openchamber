@@ -29,7 +29,7 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict = {
-  'mobile.connect.headers.hint': 'لطلبات HTTP فقط. قد تفشل اتصالات الطرفية خلف وكيل يتطلب ترويسات. ترويسة Authorization محجوزة لرمز العميل.',
+  'mobile.connect.headers.hint': 'تنطبق على هذا العنوان فقط. ترويسة Authorization محجوزة لرمز العميل.',
   'mobile.connect.headers.error': 'تعذرت قراءة ترويسات الاتصال أو حفظها. حاول مرة أخرى.',
   'opencodeCompatibility.bundled': 'يأتي OpenCode مضمّنًا مع OpenChamber. حدّث OpenChamber للحصول على OpenCode v2.',
   'opencodeCompatibility.title': 'يلزم OpenCode v2',

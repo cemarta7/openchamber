@@ -29,7 +29,7 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict = {
-  'mobile.connect.headers.hint': 'Nur für HTTP-Anfragen. Terminalverbindungen können hinter einem Proxy, der Header verlangt, weiterhin fehlschlagen. Authorization ist für das Client-Token reserviert.',
+  'mobile.connect.headers.hint': 'Gilt nur für diese Adresse. Authorization ist für das Client-Token reserviert.',
   'mobile.connect.headers.error': 'Die Verbindungsheader konnten nicht gelesen oder gespeichert werden. Versuche es erneut.',
   "opencodeCompatibility.bundled": "OpenCode ist in OpenChamber enthalten. Aktualisieren Sie OpenChamber, um OpenCode v2 zu erhalten.",
   "opencodeCompatibility.title": "OpenCode v2 erforderlich",

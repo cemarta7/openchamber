@@ -18,6 +18,7 @@
 import { SecureStorage } from '@aparajita/capacitor-secure-storage';
 import { Capacitor } from '@capacitor/core';
 import React from 'react';
+import { z } from 'zod';
 
 import { useI18n } from '@/lib/i18n';
 import type { PairingConnectionPayload, PairingEndpointCandidate } from '@/lib/connectionPayload';
@@ -35,6 +36,7 @@ import { mobileHeadersForUrl, mobileRequestHeadersSchema, type MobileRequestHead
 const MOBILE_CONNECTIONS_STORAGE_KEY = 'openchamber.mobile.connections.v1';
 const MOBILE_SECURE_STORAGE_PREFIX = 'openchamber.mobile.';
 const MOBILE_DEVICE_ID_STORAGE_KEY = 'openchamber.mobile.deviceId';
+const mobileHeadersKeySchema = z.string().startsWith(`${MOBILE_SECURE_STORAGE_PREFIX}headers.`);
 
 // Stable per-install identifier for this phone, persisted in localStorage. Used
 // as the client dedupe key so every way this device authenticates to a given
@@ -632,7 +634,7 @@ const readConnections = (): MobileSavedConnection[] => {
         candidates,
         serverId: typeof c.serverId === 'string' && c.serverId.trim() ? c.serverId : undefined,
         lastUsedAt: typeof c.lastUsedAt === 'number' ? c.lastUsedAt : 0,
-        requestHeadersKey: native && typeof c.requestHeadersKey === 'string' && c.requestHeadersKey.startsWith(`${MOBILE_SECURE_STORAGE_PREFIX}headers.`) ? c.requestHeadersKey : undefined,
+        requestHeadersKey: native ? mobileHeadersKeySchema.safeParse(c.requestHeadersKey).data : undefined,
         requestHeaders: native ? undefined : mobileRequestHeadersSchema.safeParse(c.requestHeaders).data,
       };
       if (native) return [{ ...base, hasToken: Boolean(c.hasToken) || Boolean(inlineToken) }];
@@ -1849,10 +1851,14 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
         setError(t(established === 'relay-limit' ? 'mobile.connect.error.relayLimit' : 'mobile.connect.error.unreachable'));
         return;
       }
+      const loginHeaders: Record<string, string> = {};
+      if (chosen.kind === 'direct') Object.assign(loginHeaders, mobileHeadersForUrl(chosen.url, requestHeaders));
+      loginHeaders['Content-Type'] = 'application/json';
+      loginHeaders.Accept = 'application/json';
       const loginInit = {
         method: 'POST',
         credentials: 'include' as const,
-        headers: { ...(chosen.kind === 'direct' ? mobileHeadersForUrl(chosen.url, requestHeaders) : {}), 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: loginHeaders,
         // Same dedupe key as pairing: re-authenticating after a token expires
         // reuses this phone's existing device record instead of duplicating it.
         body: JSON.stringify({ password, trustDevice: true, issueClientToken: true, clientLabel: 'OpenChamber Mobile', clientKind: 'mobile', devicePlatform: mobileDevicePlatform(), dedupeKey: mobileClientDedupeKey() }),

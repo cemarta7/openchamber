@@ -29,7 +29,7 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict = {
-  'mobile.connect.headers.hint': 'Requêtes HTTP uniquement. Les connexions du terminal peuvent encore échouer derrière un proxy qui exige des en-têtes. Authorization est réservé au jeton client.',
+  'mobile.connect.headers.hint': 'Valable uniquement pour cette adresse. Authorization est réservé au jeton client.',
   'mobile.connect.headers.error': "Impossible de lire ou d'enregistrer les en-têtes de connexion. Réessayez.",
   "opencodeCompatibility.bundled": "OpenCode est inclus dans OpenChamber. Mettez OpenChamber à jour pour obtenir OpenCode v2.",
   "opencodeCompatibility.title": "OpenCode v2 requis",

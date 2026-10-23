@@ -30,7 +30,7 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict: Record<I18nKey, string> = {
-  'mobile.connect.headers.hint': '僅用於 HTTP 請求。透過要求請求標頭的代理伺服器時，終端機連線仍可能失敗。Authorization 保留給用戶端權杖使用。',
+  'mobile.connect.headers.hint': '僅適用於此位址。Authorization 保留給用戶端權杖使用。',
   'mobile.connect.headers.error': '無法讀取或儲存連線標頭。請重試。',
   "opencodeCompatibility.bundled": "OpenCode 隨 OpenChamber 一起提供。請更新 OpenChamber 以取得 OpenCode v2。",
   "opencodeCompatibility.title": "需要 OpenCode v2",

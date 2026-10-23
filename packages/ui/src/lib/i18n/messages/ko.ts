@@ -30,7 +30,7 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict: Record<I18nKey, string> = {
-  'mobile.connect.headers.hint': 'HTTP 요청에만 적용됩니다. 헤더가 필요한 프록시에서는 터미널 연결이 여전히 실패할 수 있습니다. Authorization은 클라이언트 토큰용으로 예약되어 있습니다.',
+  'mobile.connect.headers.hint': '이 주소에만 적용됩니다. Authorization은 클라이언트 토큰용으로 예약되어 있습니다.',
   'mobile.connect.headers.error': '연결 헤더를 읽거나 저장할 수 없습니다. 다시 시도하세요.',
   "opencodeCompatibility.bundled": "OpenCode는 OpenChamber에 포함되어 있습니다. OpenCode v2를 사용하려면 OpenChamber를 업데이트하세요.",
   "opencodeCompatibility.title": "OpenCode v2가 필요합니다",

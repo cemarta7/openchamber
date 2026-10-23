@@ -30,7 +30,7 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict: Record<I18nKey, string> = {
-  'mobile.connect.headers.hint': '仅用于 HTTP 请求。通过要求请求头的代理时，终端连接仍可能失败。Authorization 保留用于客户端令牌。',
+  'mobile.connect.headers.hint': '仅适用于此地址。Authorization 保留用于客户端令牌。',
   'mobile.connect.headers.error': '无法读取或保存连接请求头。请重试。',
   "opencodeCompatibility.bundled": "OpenCode 随 OpenChamber 一起提供。请更新 OpenChamber 以获取 OpenCode v2。",
   "opencodeCompatibility.title": "需要 OpenCode v2",

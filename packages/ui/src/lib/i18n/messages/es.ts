@@ -30,7 +30,7 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict: Record<I18nKey, string> = {
-  'mobile.connect.headers.hint': 'Solo para solicitudes HTTP. Las conexiones del terminal pueden seguir fallando detrás de un proxy que requiera cabeceras. Authorization está reservado para el token del cliente.',
+  'mobile.connect.headers.hint': 'Solo se aplica a esta dirección. Authorization está reservado para el token del cliente.',
   'mobile.connect.headers.error': 'No se pudieron leer o guardar las cabeceras de conexión. Inténtalo de nuevo.',
   "opencodeCompatibility.bundled": "OpenCode viene incluido en OpenChamber. Actualiza OpenChamber para obtener OpenCode v2.",
   "opencodeCompatibility.title": "Se requiere OpenCode v2",

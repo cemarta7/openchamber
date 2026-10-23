@@ -29,7 +29,7 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict = {
-  'mobile.connect.headers.hint': 'לבקשות HTTP בלבד. חיבורי מסוף עדיין עלולים להיכשל דרך שרת מתווך שדורש כותרות. הכותרת Authorization שמורה לאסימון הלקוח.',
+  'mobile.connect.headers.hint': 'חל רק על כתובת זו. הכותרת Authorization שמורה לאסימון הלקוח.',
   'mobile.connect.headers.error': 'לא ניתן לקרוא או לשמור את כותרות החיבור. יש לנסות שוב.',
   'opencodeCompatibility.bundled': 'OpenCode מגיע יחד עם OpenChamber. יש לעדכן את OpenChamber כדי לקבל את OpenCode v2.',
   'opencodeCompatibility.title': 'נדרש OpenCode v2',
