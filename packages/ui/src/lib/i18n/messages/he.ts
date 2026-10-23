@@ -3392,6 +3392,7 @@ export const dict = {
   'mainLayout.mobile.closeDrawerAria': 'סגור את המגירה',
   'sortableTabsStrip.aria.tabs': 'כרטיסיות',
   'openChamberLogo.aria.logo': 'הלוגו של OpenChamber',
+  'markdownRenderer.code.proposal': 'הצעה',
   'markdownRenderer.code.actions.copyTitle': 'העתק קוד',
   'markdownRenderer.code.actions.copiedTitle': 'הועתק',
   'markdownRenderer.table.actions.copyTitle': 'העתק טבלה',

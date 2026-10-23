@@ -151,6 +151,15 @@ clipboard and image rendering share this configuration. The stable consumer
 root is `.markdown-content[data-markdown-content]`; code and table consumers
 use native `data-streamdown` markers.
 
+Fenced `diff` blocks carry a translated Proposal label and a source-copy button.
+Completed, bounded patches use the same read-only diff preview as tool cards,
+with file names as text and no file actions. Headerless +/- snippets receive
+parser-only hunk coordinates; copy and export retain the original source.
+Incomplete, oversized or unparseable blocks keep a plain source preview. The
+diff stack loads only for a completed block within the tool preview budgets.
+Clipboard and image export keep ordinary code markup because the rich diff's
+shadow DOM is not part of the detached export tree.
+
 #### Why React owns Markdown updates
 
 Using Streamdown's parsing and component lifecycle keeps screen and export

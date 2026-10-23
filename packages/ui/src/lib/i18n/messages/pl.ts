@@ -2907,6 +2907,7 @@ export const dict: Record<I18nKey, string> = {
   'markdownRenderer.mermaid.actions.zoomOutTitle': 'Pomniejsz',
   'markdownRenderer.mermaid.actions.resetViewTitle': 'Resetuj widok',
   'markdownRenderer.mermaid.toast.downloadFailed': 'Nie udało się pobrać diagramu',
+  'markdownRenderer.code.proposal': 'Propozycja',
   'markdownRenderer.code.actions.copyTitle': 'Kopiuj kod',
   'markdownRenderer.code.actions.copiedTitle': 'Skopiowano',
   'markdownRenderer.table.actions.copyTitle': 'Kopiuj tabelę',

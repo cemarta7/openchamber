@@ -3446,6 +3446,7 @@ export const dict: Record<I18nKey, string> = {
   'mainLayout.mobile.closeDrawerAria': 'ドロワーを閉じる',
   'sortableTabsStrip.aria.tabs': 'タブ',
   'openChamberLogo.aria.logo': 'OpenChamberロゴ',
+  'markdownRenderer.code.proposal': '提案',
   'markdownRenderer.code.actions.copyTitle': 'コードをコピー',
   'markdownRenderer.code.actions.copiedTitle': 'コピーしました',
   'markdownRenderer.table.actions.copyTitle': 'テーブルをコピー',

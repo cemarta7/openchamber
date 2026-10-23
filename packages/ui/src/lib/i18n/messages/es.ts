@@ -3407,6 +3407,7 @@ export const dict: Record<I18nKey, string> = {
   "mainLayout.mobile.closeDrawerAria": "Cerrar drawer",
   "sortableTabsStrip.aria.tabs": "Pestañas",
   "openChamberLogo.aria.logo": "Logo de OpenChamber",
+  "markdownRenderer.code.proposal": "Propuesta",
   "markdownRenderer.code.actions.copyTitle": "Copiar código",
   "markdownRenderer.code.actions.copiedTitle": "Copiado",
   "markdownRenderer.table.actions.copyTitle": "Copiar tabla",

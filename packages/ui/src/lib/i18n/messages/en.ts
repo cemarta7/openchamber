@@ -3450,6 +3450,7 @@ export const dict = {
   'mainLayout.mobile.closeDrawerAria': 'Close drawer',
   'sortableTabsStrip.aria.tabs': 'Tabs',
   'openChamberLogo.aria.logo': 'OpenChamber logo',
+  'markdownRenderer.code.proposal': 'Proposal',
   'markdownRenderer.code.actions.copyTitle': 'Copy code',
   'markdownRenderer.code.actions.copiedTitle': 'Copied',
   'markdownRenderer.table.actions.copyTitle': 'Copy table',

@@ -3411,6 +3411,7 @@ export const dict: Record<I18nKey, string> = {
   'mainLayout.mobile.closeDrawerAria': '關閉抽屜',
   'sortableTabsStrip.aria.tabs': '分頁',
   'openChamberLogo.aria.logo': 'OpenChamber 標誌',
+  'markdownRenderer.code.proposal': '提議',
   'markdownRenderer.code.actions.copyTitle': '複製程式碼',
   'markdownRenderer.code.actions.copiedTitle': '已複製',
   'markdownRenderer.table.actions.copyTitle': '複製表格',

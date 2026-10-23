@@ -3253,6 +3253,7 @@ export const dict = {
   'mainLayout.mobile.closeDrawerAria': 'Çekmeceyi kapat',
   'sortableTabsStrip.aria.tabs': 'Sekmeler',
   'openChamberLogo.aria.logo': 'OpenChamber logosu',
+  'markdownRenderer.code.proposal': 'Öneri',
   'markdownRenderer.code.actions.copyTitle': 'Kodu kopyala',
   'markdownRenderer.code.actions.copiedTitle': 'Kopyalandı',
   'markdownRenderer.table.actions.copyTitle': 'Tabloyu kopyala',

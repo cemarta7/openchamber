@@ -3450,6 +3450,7 @@ export const dict: Record<I18nKey, string> = {
   'mainLayout.mobile.closeDrawerAria': '드로어 닫기',
   'sortableTabsStrip.aria.tabs': '탭',
   'openChamberLogo.aria.logo': 'OpenChamber 로고',
+  'markdownRenderer.code.proposal': '제안',
   'markdownRenderer.code.actions.copyTitle': '코드 복사',
   'markdownRenderer.code.actions.copiedTitle': '복사됨',
   'markdownRenderer.table.actions.copyTitle': '표 복사',
