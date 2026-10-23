@@ -19,12 +19,12 @@ test('password sign-in keeps proxy headers, editing clears them, and deletion re
     originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   }
-  const requests: { url: string; method: string; headers: Headers }[] = [];
+  const requests: { url: string; method: string; headers: Headers; redirect?: RequestRedirect }[] = [];
   const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     const headers = new Headers(init?.headers);
     const method = init?.method || 'GET';
-    requests.push({ url, method, headers });
+    requests.push({ url, method, headers, redirect: init?.redirect });
     if (url.endsWith('/health')) return Response.json({ status: 'ok' });
     if (url.endsWith('/auth/session')) {
       if (headers.get('X-Proxy') !== 'secret') return new Response(null, { status: 403 });
@@ -62,6 +62,7 @@ test('password sign-in keeps proxy headers, editing clears them, and deletion re
     expect(login?.headers.get('X-Proxy')).toBe('secret');
     expect(login?.headers.get('Content-Type')).toBe('application/json');
     expect(login?.headers.has('Authorization')).toBe(false);
+    expect(login?.redirect).toBe('error');
     expect(requests.filter((request) => request.url.endsWith('/health')).every((request) => request.headers.get('X-Proxy') === 'secret')).toBe(true);
 
     await act(async () => { await connection().saveConnection({ id, url: 'https://protected.example', label: 'Renamed', requestHeaders: {} }); });

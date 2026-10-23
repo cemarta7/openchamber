@@ -67,6 +67,54 @@ Required local tools:
 - JDK 21 for Android Gradle builds.
 - Android SDK command-line tools with platform/build-tools 35.
 
+## Cloudflare Access setup
+
+This setup uses a named Cloudflare Tunnel, a hostname such as `oc.example.com`, and an Access service token. It supports HTTP requests, streamed chat updates and terminal WebSockets in the native iOS and Android apps. Browser-loaded images and media can still fail because they cannot attach the service-token headers.
+
+1. In **Zero Trust → Access controls → Service credentials → Service tokens**, create a service token and save its Client ID and Client Secret.
+2. In **Access controls → Applications**, add a self-hosted application for `oc.example.com`, with no path restriction. Add a policy with **Action: Service Auth**, **Include: Service Token**, and select the token from step 1.
+3. In the tunnel's published application routes, map `oc.example.com` to the OpenChamber server, for example `http://127.0.0.1:3000` when both run on the same machine. Use the server's actual listening port.
+4. In the Access application's **Advanced settings → CORS settings**, configure Cloudflare to answer preflight requests:
+   - Allowed origins: `capacitor://localhost` and `https://localhost`.
+   - Allow credentials: enabled.
+   - Allowed methods: `GET, POST, PUT, PATCH, DELETE, OPTIONS`.
+   - **Bypass OPTIONS requests to origin**: off.
+   - Allowed headers: all names in the following list.
+
+   ```text
+   Content-Type
+   Authorization
+   Accept
+   X-Requested-With
+   Cache-Control
+   X-OpenCode-Directory
+   X-OpenCode-Directory-Encoding
+   Ngrok-Skip-Browser-Warning
+   X-OpenChamber-Surface
+   X-OpenChamber-Provider
+   X-OpenChamber-Model
+   X-OpenChamber-Part-Shells
+   CF-Access-Client-Id
+   CF-Access-Client-Secret
+   ```
+
+5. In the mobile app, select **Connect by address**, enter `https://oc.example.com`, and add `CF-Access-Client-Id` and `CF-Access-Client-Secret` under **Additional headers**. Enter their corresponding service-token values. Leave Client token empty for password sign-in, then enter the OpenChamber password when asked. Use the final HTTPS address. Requests with custom headers refuse redirects so proxy credentials cannot reach a different address.
+
+The Service Auth policy still protects actual requests. Preflight requests contain header names but no service-token values, so Access must answer them before the app can send authenticated HTTP requests. Without this configuration, native sign-in can succeed while session loading and chat fail.
+
+To check the preflight without sending credentials:
+
+```sh
+curl -i -X OPTIONS https://oc.example.com/api/config/settings \
+  -H 'Origin: capacitor://localhost' \
+  -H 'Access-Control-Request-Method: GET' \
+  -H 'Access-Control-Request-Headers: authorization,cf-access-client-id,cf-access-client-secret'
+```
+
+Expect a successful response that allows the requested origin and headers. Repeat with `Origin: https://localhost` for Android. A GET to `/health` without service-token headers should still return `403` with this Service Auth policy. Then check streamed chat, terminal input/output and reconnect on the device.
+
+See Cloudflare's [service-token documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/) and [preflight response configuration](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/cors/#configure-response-to-preflight-requests).
+
 ## Troubleshooting
 
 - If `xcodebuild` reports that the active developer directory is Command Line Tools, keep using the provided scripts or set `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
@@ -74,7 +122,7 @@ Required local tools:
 - If Android SDK packages are missing, install `platform-tools`, `platforms;android-35`, and `build-tools;35.0.0`, then accept SDK licenses.
 - If CocoaPods cannot find Capacitor pods after reinstalling dependencies, run `bun install` from the workspace root, then rerun `bun run sync`.
 - If connecting to a remote OpenChamber server fails from the app while `/health` works in curl, check that the server build includes the packaged-client CORS allowlist for `capacitor://localhost` and local dev origins.
-- Header-protected proxies must answer CORS preflight requests for `capacitor://localhost` on iOS and `https://localhost` on Android. Allow credentials, the requested methods, the OpenChamber request headers and your custom header names. For Cloudflare Access, configure its CORS response to OPTIONS while keeping the Service Auth policy on actual requests. Native WebSockets use these same packaged origins, reject redirects and keep the existing OpenChamber URL-token authentication.
+- Header-protected proxies must answer CORS preflight requests for `capacitor://localhost` on iOS and `https://localhost` on Android. See [Cloudflare Access setup](#cloudflare-access-setup) for the tested configuration. Native WebSockets reject redirects; enter the final server address in the app.
 - If `serve-sim` preview says the stream is not producing frames, check the raw MJPEG stream before assuming the simulator stopped. In prior testing the raw stream worked while the browser preview UI stayed stale.
 
 ## Generated Assets

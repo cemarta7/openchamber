@@ -381,6 +381,7 @@ const nativeHttpRequest = async (url: string, init?: RequestInit): Promise<Mobil
       method: init?.method || 'GET',
       headers: Object.fromEntries(requestHeaders.entries()),
       data: getJsonRequestData(init?.body),
+      disableRedirects: init?.redirect === 'error',
     });
     return {
       ok: response.status >= 200 && response.status < 300,
@@ -988,10 +989,11 @@ const probeConnectionCandidates = async (
     for (const candidate of directList) {
       const url = normalizeConnectionUrl(candidate.url) || candidate.url;
       const headers = mobileHeadersForUrl(url, options?.requestHeaders);
+      const redirect = Object.keys(headers).length ? 'error' : undefined;
       if (token) headers.Authorization = `Bearer ${token}`;
       // /health is unauthenticated by design — never send the bearer token to an
       // address whose identity has not been checked yet.
-      const health = await requestWithTimeout(`${url}/health`, { method: 'GET', headers: mobileHeadersForUrl(url, options?.requestHeaders) }, requestOptions);
+      const health = await requestWithTimeout(`${url}/health`, { method: 'GET', headers: mobileHeadersForUrl(url, options?.requestHeaders), redirect }, requestOptions);
       logConnect('probe:direct:health', { url, ok: health?.ok === true, status: health?.status ?? null, source: health?.source ?? null });
       if (!health?.ok) continue;
       if (expectedServerId) {
@@ -1006,7 +1008,7 @@ const probeConnectionCandidates = async (
       // WebView otherwise answers "authenticated" for a revoked/expired token,
       // the probe passes, and the app dies later on bootstrap's bearer-only
       // requests. Cookie auth stays for the token-less (browser) flow.
-      const session = await requestWithTimeout(`${url}/auth/session`, { method: 'GET', credentials: token ? 'omit' : 'include', headers }, requestOptions);
+      const session = await requestWithTimeout(`${url}/auth/session`, { method: 'GET', credentials: token ? 'omit' : 'include', headers, redirect }, requestOptions);
       logConnect('probe:direct:session', { url, ok: session?.ok === true, status: session?.status ?? null, source: session?.source ?? null, hasToken: Boolean(token) });
       if (session?.status === 401) return { status: 'needs-login' };
       if (!session || (!session.ok && session.status !== 404)) continue;
@@ -1244,15 +1246,16 @@ export const validateMobileConnectionSession = async (input: {
 
   const token = input.clientToken?.trim() || undefined;
   const headers = mobileHeadersForUrl(url, input.requestHeaders);
+  const redirect = Object.keys(headers).length ? 'error' : undefined;
   if (token) headers.Authorization = `Bearer ${token}`;
   const requestOptions = options?.fast ? { totalTimeoutMs: MOBILE_FAST_PROBE_TIMEOUT_MS } : undefined;
 
-  const health = await requestWithTimeout(`${url}/health`, { method: 'GET', headers }, requestOptions);
+  const health = await requestWithTimeout(`${url}/health`, { method: 'GET', headers, redirect }, requestOptions);
   if (!health?.ok) return false;
 
   // Bearer-only when a token is present — see the probe note about stale
   // session cookies masking a revoked token.
-  const session = await requestWithTimeout(`${url}/auth/session`, { method: 'GET', credentials: token ? 'omit' : 'include', headers }, requestOptions);
+  const session = await requestWithTimeout(`${url}/auth/session`, { method: 'GET', credentials: token ? 'omit' : 'include', headers, redirect }, requestOptions);
   if (!session || (!session.ok && session.status !== 404)) return false;
 
   const status = await readSessionStatus(session);
@@ -1335,7 +1338,8 @@ const establishLiveTransport = async (
       continue;
     }
     const url = normalizeConnectionUrl(candidate.url) || candidate.url;
-    const health = await requestWithTimeout(`${url}/health`, { method: 'GET', headers: mobileHeadersForUrl(url, requestHeaders) });
+    const headers = mobileHeadersForUrl(url, requestHeaders);
+    const health = await requestWithTimeout(`${url}/health`, { method: 'GET', headers, redirect: Object.keys(headers).length ? 'error' : undefined });
     logConnect('establish:direct:health', { ok: health?.ok === true, status: health?.status ?? null });
     if (!health?.ok) continue;
     const serverId = await readHealthServerId(health);
@@ -1853,12 +1857,14 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
       }
       const loginHeaders: Record<string, string> = {};
       if (chosen.kind === 'direct') Object.assign(loginHeaders, mobileHeadersForUrl(chosen.url, requestHeaders));
+      const redirect: RequestRedirect | undefined = Object.keys(loginHeaders).length ? 'error' : undefined;
       loginHeaders['Content-Type'] = 'application/json';
       loginHeaders.Accept = 'application/json';
       const loginInit = {
         method: 'POST',
         credentials: 'include' as const,
         headers: loginHeaders,
+        redirect,
         // Same dedupe key as pairing: re-authenticating after a token expires
         // reuses this phone's existing device record instead of duplicating it.
         body: JSON.stringify({ password, trustDevice: true, issueClientToken: true, clientLabel: 'OpenChamber Mobile', clientKind: 'mobile', devicePlatform: mobileDevicePlatform(), dedupeKey: mobileClientDedupeKey() }),

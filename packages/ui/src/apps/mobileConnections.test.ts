@@ -5,6 +5,7 @@ import type { RelayTunnelClient } from '@/lib/relay/tunnel-client';
 import { switchRuntimeEndpoint } from '@/lib/runtime-switch';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
+import { serveTestHttp } from '@/lib/test-http-server';
 
 import { autoConnectLastInstance, createMobilePasswordOperationTracker, isActiveRuntimeConnection, loadMobileConnectionHeaders, loadMobileConnections, migrateLegacyInlineTokenRecords, reprobeActiveConnection, upsertMobileConnection, validateMobileConnectionSession, type MobileRelayConfig } from './mobileConnections';
 import { buildMobileHeaderValues } from './mobileRequestHeaders';
@@ -51,6 +52,31 @@ const testRelay: MobileRelayConfig = {
 describe('mobile HTTP headers', () => {
   const url = 'https://protected.example';
   const config = { url, values: { 'CF-Access-Client-Id': 'client-id', 'CF-Access-Client-Secret': 'client-secret' } };
+
+  test('connection checks refuse redirects before proxy credentials reach another address', async () => {
+    installTestWindow();
+    let targetRequests = 0;
+    const target = await serveTestHttp((_request, response) => {
+      targetRequests += 1;
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ authenticated: true }));
+    });
+    const source = await serveTestHttp((_request, response) => {
+      response.writeHead(302, { Location: target.url.toString() });
+      response.end();
+    });
+    const address = source.url.toString().replace(/\/$/, '');
+    try {
+      expect(await validateMobileConnectionSession({ url: address, requestHeaders: { url: address, values: config.values } })).toBe(false);
+      expect(targetRequests).toBe(0);
+      expect(await validateMobileConnectionSession({ url: address })).toBe(true);
+      expect(targetRequests).toBe(2);
+    } finally {
+      source.close();
+      target.close();
+      restoreGlobals();
+    }
+  });
 
   test('reload, reconnect and resume send headers; switching instances clears them', async () => {
     installTestWindow();

@@ -629,7 +629,7 @@ const connect = () => {
   const canControlBrowser = canDriveBrowserPage();
   // Native mobile has no desktop realtime proxy. Fetch can attach the saved
   // instance headers to SSE; EventSource cannot.
-  if (isRelayModeActive() || (isCapacitorApp() && Object.keys(getRuntimeExtraHeadersSync()).length > 0)) {
+  if (isRelayModeActive() || (Object.keys(getRuntimeExtraHeadersSync()).length > 0 && isCapacitorApp())) {
     connectFetchStream(canControlBrowser);
     return;
   }

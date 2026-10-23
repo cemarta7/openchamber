@@ -21,7 +21,7 @@ export const openRuntimeWebSocket = (url: string, protocols?: string[]): RelayTu
     return relay.openWebSocket(wsUrlToTunnelPath(url), protocols);
   }
   const headers = getRuntimeExtraHeadersSync();
-  if (isCapacitorApp() && Object.keys(headers).length > 0) {
+  if (Object.keys(headers).length > 0 && isCapacitorApp()) {
     const scopedHeaders = nativeWebSocketHeaders(url, getRuntimeUrlResolver().api('/'), headers);
     if (scopedHeaders) {
       return openNativeWebSocket(url, scopedHeaders, protocols);
