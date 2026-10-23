@@ -30,6 +30,8 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'mobile.connect.headers.hint': 'Tylko żądania HTTP. Połączenia terminala mogą nadal nie działać przez serwer proxy wymagający nagłówków. Authorization jest zarezerwowany dla tokenu klienta.',
+  'mobile.connect.headers.error': 'Nie można odczytać lub zapisać nagłówków połączenia. Spróbuj ponownie.',
   "opencodeCompatibility.bundled": "OpenCode jest dołączony do OpenChamber. Zaktualizuj OpenChamber, aby uzyskać OpenCode v2.",
   "opencodeCompatibility.title": "Wymagany OpenCode v2",
   "opencodeCompatibility.outdatedTitle": "Zaktualizuj OpenCode",

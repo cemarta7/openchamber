@@ -29,6 +29,8 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict = {
+  'mobile.connect.headers.hint': 'Yalnızca HTTP istekleri için. Başlık gerektiren bir vekil sunucu üzerinden terminal bağlantıları yine de başarısız olabilir. Authorization, istemci belirteci için ayrılmıştır.',
+  'mobile.connect.headers.error': 'Bağlantı başlıkları okunamadı veya kaydedilemedi. Tekrar deneyin.',
   "opencodeCompatibility.bundled": "OpenCode, OpenChamber ile birlikte gelir. OpenCode v2 için OpenChamber’ı güncelleyin.",
   "opencodeCompatibility.title": "OpenCode v2 gerekli",
   "opencodeCompatibility.outdatedTitle": "OpenCode’u güncelleyin",

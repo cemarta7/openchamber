@@ -29,6 +29,8 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict = {
+  'mobile.connect.headers.hint': 'HTTP requests only. Terminal connections may still fail behind a proxy that requires headers. Authorization is reserved for the client token.',
+  'mobile.connect.headers.error': 'Could not read or save the connection headers. Try again.',
   "opencodeCompatibility.bundled": "OpenCode is bundled with OpenChamber. Update OpenChamber to get OpenCode v2.",
   "opencodeCompatibility.title": "OpenCode v2 required",
   "opencodeCompatibility.outdatedTitle": "Update OpenCode",

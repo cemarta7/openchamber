@@ -30,6 +30,8 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'mobile.connect.headers.hint': 'Лише для HTTP-запитів. З’єднання термінала можуть і далі не працювати через проксі, що вимагає заголовків. Authorization зарезервовано для токена клієнта.',
+  'mobile.connect.headers.error': 'Не вдалося прочитати або зберегти заголовки з’єднання. Спробуйте ще раз.',
   "opencodeCompatibility.bundled": "OpenCode входить до складу OpenChamber. Оновіть OpenChamber, щоб отримати OpenCode v2.",
   "opencodeCompatibility.title": "Потрібен OpenCode v2",
   "opencodeCompatibility.outdatedTitle": "Оновіть OpenCode",

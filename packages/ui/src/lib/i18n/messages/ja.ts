@@ -30,6 +30,8 @@ import { integrationsCatalogI18n } from './integrations-catalog.i18n';
 import { diffFindI18n } from './diff-find.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'mobile.connect.headers.hint': 'HTTP リクエストのみ対象です。ヘッダーを要求するプロキシ経由では、ターミナルの接続に失敗する場合があります。Authorization はクライアントトークン用に予約されています。',
+  'mobile.connect.headers.error': '接続ヘッダーを読み込むか保存することができませんでした。もう一度お試しください。',
   "opencodeCompatibility.bundled": "OpenCode は OpenChamber に同梱されています。OpenCode v2 を利用するには OpenChamber を更新してください。",
   "opencodeCompatibility.title": "OpenCode v2 が必要です",
   "opencodeCompatibility.outdatedTitle": "OpenCode を更新してください",
