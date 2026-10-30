@@ -274,8 +274,8 @@ to that same directory (`noteCurrentDirectory` in the server lifecycle), so a
 left project is not started again by them. Another client still showing the directory gets
 `location.shutdown` and bootstraps it again, which restarts its MCP servers. A
 failed release is ignored: OpenCode's own sweep still applies. The rule is the
-same on every surface; VS Code has no managed chats, so only its worktrees and
-projects qualify there.
+same on every surface; VS Code includes managed Chats in windows without a
+workspace folder.
 
 ## Committing a revert
 
@@ -1133,7 +1133,11 @@ The transcript, its scroll, its optimistic shadow and every status index are key
 
 The global sessions store persists and hydrates one bounded, runtime-scoped startup snapshot containing only active managed chat sessions. Every global session surface, including the main sidebar and Electron Mini Chat switcher, sees that stale snapshot while the global list is unresolved or failed; the first authoritative global snapshot replaces it. Full and directory-scoped global loads resolve the active server's chats roots before fetching or classifying sessions. The store enters loading before resolving roots and hydrates its saved snapshot once roots are available, preserving any newer mutations. Root lookup failure preserves the snapshot for a later retry; a failed global request retains the hydrated sessions. Old runtime completions cannot hydrate or fetch for the destination runtime. Persistence waits for root authority; before hydration it overlays explicit mutations onto the saved seed rather than replacing it with a partial list, and the first page of a still-paginating full load is merged into the visible lists (status stays `loading`) without ever being persisted as that snapshot. Hydration happens once per runtime, so a later global load cannot undo an earlier directory refresh. Runtime reset to idle must hydrate rather than erase the destination runtime's snapshot; authoritative empty, archive, and delete updates do persist the resulting empty or reduced list.
 
-VS Code intentionally has no managed Chats mode. It neither reads nor writes the managed Chats startup cache, regular drafts continue to target the open workspace, and the global session store rejects managed chat sessions from both snapshots and live upserts before any VS Code surface can consume them. Sidebar and switcher filters repeat that exclusion defensively.
+VS Code uses managed Chats only when the host's workspace folder list is empty.
+Regular drafts then ignore the last project directory, and the global session
+store, sidebar and switcher admit Chats. Windows with folders retain workspace
+drafts and exclude Chats from snapshots and live upserts. VS Code does not read
+or write the managed Chats startup cache; reopening uses the OpenCode session list.
 
 ### Remembering the last draft target
 
