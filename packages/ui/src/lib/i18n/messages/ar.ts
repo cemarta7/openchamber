@@ -48,6 +48,8 @@ export const dict = {
   'quota.family.zen': 'نماذج Zen',
   'quota.value.requests': 'الطلبات: {count}',
   'quota.value.spent': 'تم إنفاق {spent}',
+  'mobile.connect.headers.hint': 'تنطبق على هذا العنوان فقط. ترويسة Authorization محجوزة لرمز العميل.',
+  'mobile.connect.headers.error': 'تعذرت قراءة ترويسات الاتصال أو حفظها. حاول مرة أخرى.',
   'opencodeCompatibility.bundled': 'يأتي OpenCode مضمّنًا مع OpenChamber. حدّث OpenChamber للحصول على OpenCode v2.',
   'opencodeCompatibility.title': 'يلزم OpenCode v2',
   'opencodeCompatibility.outdatedTitle': 'تحديث OpenCode',

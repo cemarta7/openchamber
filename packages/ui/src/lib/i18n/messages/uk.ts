@@ -49,6 +49,8 @@ export const dict: Record<I18nKey, string> = {
   'quota.family.zen': 'Моделі Zen',
   'quota.value.requests': 'Запити: {count}',
   'quota.value.spent': 'Витрачено {spent}',
+  'mobile.connect.headers.hint': 'Застосовується лише до цієї адреси. Authorization зарезервовано для токена клієнта.',
+  'mobile.connect.headers.error': 'Не вдалося прочитати або зберегти заголовки з’єднання. Спробуйте ще раз.',
   "opencodeCompatibility.bundled": "OpenCode входить до складу OpenChamber. Оновіть OpenChamber, щоб отримати OpenCode v2.",
   "opencodeCompatibility.title": "Потрібен OpenCode v2",
   "opencodeCompatibility.outdatedTitle": "Оновіть OpenCode",

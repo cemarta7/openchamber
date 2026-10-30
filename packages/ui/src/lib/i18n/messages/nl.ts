@@ -48,6 +48,8 @@ export const dict = {
   'quota.family.zen': 'Zen-modellen',
   'quota.value.requests': 'Verzoeken: {count}',
   'quota.value.spent': '{spent} besteed',
+  'mobile.connect.headers.hint': 'Geldt alleen voor dit adres. Authorization is gereserveerd voor het clienttoken.',
+  'mobile.connect.headers.error': 'De verbindingsheaders konden niet worden gelezen of opgeslagen. Probeer het opnieuw.',
   "opencodeCompatibility.bundled": "OpenCode is inbegrepen bij OpenChamber. Werk OpenChamber bij om OpenCode v2 te krijgen.",
   "opencodeCompatibility.title": "OpenCode v2 vereist",
   "opencodeCompatibility.outdatedTitle": "OpenCode bijwerken",

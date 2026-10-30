@@ -48,6 +48,8 @@ export const dict = {
   'quota.family.zen': 'Modèles Zen',
   'quota.value.requests': 'Requêtes : {count}',
   'quota.value.spent': '{spent} dépensés',
+  'mobile.connect.headers.hint': 'Valable uniquement pour cette adresse. Authorization est réservé au jeton client.',
+  'mobile.connect.headers.error': "Impossible de lire ou d'enregistrer les en-têtes de connexion. Réessayez.",
   "opencodeCompatibility.bundled": "OpenCode est inclus dans OpenChamber. Mettez OpenChamber à jour pour obtenir OpenCode v2.",
   "opencodeCompatibility.title": "OpenCode v2 requis",
   "opencodeCompatibility.outdatedTitle": "Mettre à jour OpenCode",

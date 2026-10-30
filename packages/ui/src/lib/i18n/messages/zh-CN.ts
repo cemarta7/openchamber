@@ -49,6 +49,8 @@ export const dict: Record<I18nKey, string> = {
   'quota.family.zen': 'Zen 模型',
   'quota.value.requests': '请求数：{count}',
   'quota.value.spent': '已花费 {spent}',
+  'mobile.connect.headers.hint': '仅适用于此地址。Authorization 保留用于客户端令牌。',
+  'mobile.connect.headers.error': '无法读取或保存连接请求头。请重试。',
   "opencodeCompatibility.bundled": "OpenCode 随 OpenChamber 一起提供。请更新 OpenChamber 以获取 OpenCode v2。",
   "opencodeCompatibility.title": "需要 OpenCode v2",
   "opencodeCompatibility.outdatedTitle": "请更新 OpenCode",

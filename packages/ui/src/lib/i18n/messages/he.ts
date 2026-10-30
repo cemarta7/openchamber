@@ -48,6 +48,8 @@ export const dict = {
   'quota.family.zen': 'מודלי Zen',
   'quota.value.requests': 'בקשות: {count}',
   'quota.value.spent': 'נוצלו {spent}',
+  'mobile.connect.headers.hint': 'חל רק על כתובת זו. הכותרת Authorization שמורה לאסימון הלקוח.',
+  'mobile.connect.headers.error': 'לא ניתן לקרוא או לשמור את כותרות החיבור. יש לנסות שוב.',
   'opencodeCompatibility.bundled': 'OpenCode מגיע יחד עם OpenChamber. יש לעדכן את OpenChamber כדי לקבל את OpenCode v2.',
   'opencodeCompatibility.title': 'נדרש OpenCode v2',
   'opencodeCompatibility.outdatedTitle': 'עדכן את OpenCode',

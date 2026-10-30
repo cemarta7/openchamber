@@ -48,6 +48,8 @@ export const dict = {
   'quota.family.zen': 'Zen Modelleri',
   'quota.value.requests': 'İstekler: {count}',
   'quota.value.spent': '{spent} harcandı',
+  'mobile.connect.headers.hint': 'Yalnızca bu adres için geçerlidir. Authorization, istemci belirteci için ayrılmıştır.',
+  'mobile.connect.headers.error': 'Bağlantı başlıkları okunamadı veya kaydedilemedi. Tekrar deneyin.',
   "opencodeCompatibility.bundled": "OpenCode, OpenChamber ile birlikte gelir. OpenCode v2 için OpenChamber’ı güncelleyin.",
   "opencodeCompatibility.title": "OpenCode v2 gerekli",
   "opencodeCompatibility.outdatedTitle": "OpenCode’u güncelleyin",

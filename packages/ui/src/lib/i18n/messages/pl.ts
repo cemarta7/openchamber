@@ -49,6 +49,8 @@ export const dict: Record<I18nKey, string> = {
   'quota.family.zen': 'Modele Zen',
   'quota.value.requests': 'Żądania: {count}',
   'quota.value.spent': 'Wydano {spent}',
+  'mobile.connect.headers.hint': 'Dotyczy tylko tego adresu. Authorization jest zarezerwowany dla tokenu klienta.',
+  'mobile.connect.headers.error': 'Nie można odczytać lub zapisać nagłówków połączenia. Spróbuj ponownie.',
   "opencodeCompatibility.bundled": "OpenCode jest dołączony do OpenChamber. Zaktualizuj OpenChamber, aby uzyskać OpenCode v2.",
   "opencodeCompatibility.title": "Wymagany OpenCode v2",
   "opencodeCompatibility.outdatedTitle": "Zaktualizuj OpenCode",
